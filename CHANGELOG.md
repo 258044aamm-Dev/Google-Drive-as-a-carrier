@@ -8,6 +8,20 @@ Version numbers like `2.1.1-drive.3` exist only in each release's `manifest.json
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
+## 2.1.1-drive.6 - 2026-10-02
+
+### Changed
+- **A shorter Google Drive settings screen.** With Google Drive chosen, the main section now holds only Status, Sync carrier, Set up Google Drive and Sign out (when signed in). Everything the setup guide fills in moved to one new page, **Manual setup (advanced)**, placed just before Advanced: Vault ID, Google client ID and secret, Sign in with Google, the easy sign-in code and the encryption passphrase. The page shows a warning mark while you are not signed in, and the Status text points to it.
+  - The "Folder on Drive" row is gone; the Vault ID description names the folder instead.
+  - The "This device" group (device name, used only for live cursors) is hidden.
+  - Advanced no longer repeats the Vault ID and no longer talks about deployment.
+  - No setting was removed or renamed; every control is still reachable and stores the same keys.
+- **Command palette names for Google Drive.** *Reconnect to sync server* becomes *Retry syncing with Google Drive*, *Clear local server-receipt state* becomes *Clear local save-confirmation state*, and *Reset local cache (re-sync from server)* becomes *(re-sync from Google Drive)*. The confirmation texts of *Reset local cache* and *Nuclear reset* say Google Drive too. The command ids and what they do are unchanged.
+- Cloudflare screens, command names and texts are unchanged.
+
+### Tests
+- `drive-carrier-settings` grows to 155 checks: the layout, each moved row, the manual page for each sign-in kind, every control still reachable, the Cloudflare screens unchanged, and the command names for both carriers.
+
 ## 2.1.1-drive.5 - 2026-10-02
 
 ### Added

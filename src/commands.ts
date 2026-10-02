@@ -14,13 +14,31 @@ export interface CommandsRuntimeHost {
 	clearLocalServerReceiptState(): Promise<"cleared_persistent" | "cleared_memory_only" | "failed" | undefined>;
 	resetLocalCache(): void;
 	nuclearReset(): void;
+	/** True when the Google Drive carrier is chosen; only changes command names. Absent means Cloudflare. */
+	isDriveCarrier?(): boolean;
 }
+
+/**
+ * Palette names that mention "server" are only right for the Cloudflare
+ * carrier. With Google Drive chosen they say what actually happens.
+ */
+const DRIVE_COMMAND_NAMES: Readonly<Record<string, string>> = {
+	reconnect: "Retry syncing with Google Drive",
+	"clear-local-server-receipt-state": "Clear local save-confirmation state",
+	"reset-cache": "Reset local cache (re-sync from Google Drive)",
+};
 
 export function registerCommands(
 	registrar: Pick<Plugin, "addCommand">,
 	host: CommandsRuntimeHost,
 ): void {
-	registrar.addCommand({
+	const driveMode = host.isDriveCarrier?.() === true;
+	const nameFor = (id: string, name: string): string => (driveMode ? DRIVE_COMMAND_NAMES[id] ?? name : name);
+	const add = (command: Parameters<Pick<Plugin, "addCommand">["addCommand"]>[0]): void => {
+		registrar.addCommand({ ...command, name: nameFor(command.id, command.name) });
+	};
+
+	add({
 		id: "reconnect",
 		name: "Reconnect to sync server",
 		callback: () => {
@@ -31,7 +49,7 @@ export function registerCommands(
 		},
 	});
 
-	registrar.addCommand({
+	add({
 		id: "force-reconcile",
 		name: "Force reconcile vault with sync state",
 		callback: () => {
@@ -42,7 +60,7 @@ export function registerCommands(
 		},
 	});
 
-	registrar.addCommand({
+	add({
 		id: "migrate-schema-v2",
 		name: "Migrate sync schema to v2",
 		callback: () => {
@@ -50,7 +68,7 @@ export function registerCommands(
 		},
 	});
 
-	registrar.addCommand({
+	add({
 		id: "import-untracked",
 		name: "Import untracked files now",
 		callback: () => {
@@ -69,7 +87,7 @@ export function registerCommands(
 		},
 	});
 
-	registrar.addCommand({
+	add({
 		id: "clear-local-server-receipt-state",
 		name: "Clear local server-receipt state",
 		callback: () => {
@@ -92,7 +110,7 @@ export function registerCommands(
 		},
 	});
 
-	registrar.addCommand({
+	add({
 		id: "reset-cache",
 		name: "Reset local cache (re-sync from server)",
 		callback: () => {
@@ -101,7 +119,7 @@ export function registerCommands(
 	});
 
 
-	registrar.addCommand({
+	add({
 		id: "snapshot-now",
 		name: "Take snapshot now",
 		callback: async () => {
@@ -109,7 +127,7 @@ export function registerCommands(
 		},
 	});
 
-	registrar.addCommand({
+	add({
 		id: "snapshot-list",
 		name: "Browse and restore snapshots",
 		callback: async () => {
@@ -117,7 +135,7 @@ export function registerCommands(
 		},
 	});
 
-	registrar.addCommand({
+	add({
 		id: "snapshot-prune",
 		name: "Cleanup old snapshots (apply retention policy)",
 		callback: async () => {
@@ -125,7 +143,7 @@ export function registerCommands(
 		},
 	});
 
-	registrar.addCommand({
+	add({
 		id: "nuclear-reset",
 		name: "Nuclear reset (wipe sync state and reseed from disk)",
 		callback: () => {

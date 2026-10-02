@@ -149,9 +149,24 @@ steps below still work and are unchanged.
   on your devices. If it is shut down for good, make a new vault with another
   sign-in method and copy your notes across.
 - If sync says your sign-in was lost, sign in again on the page and paste the new
-  code in Settings > YAOS > Google Drive > "Sign-in code (easy sign-in)", then
+  code in Settings > YAOS > Manual setup (advanced) > "Sign-in code (easy sign-in)", then
   reload. Self-hosters can set `driveHostedUrl` in the plugin's `data.json`.
-- Signing out of an easy sign-in returns the screen to the normal Drive rows.
+- Signing out of an easy sign-in returns the manual page to the normal rows.
+
+### The Drive settings screen
+
+With Google Drive chosen the settings screen is kept short: **Status**, **Sync
+carrier**, **Set up Google Drive** and **Sign out** (when signed in), plus the
+generic groups (What syncs, Attachments, Advanced). Everything the wizard fills in
+lives on one page, **Manual setup (advanced)**: Vault ID (its description names
+the `YAOS <vault id>` folder on Drive), Google client ID and secret, Sign in with
+Google, the easy sign-in code, and the encryption passphrase. It shows a warning
+mark while you are not signed in. The "This device" group (device name, used only
+for live cursors) is hidden. In the command palette three names say Google Drive
+instead of "server": *Retry syncing with Google Drive*, *Clear local
+save-confirmation state* and *Reset local cache (re-sync from Google Drive)*; the
+two confirmation texts of *Reset local cache* and *Nuclear reset* do the same.
+Cloudflare screens and names are unchanged.
 
 ## Setup (once per Google account)
 
@@ -169,10 +184,10 @@ devices**. YAOS cannot ship one for you, so you create your own (free):
 Then, on each device:
 
 1. Settings > YAOS > Setup > **Sync carrier** > *Google Drive (experimental)* (under *Advanced* if a server is already set up), then reload the plugin.
-2. Paste the **client ID** and **client secret**.
-3. Press **Sign in with Google**, open the shown address on any device and enter the code.
+2. Open **Manual setup (advanced)** and paste the **client ID** and **client secret**.
+3. In the same page, press **Sign in with Google**, open the shown address on any device and enter the code.
 4. Reload the plugin. Syncing starts.
-5. On the second and later devices, set the **same Vault ID** (Advanced > Vault ID)
+5. On the second and later devices, set the **same Vault ID** (Manual setup (advanced) > Vault ID)
    and, if you chose one, the same encryption passphrase.
 
 The refresh token is stored in the plugin's `data.json` next to the other

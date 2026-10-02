@@ -87,6 +87,16 @@ device and plugin build.
 - [ ] Turn airplane mode on at "Create": a clear message and Try again works.
 - [ ] A Cloudflare vault: the settings screen shows no wizard row.
 
+## 12. Beginner view of the Drive settings (scratch vault, any sign-in)
+
+- [ ] Choose Google Drive: the Drive section shows only Status, Sync carrier, Set up Google Drive (and Sign out once signed in). No "This device" group.
+- [ ] Signed out: Status points to "Manual setup (advanced)", which is just above Advanced and shows a warning mark.
+- [ ] Open it: Vault ID (its text names the `YAOS <id>` folder), client ID/secret, Sign in with Google, passphrase. Change a value and reload: it sticks.
+- [ ] Signed in with the easy sign-in: only Vault ID, the sign-in code and the passphrase are listed.
+- [ ] Advanced no longer lists Vault ID and no longer mentions deployment.
+- [ ] Command palette: "Retry syncing with Google Drive", "Clear local save-confirmation state" and "Reset local cache (re-sync from Google Drive)" exist; its confirmation text says Google Drive. Retry syncing really reconnects.
+- [ ] Switch to Cloudflare and reload: the old screen and command names are back, nothing missing.
+
 ## 9. Things to report
 
 Latency from edit to arrival (median, worst), any error text shown, Drive request

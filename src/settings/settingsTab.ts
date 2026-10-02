@@ -462,15 +462,17 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 
 		const withoutServerRows = (item: SettingDefinitionItem): SettingDefinitionItem => {
 			if (!isPageDefinition(item) || item.name !== "Advanced" || !item.items) return item;
-			const serverOnly = new Set(["Deployment repository URL", "Deployment default branch"]);
+			// "Vault ID" moved to the manual setup page, so it is not shown twice.
+			const serverOnly = new Set(["Deployment repository URL", "Deployment default branch", "Vault ID"]);
 			const items = item.items
 				.filter((entry) => !("name" in entry && typeof entry.name === "string" && serverOnly.has(entry.name)))
 				.map((entry) => "name" in entry && entry.name === "Reload required" && !("items" in entry)
 					? { ...entry, desc: "Changing the sync carrier, the vault ID, or the encryption passphrase requires reloading the plugin." }
 					: entry);
-			return { ...item, items };
+			return { ...item, desc: "External edits, safety checks and diagnostics.", items };
 		};
-		const serverOnlyGroups = new Set(["Setup", "Sync status", "Updates", "Collaboration"]);
+		// "This device" only holds the device name, which is shown in live cursors; Drive mode has none.
+		const serverOnlyGroups = new Set(["Setup", "Sync status", "Updates", "Collaboration", "This device"]);
 		const kept = definitions.filter((item) => {
 			if (isGroupDefinition(item) && typeof item.heading === "string") {
 				return !serverOnlyGroups.has(item.heading);
@@ -478,7 +480,10 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			if (isPageDefinition(item) && item.name === "Manual connection") return false;
 			return true;
 		});
-		return [...this.driveDefinitions(carrierRow), ...kept.map(withoutServerRows).map((item) => this.withDriveAttachmentText(item))];
+		const rest = kept.map(withoutServerRows).map((item) => this.withDriveAttachmentText(item));
+		const advanced = rest.findIndex((item) => isPageDefinition(item) && item.name === "Advanced");
+		rest.splice(advanced >= 0 ? advanced : rest.length, 0, this.driveManualPage());
+		return [...this.driveDefinitions(carrierRow), ...rest];
 	}
 
 	/** Attachments and snapshots live on Drive: the server wording is replaced and the server-only rows are removed. */
@@ -500,6 +505,11 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 		this.update();
 	}
 
+	/**
+	 * The Drive screen for beginners: status, the way of syncing, the guided
+	 * setup and sign out. Everything that has to be typed by hand lives on the
+	 * "Manual setup (advanced)" page (see `driveManualPage`).
+	 */
 	private driveDefinitions(carrierRow: SettingDefinition): SettingDefinitionItem[] {
 		const settings = this.host.settings;
 		const signedIn = isDriveSignedIn(settings);
@@ -511,7 +521,9 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 				items: [
 					{
 						name: "Status",
-						desc: signedIn ? status.label + (isHostedSignIn(settings) ? " Signed in with the easy sign-in." : "") : "Not signed in. Press \"Set up Google Drive\" below for a step-by-step guide, or enter your Google client details by hand.",
+						desc: signedIn
+							? status.label + (isHostedSignIn(settings) ? " Signed in with the easy sign-in." : "")
+							: "Not signed in. Press \"Set up Google Drive\" below for a step-by-step guide. To enter the details by hand, open \"Manual setup (advanced)\".",
 					},
 					carrierRow,
 					{
@@ -519,44 +531,6 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 						desc: "A short step-by-step guide: connect to Google, choose encryption, then create your vault or join one you already have.",
 						visible: () => typeof this.host.openDriveWizard === "function",
 						action: () => { this.host.openDriveWizard?.(); },
-					},
-					{ name: "Folder on Drive", desc: driveFolderLabel(settings.vaultId || "Not set") },
-					{
-						name: "Vault ID",
-						desc: "Every device that syncs this vault must use exactly this ID (Advanced > Vault ID).",
-						control: { type: "text", key: "vaultId", placeholder: "Generated automatically" },
-					},
-					{
-						name: "Google client ID",
-						desc: "From your own Google Cloud project: an OAuth client of type \"TVs and limited-input devices\".",
-						control: { type: "text", key: "driveClientId", placeholder: "Paste the client ID" },
-						visible: () => !isHostedSignIn(this.host.settings),
-					},
-					{
-						name: "Google client secret",
-						desc: "From the same OAuth client. Stored only in this vault's plugin data.",
-						control: { type: "text", key: "driveClientSecret", placeholder: "Paste the client secret" },
-						visible: () => !isHostedSignIn(this.host.settings),
-					},
-					{
-						name: "Sign-in code (easy sign-in)",
-						desc: "Only shown for the easy sign-in. If sync says access was lost, sign in again at https://ogd.richardxiong.com and paste the new code here, then reload the plugin.",
-						visible: () => isHostedSignIn(this.host.settings),
-						control: { type: "text", key: "driveHostedToken", placeholder: "Paste the sign-in code" },
-					},
-					{
-						name: "Encryption passphrase",
-						desc: "Optional. Encrypts everything YAOS stores on Drive. Set it before the first sync of a new vault and use the same passphrase on every device; it cannot be added to a vault that already exists on Drive, and a lost passphrase cannot be recovered. Reload the plugin after changing it.",
-						control: { type: "text", key: "driveEncryptionPassphrase", placeholder: "Leave empty for no encryption" },
-					},
-					{
-						name: signedIn ? "Signed in to Google" : "Sign in with Google",
-						desc: signedIn
-							? "Sign in again if sync reports that access was lost."
-							: "Shows a short code to enter at google.com/device. Only files created by YAOS are accessible.",
-						// The easy sign-in is renewed through the wizard; this button only does Google's own sign-in.
-						visible: () => !isHostedSignIn(this.host.settings),
-						action: () => { void this.runDriveAction(() => this.host.signInToDrive?.()); },
 					},
 					{
 						name: "Sign out",
@@ -567,6 +541,58 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 				],
 			},
 		];
+	}
+
+	/** Everything the wizard fills in, for people who join by hand or need to repair a sign-in. */
+	private driveManualPage(): SettingDefinitionPage {
+		const settings = this.host.settings;
+		const signedIn = isDriveSignedIn(settings);
+		return {
+			type: "page",
+			name: "Manual setup (advanced)",
+			desc: "The details the setup guide fills in for you: vault ID, Google sign-in and encryption passphrase. Only needed to join by hand or to repair a sign-in.",
+			displayValue: () => (isDriveSignedIn(this.host.settings) ? "Signed in" : "Not signed in"),
+			status: () => (isDriveSignedIn(this.host.settings) ? null : "warning"),
+			items: [
+				{
+					name: "Vault ID",
+					desc: `Every device that syncs this vault must use exactly this ID. Your notes are in the Google Drive folder "${driveFolderLabel(settings.vaultId || "Not set")}". Reload the plugin after changing it.`,
+					control: { type: "text", key: "vaultId", placeholder: "Generated automatically" },
+				},
+				{
+					name: "Google client ID",
+					desc: "From your own Google Cloud project: an OAuth client of type \"TVs and limited-input devices\".",
+					control: { type: "text", key: "driveClientId", placeholder: "Paste the client ID" },
+					visible: () => !isHostedSignIn(this.host.settings),
+				},
+				{
+					name: "Google client secret",
+					desc: "From the same OAuth client. Stored only in this vault's plugin data.",
+					control: { type: "text", key: "driveClientSecret", placeholder: "Paste the client secret" },
+					visible: () => !isHostedSignIn(this.host.settings),
+				},
+				{
+					name: "Sign-in code (easy sign-in)",
+					desc: "Only shown for the easy sign-in. If sync says access was lost, sign in again at https://ogd.richardxiong.com and paste the new code here, then reload the plugin.",
+					visible: () => isHostedSignIn(this.host.settings),
+					control: { type: "text", key: "driveHostedToken", placeholder: "Paste the sign-in code" },
+				},
+				{
+					name: "Encryption passphrase",
+					desc: "Optional. Encrypts everything YAOS stores on Drive. Set it before the first sync of a new vault and use the same passphrase on every device; it cannot be added to a vault that already exists on Drive, and a lost passphrase cannot be recovered. Reload the plugin after changing it.",
+					control: { type: "text", key: "driveEncryptionPassphrase", placeholder: "Leave empty for no encryption" },
+				},
+				{
+					name: signedIn ? "Signed in to Google" : "Sign in with Google",
+					desc: signedIn
+						? "Sign in again if sync reports that access was lost."
+						: "Shows a short code to enter at google.com/device. Only files created by YAOS are accessible.",
+					// The easy sign-in is renewed with the sign-in code above; this button only does Google's own sign-in.
+					visible: () => !isHostedSignIn(this.host.settings),
+					action: () => { void this.runDriveAction(() => this.host.signInToDrive?.()); },
+				},
+			],
+		};
 	}
 
 	getControlValue(key: string): unknown {

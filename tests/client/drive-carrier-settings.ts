@@ -30,6 +30,7 @@ import {
 	VaultSyncSettingTab,
 	type VaultSyncSettingsHost,
 } from "../../src/settings/settingsTab";
+import { registerCommands, type CommandsRuntimeHost } from "../../src/commands";
 import { suite } from "../harness.ts";
 
 const s = suite("drive-carrier-settings");
@@ -212,14 +213,14 @@ s.section("Test 5: Drive screens");
 	for (const gone of ["Setup", "Sync status", "Updates", "Collaboration"]) {
 		s.check(!heads.includes(gone), `no "${gone}" group with the Drive carrier`);
 	}
-	s.check(heads.includes("This device") && heads.includes("What syncs"), "generic groups remain");
+	s.check(!heads.includes("This device") && heads.includes("What syncs"), "the device-name group is gone (it only feeds live cursors), the other generic groups remain");
 	s.check(heads.includes("Attachments"), "the Attachments group stays (attachments live on Drive)");
 	const storage = flatten(items).find((d) => d.name === "Attachment storage");
 	s.check(String(storage?.desc) === 'Stored in your Google Drive (folder "YAOS vault-1 blobs"). Snapshots are kept there too.', "its storage line names the Drive folder");
 	s.check(!flatten(items).some((d) => String(d.desc ?? "").includes("Cloudflare")), "no Cloudflare wording in the Attachments group");
 	s.check(!pageNames(items).includes("Manual connection") && pageNames(items).includes("Advanced"), "server page hidden, Advanced kept");
 	const adv = advancedItems(items).map((i) => "name" in i ? i.name : "");
-	s.check(!adv.includes("Sync carrier (experimental)") && !adv.includes("Deployment repository URL") && !adv.includes("Deployment default branch") && adv.includes("Vault ID"), `Advanced drops the server-only rows and no longer holds the carrier row (${adv.join("|")})`);
+	s.check(!adv.includes("Sync carrier (experimental)") && !adv.includes("Deployment repository URL") && !adv.includes("Deployment default branch") && !adv.includes("Vault ID"), `Advanced drops the server-only rows, the carrier row and the duplicate Vault ID (${adv.join("|")})`);
 	const driveRows = groupItems(items, "Google Drive carrier");
 	s.check(driveRows[0] === "Status" && driveRows[1] === "Sync carrier (experimental)" && driveRows[2] === "Set up Google Drive", `the carrier choice and the wizard button are at the top of the Drive group (${driveRows.slice(0, 4).join("|")})`);
 	s.check(flatten(items).filter((d) => d.name === "Sync carrier (experimental)").length === 1, "and appears only once");
@@ -233,8 +234,8 @@ s.section("Test 5: Drive screens");
 	s.check(wording.length === 0, `no Cloudflare/server wording left on the Drive screen (${wording.join("|") || "none"})`);
 	const defs = flatten(items);
 	const byName = (n: string) => defs.find((d) => d.name === n);
-	s.check(byName("Folder on Drive") !== undefined && "desc" in (byName("Folder on Drive") ?? {}), "folder name shown");
-	s.check(String(byName("Folder on Drive")?.desc) === "YAOS vault-1", "folder is YAOS <vault id>");
+	s.check(byName("Folder on Drive") === undefined, "no separate folder row");
+	s.check(String(byName("Vault ID")?.desc).includes('"YAOS vault-1"'), "the Vault ID row names the folder instead");
 	s.check(String(byName("Status")?.desc).includes("Not signed in"), "status says not signed in");
 	const signIn = byName("Sign in with Google");
 	s.check(signIn !== undefined && "action" in signIn, "sign-in action present");
@@ -378,6 +379,97 @@ s.section("Test 9: the easy sign-in on the settings screen");
 
 	const cloudflare = names(makeFixture({ host: "https://sync.example", token: "tok", vaultId: "vid" }));
 	s.check(!cloudflare.includes("Sign-in code (easy sign-in)"), "Cloudflare users never see the easy sign-in row");
+}
+
+s.section("Test 10: the beginner view of the Drive screen");
+{
+	const TOKEN = "1//0gHostedRefreshTokenForTests-0123456789";
+	const visibleNames = (defs: SettingDefinition[]): string[] => defs.filter((d) => {
+		const v = "visible" in d ? d.visible : undefined;
+		return typeof v === "function" ? v() : v !== false;
+	}).map((d) => d.name ?? "");
+	const mainRows = (f: Fixture): string[] => visibleNames(f.tab.getSettingDefinitions().flatMap((item) => ("type" in item && item.type === "group" ? item.items ?? [] : []).flatMap((i) => ("type" in i ? [] : [i]))));
+	const manualPage = (f: Fixture) => f.tab.getSettingDefinitions().find((item) => "type" in item && item.type === "page" && item.name === "Manual setup (advanced)");
+	const manualRows = (f: Fixture): string[] => {
+		const page = manualPage(f);
+		return page && "items" in page ? visibleNames(flatten(page.items ?? [])) : [];
+	};
+
+	const signedOut = makeFixture({ carrier: "drive" }, true, []);
+	const rows = mainRows(signedOut);
+	for (const gone of ["Folder on Drive", "Vault ID", "Google client ID", "Google client secret", "Encryption passphrase", "Sign in with Google", "Signed in to Google", "Sign-in code (easy sign-in)", "Device name"]) {
+		s.check(!rows.includes(gone), `main screen: "${gone}" is not shown`);
+	}
+	s.check(groupItems(signedOut.tab.getSettingDefinitions(), "Google Drive carrier").join("|") === "Status|Sync carrier (experimental)|Set up Google Drive|Sign out", "the Drive group holds only status, the way of syncing, the guide and sign out");
+	s.check(visibleNames(flatten(signedOut.tab.getSettingDefinitions())).filter((n) => n === "Sign out").length === 0, "Sign out is hidden while signed out");
+	s.check(rows.includes("Status") && rows.includes("Sync carrier (experimental)") && rows.includes("Set up Google Drive"), "status, the carrier dropdown and the guide stay");
+	const page = manualPage(signedOut);
+	s.check(!!page && "status" in page && typeof page.status === "function" && page.status() === "warning", "the manual page shows a warning mark while signed out");
+	s.check(manualRows(signedOut).join("|") === "Vault ID|Google client ID|Google client secret|Encryption passphrase|Sign in with Google", `manual page, signed out (${manualRows(signedOut).join("|")})`);
+	const order = signedOut.tab.getSettingDefinitions().filter((i) => "type" in i && i.type === "page").map((i) => ("name" in i ? i.name : ""));
+	s.check(order.join() === "Manual setup (advanced),Advanced", `the manual page comes right before Advanced (${order.join()})`);
+	s.check(/Manual setup \(advanced\)/.test(String(flatten(signedOut.tab.getSettingDefinitions()).find((d) => d.name === "Status")?.desc)), "the status text points to it");
+
+	const own = makeFixture({ carrier: "drive", driveClientId: "i", driveClientSecret: "x", driveRefreshToken: "r" }, true, []);
+	s.check(manualRows(own).join("|") === "Vault ID|Google client ID|Google client secret|Encryption passphrase|Signed in to Google", "manual page, own client signed in");
+	s.check(mainRows(own).includes("Sign out"), "Sign out is shown on the main screen once signed in");
+	const pageOwn = manualPage(own);
+	s.check(!!pageOwn && "status" in pageOwn && typeof pageOwn.status === "function" && pageOwn.status() === null, "no warning mark when signed in");
+
+	const easy = makeFixture({ carrier: "drive", driveAuthMode: "hosted", driveRefreshToken: TOKEN }, true, []);
+	s.check(manualRows(easy).join("|") === "Vault ID|Sign-in code (easy sign-in)|Encryption passphrase", `manual page, easy sign-in (${manualRows(easy).join("|")})`);
+	s.check(!mainRows(easy).includes("Sign-in code (easy sign-in)"), "the easy sign-in code is not on the main screen");
+
+	// Every control is still reachable, so nothing was lost.
+	const keys = flatten(signedOut.tab.getSettingDefinitions()).map((d) => d.control?.key);
+	for (const key of ["vaultId", "driveClientId", "driveClientSecret", "driveEncryptionPassphrase", "excludePatterns", "maxFileSizeKB", "enableAttachmentSync"]) {
+		s.check(keys.includes(key), `the control "${key}" is still reachable`);
+	}
+	s.check(keys.filter((k) => k === "vaultId").length === 1, "and the vault ID control exists exactly once");
+	const adv = advancedItems(signedOut.tab.getSettingDefinitions());
+	const advPage = signedOut.tab.getSettingDefinitions().find((i) => "type" in i && i.type === "page" && i.name === "Advanced");
+	s.check(adv.length === 4 && !!advPage && "desc" in advPage && !/deployment/i.test(String(advPage.desc)), "Advanced keeps its four rows and no longer talks about deployment");
+
+	// Cloudflare screens are exactly as before.
+	for (const settings of [{}, { host: "https://sync.example", token: "tok", vaultId: "vid" }] as Partial<VaultSyncSettings>[]) {
+		const cf = makeFixture(settings, true, []);
+		const defs = cf.tab.getSettingDefinitions();
+		s.check(!defs.some((i) => "type" in i && i.type === "page" && i.name === "Manual setup (advanced)"), "Cloudflare: no manual setup page");
+		s.check(groupHeadings(defs).includes("This device"), "Cloudflare: the device-name group is still there");
+		const cfAdvanced = advancedItems(defs).map((i) => ("name" in i ? i.name : ""));
+		s.check(cfAdvanced.includes("Vault ID") && cfAdvanced.includes("Deployment repository URL"), "Cloudflare: Advanced still has Vault ID and the deployment rows");
+		const cfAdvancedPage = defs.find((i) => "type" in i && i.type === "page" && i.name === "Advanced");
+		s.check(!!cfAdvancedPage && "desc" in cfAdvancedPage && String(cfAdvancedPage.desc).includes("deployment metadata"), "Cloudflare: Advanced keeps its original description");
+	}
+}
+
+s.section("Test 11: command palette names");
+{
+	const names = (host: Partial<CommandsRuntimeHost>): Record<string, string> => {
+		const out: Record<string, string> = {};
+		const calls: string[] = [];
+		const stub = {} as CommandsRuntimeHost;
+		registerCommands(
+			{ addCommand: (c) => { out[c.id] = c.name; calls.push(c.id); return c; } },
+			Object.assign(stub, host),
+		);
+		out["#count"] = String(calls.length);
+		return out;
+	};
+	const cf = names({});
+	const cfExplicit = names({ isDriveCarrier: () => false });
+	s.check(JSON.stringify(cf) === JSON.stringify(cfExplicit), "Cloudflare: an explicit 'not Drive' answer changes nothing");
+	s.check(cf.reconnect === "Reconnect to sync server", "Cloudflare: reconnect keeps its name");
+	s.check(cf["clear-local-server-receipt-state"] === "Clear local server-receipt state", "Cloudflare: receipt command keeps its name");
+	s.check(cf["reset-cache"] === "Reset local cache (re-sync from server)", "Cloudflare: reset cache keeps its name");
+	const drive = names({ isDriveCarrier: () => true });
+	s.check(drive["#count"] === cf["#count"] && cf["#count"] === "10", "Drive: the same ten commands exist");
+	s.check(drive.reconnect === "Retry syncing with Google Drive", "Drive: reconnect is renamed");
+	s.check(drive["clear-local-server-receipt-state"] === "Clear local save-confirmation state", "Drive: receipt command is renamed");
+	s.check(drive["reset-cache"] === "Reset local cache (re-sync from Google Drive)", "Drive: reset cache is renamed");
+	const changed = Object.keys(cf).filter((k) => cf[k] !== drive[k]).sort();
+	s.check(changed.join() === "clear-local-server-receipt-state,reconnect,reset-cache", `Drive: only those three change (${changed.join()})`);
+	s.check(!Object.entries(drive).some(([k, v]) => k !== "#count" && /server/i.test(v)), "Drive: no command name mentions a server");
 }
 
 /** Click a setting row that has an action. */

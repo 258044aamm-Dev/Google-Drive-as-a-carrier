@@ -984,6 +984,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 					clearLocalServerReceiptState: () => this.clearLocalServerReceiptState(),
 					resetLocalCache: () => this.resetLocalCache(),
 					nuclearReset: () => this.nuclearReset(),
+					isDriveCarrier: () => isDriveCarrier(this.settings),
 				});
 				// Debug-runtime commands are registered separately by the debug runtime.
 				this.lab?.registerCommands(this);
@@ -1585,8 +1586,11 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		new ConfirmModal(
 			this.app,
 			"Reset local cache",
-			"This will clear the local IndexedDB cache and re-sync from the server. " +
-			"Your disk files and server state are not affected. Continue?",
+			isDriveCarrier(this.settings)
+				? "This will clear the local IndexedDB cache and re-sync from Google Drive. " +
+					"Your disk files and your notes on Drive are not affected. Continue?"
+				: "This will clear the local IndexedDB cache and re-sync from the server. " +
+					"Your disk files and server state are not affected. Continue?",
 			async () => {
 				this.log("Reset cache: starting");
 				new Notice("Clearing cache and syncing again...");
@@ -1623,7 +1627,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		new ConfirmModal(
 			this.app,
 			"Nuclear reset",
-			`This will wipe all CRDT state (${pathCount} files) on both this device and the server, ` +
+			`This will wipe all CRDT state (${pathCount} files) on both this device and ${isDriveCarrier(this.settings) ? "Google Drive" : "the server"}, ` +
 			`clear the local cache, then re-seed everything from your current disk files. ` +
 			`Other connected devices will also see the reset. This cannot be undone. Continue?`,
 			async () => {
