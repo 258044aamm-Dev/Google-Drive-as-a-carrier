@@ -160,7 +160,7 @@ s.section("Test 3: default (Cloudflare) screens are the same as before, plus one
 	const adv = advancedItems(items);
 	const advNames = adv.map((i) => "name" in i ? i.name : "");
 	s.check(advNames.join("|") === ["Vault ID", "Deployment repository URL", "Deployment default branch", "Edits from other apps", "Frontmatter safety guard", "Debug mode", "Reload required"].join("|"), `Advanced is exactly as before when no server is set up yet (${advNames.join("|")})`);
-	s.check(groupItems(items, "Setup").join("|") === "Setup required|Deploy your server|Sync carrier (experimental)", `Setup: the carrier choice comes right after "Deploy your server" (${groupItems(items, "Setup").join("|")})`);
+	s.check(groupItems(items, "Setup").join("|") === "Setup required|Sync carrier (experimental)|Deploy your server", `Setup: the carrier choice comes right above "Deploy your server" (${groupItems(items, "Setup").join("|")})`);
 	const setupRow = flatten(items).find((d) => d.name === "Sync carrier (experimental)");
 	s.check(setupRow?.control?.key === "carrier" && flatten(items).filter((d) => d.name === "Sync carrier (experimental)").length === 1, "one carrier dropdown, bound to the carrier setting");
 	const configured = makeFixture({ host: "https://sync.example", token: "tok", vaultId: "vid" });
@@ -222,6 +222,14 @@ s.section("Test 5: Drive screens");
 	const driveRows = groupItems(items, "Google Drive carrier");
 	s.check(driveRows[0] === "Status" && driveRows[1] === "Sync carrier (experimental)", `the carrier choice is at the top of the Drive group, to switch back (${driveRows.slice(0, 3).join("|")})`);
 	s.check(flatten(items).filter((d) => d.name === "Sync carrier (experimental)").length === 1, "and appears only once");
+	const driveNames = flatten(items).map((d) => String(d.name));
+	for (const gone of ["Deploy your server", "Setup required", "Server", "Server URL", "Sync token", "Pair another device", "Back up connection details", "Refresh attachment capability", "Set up attachment storage", "Deployment repository URL", "Deployment default branch", "Check for updates"]) {
+		s.check(!driveNames.includes(gone), `Drive mode hides the Cloudflare row "${gone}"`);
+	}
+	const reloadRow = flatten(advancedItems(items)).find((d) => d.name === "Reload required");
+	s.check(!!reloadRow && !/server URL|sync token/i.test(String(reloadRow.desc)), "the reload hint no longer talks about the server URL or sync token");
+	const wording = flatten(items).filter((d) => d.name !== "Sync carrier (experimental)" && /Cloudflare|\bserver\b|\bWorker\b|\bR2\b|sync token/i.test(`${String(d.name)} ${String(d.desc ?? "")}`)).map((d) => String(d.name));
+	s.check(wording.length === 0, `no Cloudflare/server wording left on the Drive screen (${wording.join("|") || "none"})`);
 	const defs = flatten(items);
 	const byName = (n: string) => defs.find((d) => d.name === n);
 	s.check(byName("Folder on Drive") !== undefined && "desc" in (byName("Folder on Drive") ?? {}), "folder name shown");

@@ -426,7 +426,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 	 * The carrier choice is added to the finished list instead of being woven
 	 * into it, so the Cloudflare screens above stay as they were. It shows up
 	 * where the user is deciding how to sync:
-	 *  - before a server is set up: in the Setup group, right after "Deploy your server";
+	 *  - before a server is set up: in the Setup group, right above "Deploy your server";
 	 *  - with the Drive carrier: in the Drive group, so it is easy to switch back;
 	 *  - with a configured server: in Advanced (nobody is choosing anymore).
 	 * With the Drive carrier the server-only screens are replaced by the Drive one.
@@ -448,7 +448,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			if (!isSetupGroup(item)) return item;
 			const items = [...(item.items ?? [])];
 			const deploy = items.findIndex((entry) => "name" in entry && entry.name === "Deploy your server");
-			items.splice(deploy >= 0 ? deploy + 1 : items.length, 0, carrierRow);
+			items.splice(deploy >= 0 ? deploy : items.length, 0, carrierRow);
 			return { ...item, items };
 		};
 		if (!drive) {
@@ -458,10 +458,12 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 		const withoutServerRows = (item: SettingDefinitionItem): SettingDefinitionItem => {
 			if (!isPageDefinition(item) || item.name !== "Advanced" || !item.items) return item;
 			const serverOnly = new Set(["Deployment repository URL", "Deployment default branch"]);
-			return {
-				...item,
-				items: item.items.filter((entry) => !("name" in entry && typeof entry.name === "string" && serverOnly.has(entry.name))),
-			};
+			const items = item.items
+				.filter((entry) => !("name" in entry && typeof entry.name === "string" && serverOnly.has(entry.name)))
+				.map((entry) => "name" in entry && entry.name === "Reload required" && !("items" in entry)
+					? { ...entry, desc: "Changing the sync carrier, the vault ID, or the encryption passphrase requires reloading the plugin." }
+					: entry);
+			return { ...item, items };
 		};
 		const serverOnlyGroups = new Set(["Setup", "Sync status", "Updates", "Collaboration"]);
 		const kept = definitions.filter((item) => {
@@ -474,11 +476,12 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 		return [...this.driveDefinitions(carrierRow), ...kept.map(withoutServerRows).map((item) => this.withDriveAttachmentText(item))];
 	}
 
-	/** Attachments and snapshots live on Drive, so the server wording of the Attachments group is replaced. */
+	/** Attachments and snapshots live on Drive: the server wording is replaced and the server-only rows are removed. */
 	private withDriveAttachmentText(item: SettingDefinitionItem): SettingDefinitionItem {
 		if (!isGroupDefinition(item) || item.heading !== "Attachments") return item;
 		const folder = `YAOS ${this.host.settings.vaultId || "..."} blobs`;
-		const items = (item.items ?? []).map((entry) => {
+		const serverRows = new Set(["Refresh attachment capability", "Set up attachment storage"]);
+		const items = (item.items ?? []).filter((entry) => !("name" in entry && typeof entry.name === "string" && serverRows.has(entry.name))).map((entry) => {
 			if ("name" in entry && entry.name === "Attachment storage" && !("items" in entry)) {
 				return { ...entry, desc: `Stored in your Google Drive (folder "${folder}"). Snapshots are kept there too.` };
 			}
