@@ -8,6 +8,17 @@ Version numbers like `2.1.1-drive.3` exist only in each release's `manifest.json
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
+## Unreleased - 2.1.1-drive.9 (committed locally, not published)
+
+### Fixed (engine, every carrier including Cloudflare)
+- **Engine step 2 (upstream SYNC-01): a note you deleted while YAOS was off, or before the first sync finished, no longer comes back.** At the next full reconcile a note that is in the shared document but missing on disk was always written back. Now one content rule decides: the device remembers a hash of the text it last had in sync (the disk index). If that hash still equals the document's text, nothing changed since the file was there, so its absence is a delete made on this device; it is recorded as deleted and the other devices follow. Everything else is as before and the note is written back: no remembered hash (a note this device never had), the document text changed meanwhile (someone edited it, so the edit is not lost), an ignored path, or a file the file system still has.
+  - A brake keeps a vault that looks emptied (the file list not loaded) from being mass-deleted: more than 20 notes and more than 25 % of tracked notes, or several notes with no markdown file found at all, are written back instead and the block is traced (`reconcile-offline-delete-blocked`).
+  - Only in full (authoritative) reconciles. Code: new `src/runtime/reconcile/offlineDeletePolicy.ts`; `ReconciliationController` calls it before writing the "missing on disk" notes.
+  - Not covered: a delete whose event was lost after a reconcile already dropped the file's remembered hash, and notes edited on this device and never re-synced to a settled hash; both are written back as before.
+
+### Tests
+- New `engine-offline-delete` (24 checks): the policy and the brake, and the real `VaultSync` + `ReconciliationController` for delete, edited-meanwhile, never-had, ignored, vault list incomplete, conservative mode, mass delete, and delete propagation. Five of them fail without the change.
+
 ## Unreleased - 2.1.1-drive.8 (committed locally, not published)
 
 ### Changed (engine, now for every carrier including Cloudflare)

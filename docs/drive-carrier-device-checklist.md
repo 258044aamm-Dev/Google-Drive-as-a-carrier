@@ -132,3 +132,10 @@ What the trace shows for a note `X`:
 - `delete.remote.observed` then `delete.disk.applied` on the other device: normal. `delete.preserved` (`local-dirty-wins-over-remote-delete`): the other device thought the file was edited.
 - A `reconcile.file.decision` / created-on-disk entry for `X` after a reopen: the engine wrote the note back because the document still had it active.
 
+## 14. Delete while YAOS is off (scratch vault, two devices)
+
+- [ ] Both devices have `Offline test A` (created, synced, not edited since). On device 1 turn the YAOS plugin off (Settings > Community plugins), delete the note, turn the plugin on. Within a minute the note is gone on device 2 too and does not return after a restart of both.
+- [ ] Same, but before turning the plugin back on, edit the note on device 2. After syncing, the note exists again with device 2's text (an edit wins over an offline delete).
+- [ ] Turn the plugin off, create `Offline test B` on device 1 only and never sync it; nothing is deleted. A brand new third device that joins gets every note.
+- [ ] With debug mode on, the trace shows `reconcile.file.decision` with `treat-as-local-delete` for the deleted note.
+
