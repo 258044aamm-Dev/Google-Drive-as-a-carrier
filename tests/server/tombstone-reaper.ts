@@ -548,4 +548,28 @@ s.section("Test 16: already-reaped tombstones are reported, not silently ignored
 	s.check(second.reaped === 0, "idempotent");
 	doc.destroy();
 }
+s.section("Test 17: the result says how close the oldest tombstone is to eligibility");
+{
+	// The shape of upstream issue #78: many tombstones, reaped 0, all inside the grace window.
+	const doc = buildVault([
+		{ id: "a", path: "a.md", chars: 10, deletedAt: NOW - 5 * DAY },
+		{ id: "b", path: "b.md", chars: 10, deletedAt: NOW - 20 * DAY },
+		{ id: "c", path: "c.md", chars: 10, deletedAt: NOW - 1 * DAY },
+		{ id: "u", path: "u.md", chars: 10, legacyDeleted: true },
+		{ id: "live", path: "live.md", chars: 10, legacyPathMap: true },
+	]);
+	const r = reapTombstonedBodies(doc, { now: NOW });
+	s.check(r.reaped === 0 && r.withinGrace === 3 && r.unknownAge === 1, "setup: nothing reaped, three inside the grace window, one of unknown age");
+	s.check(r.oldestTombstoneAgeMs === 20 * DAY, `oldest known tombstone is 20 days old (got ${String(r.oldestTombstoneAgeMs)})`);
+	s.check(r.nextEligibleAt === NOW - 20 * DAY + TOMBSTONE_REAP_GRACE_MS, `the oldest becomes eligible in 10 days (got ${String(r.nextEligibleAt)})`);
+	doc.destroy();
+	const clean = buildVault([{ id: "live", path: "live.md", chars: 10, legacyPathMap: true }]);
+	const none = reapTombstonedBodies(clean, { now: NOW });
+	s.check(none.oldestTombstoneAgeMs === null && none.nextEligibleAt === null, "no tombstones: both are null");
+	clean.destroy();
+	const old = buildVault([{ id: "o", path: "o.md", chars: 10, deletedAt: NOW - 90 * DAY }]);
+	const reaped = reapTombstonedBodies(old, { now: NOW });
+	s.check(reaped.reaped === 1 && reaped.nextEligibleAt === null && reaped.oldestTombstoneAgeMs === 90 * DAY, "an eligible tombstone is reaped and nothing is left waiting");
+	old.destroy();
+}
 await s.done();

@@ -14,8 +14,11 @@ This file is specific to this fork. It is not part of upstream YAOS.
 - **Snapshot lists said "0 notes".** The note count of a snapshot was read from `pathToId`, a map that current vaults no longer fill. A vault with thousands of notes showed `markdownFileCount: 0` (upstream issue #78 reported it for the Cloudflare server). The count now comes from the active entries of `meta`; documents without a schema version or with schema v1 keep the old count. Same fix in the Google Drive snapshot backend, which had copied the bug. Only the number in the snapshot list changes; snapshot content and restore are untouched.
   - Code: new `server/src/activeFiles.ts`; `server/src/snapshot.ts`; `src/drive-carrier/driveSnapshotBackend.ts`; `isTombstone` is now exported from `server/src/tombstoneReaper.ts` (no behaviour change).
 
+### Added (server diagnostics)
+- **The tombstone reaper's trace now explains an idle pass.** Two new fields, `oldestTombstoneAgeMs` and `nextEligibleAt`, say how old the oldest deleted note is and when the first one becomes eligible. A report like "reaped: 0, every tombstone within the grace window" (upstream issue #78) can now be told from a real fault: if even the oldest is younger than 30 days, nothing is wrong. Nothing is reaped differently.
+
 ### Tests
-- New `active-files-count` (6 checks, one fails without the change); `drive-carrier-snapshots` gains a current-model check (fails without the change).
+- `tombstone-reaper` gains Test 17 for the two new fields. New `active-files-count` (6 checks, one fails without the change); `drive-carrier-snapshots` gains a current-model check (fails without the change).
 
 ## Unreleased - 2.1.1-drive.10 (committed locally, not published)
 

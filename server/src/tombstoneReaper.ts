@@ -111,6 +111,18 @@ export interface ReapResult {
 	conflicted: number;
 	/** Tombstoned and eligible, but beyond this pass's budget. */
 	remaining: number;
+	/**
+	 * Age in ms of the oldest tombstone that still holds a body and has a known
+	 * deletion time, or null when there is none.  With `nextEligibleAt` this
+	 * tells a report like "reaped: 0, withinGrace: all" apart from a real fault:
+	 * if even the oldest is younger than the grace period, nothing is wrong.
+	 */
+	oldestTombstoneAgeMs: number | null;
+	/**
+	 * Earliest time (ms since epoch) at which a tombstone that is held back only
+	 * by the grace period becomes eligible, or null when none is waiting.
+	 */
+	nextEligibleAt: number | null;
 }
 
 const EMPTY_RESULT: ReapResult = {
@@ -124,6 +136,8 @@ const EMPTY_RESULT: ReapResult = {
 	unknownAge: 0,
 	conflicted: 0,
 	remaining: 0,
+	oldestTombstoneAgeMs: null,
+	nextEligibleAt: null,
 };
 
 /**
@@ -254,6 +268,18 @@ export function reapTombstonedBodies(doc: Y.Doc, options: ReapOptions = {}): Rea
 		if (blockedByReference) result.conflicted++;
 		if (ageUnknown) result.unknownAge++;
 		if (insideGrace) result.withinGrace++;
+		if (!ageUnknown) {
+			const age = now - deletedAt;
+			if (result.oldestTombstoneAgeMs === null || age > result.oldestTombstoneAgeMs) {
+				result.oldestTombstoneAgeMs = age;
+			}
+			if (insideGrace && !blockedByReference) {
+				const eligibleAt = deletedAt + graceMs;
+				if (result.nextEligibleAt === null || eligibleAt < result.nextEligibleAt) {
+					result.nextEligibleAt = eligibleAt;
+				}
+			}
+		}
 
 		if (!blockedByReference && !ageUnknown && !insideGrace) candidates.push(fileId);
 	});
