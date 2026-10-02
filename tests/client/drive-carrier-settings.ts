@@ -186,10 +186,14 @@ s.section("Test 5: Drive screens");
 	const items = f.tab.getSettingDefinitions();
 	const heads = groupHeadings(items);
 	s.check(heads[0] === "Google Drive carrier", `Drive group comes first (${heads.join()})`);
-	for (const gone of ["Setup", "Sync status", "Updates", "Attachments", "Collaboration"]) {
+	for (const gone of ["Setup", "Sync status", "Updates", "Collaboration"]) {
 		s.check(!heads.includes(gone), `no "${gone}" group with the Drive carrier`);
 	}
 	s.check(heads.includes("This device") && heads.includes("What syncs"), "generic groups remain");
+	s.check(heads.includes("Attachments"), "the Attachments group stays (attachments live on Drive)");
+	const storage = flatten(items).find((d) => d.name === "Attachment storage");
+	s.check(String(storage?.desc) === 'Stored in your Google Drive (folder "YAOS vault-1 blobs"). Snapshots are kept there too.', "its storage line names the Drive folder");
+	s.check(!flatten(items).some((d) => String(d.desc ?? "").includes("Cloudflare")), "no Cloudflare wording in the Attachments group");
 	s.check(!pageNames(items).includes("Manual connection") && pageNames(items).includes("Advanced"), "server page hidden, Advanced kept");
 	const adv = advancedItems(items).map((i) => "name" in i ? i.name : "");
 	s.check(adv[0] === "Sync carrier (experimental)" && !adv.includes("Deployment repository URL") && !adv.includes("Deployment default branch") && adv.includes("Vault ID"), `Advanced keeps the carrier row and drops server-only rows (${adv.join("|")})`);

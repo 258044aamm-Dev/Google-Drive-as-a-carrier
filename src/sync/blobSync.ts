@@ -111,7 +111,19 @@ interface ExistsResult {
 	present: string[];
 }
 
-class BlobHttpClient {
+/**
+ * Where attachment bytes are stored, addressed by their SHA-256. The
+ * Cloudflare Worker's R2 bucket (BlobHttpClient below) is the default; another
+ * carrier can supply its own store.
+ */
+export interface BlobStoreClient {
+	upload(hash: string, contentType: string, data: ArrayBuffer, timeoutMs: number): Promise<void>;
+	download(hash: string, timeoutMs: number): Promise<ArrayBuffer>;
+	/** The subset of `hashes` that is already stored. */
+	exists(hashes: string[]): Promise<string[]>;
+}
+
+class BlobHttpClient implements BlobStoreClient {
 	constructor(
 		private host: string,
 		private token: string,
@@ -328,7 +340,7 @@ export interface BlobQueueSnapshot {
 // -------------------------------------------------------------------
 
 export class BlobSyncManager {
-	private blobClient: BlobHttpClient;
+	private blobClient: BlobStoreClient;
 
 	/** Pending uploads keyed by path (deduped). */
 	private uploadQueue = new Map<string, UploadItem>();
@@ -406,13 +418,15 @@ export class BlobSyncManager {
 			attachmentConcurrency: number;
 			debug: boolean;
 			trace?: TraceHttpContext;
+			/** Store attachments here instead of on the Worker. */
+			blobStore?: BlobStoreClient;
 		},
 		hashCache: BlobHashCache,
 		private trace?: TraceRecord,
 		initialPreservedUnresolved: PreservedUnresolvedEntry[] = [],
 		private onPreservedUnresolvedChanged?: () => void,
 	) {
-		this.blobClient = new BlobHttpClient(
+		this.blobClient = settings.blobStore ?? new BlobHttpClient(
 			settings.host,
 			settings.token,
 			settings.vaultId,

@@ -92,7 +92,7 @@ import {
 	isDriveSignedIn,
 	newDriveDeviceId,
 } from "./drive-carrier/carrierSettings";
-import { createDriveTransportFactory } from "./drive-carrier/driveCarrierRuntime";
+import { createDriveCarrier, type DriveCarrier } from "./drive-carrier/driveCarrierRuntime";
 import { DriveSignInModal } from "./drive-carrier/DriveSignInModal";
 import { GoogleAuthError } from "./drive-carrier/googleAuth";
 import { obsidianDriveHttp } from "./drive-carrier/obsidianDriveHttp";
@@ -144,6 +144,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	private editorBindings: EditorBindingManager | null = null;
 	private diskMirror: DiskMirror | null = null;
 	private attachmentOrchestrator: AttachmentOrchestrator | null = null;
+	private driveCarrier: DriveCarrier | null = null;
 	private editorWorkspace: EditorWorkspaceOrchestrator | null = null;
 	private snapshotService: SnapshotService | null = null;
 	private reconciliationController!: ReconciliationController;
@@ -428,6 +429,10 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			getDiskMirror: () => this.diskMirror,
 			getBlobSync: () => this.getBlobSync(),
 			getServerSupportsSnapshots: () => this.serverSupportsSnapshots,
+			getSnapshotBackend: () => this.getDriveCarrier()?.snapshotBackend(
+				this.settings.vaultId,
+				() => this.vaultSync?.ydoc ?? null,
+			) ?? null,
 			log: (message) => this.log(message),
 			onEditorsNeedReconcile: (reason) => this.editorWorkspace?.onReconciled(reason),
 		});
@@ -567,6 +572,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			getVaultSync: () => this.vaultSync,
 			getRuntimeConfig: () => this.getRuntimeConfig(),
 			getServerSupportsAttachments: () => this.serverSupportsAttachments,
+			getBlobStore: () => this.getDriveCarrier()?.blobStore(this.settings.vaultId) ?? null,
 			getTraceHttpContext: () => this.getTraceHttpContext(),
 			getBlobHashCache: () => this.blobHashCache,
 			getExcludePatterns: () => this.excludePatterns,
@@ -717,16 +723,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				onFlightEvent: (event) => this.recordFlightEvent(event as FlightEventInput),
 				onFlightPathEvent: (event) => this.recordFlightPathEvent(event),
 				onServerReceiptStatusChanged: () => this.queueReceiptStatusRefresh(),
-				transportFactory: isDriveCarrier(this.settings)
-					? createDriveTransportFactory({
-						getSettings: () => this.settings,
-						http: obsidianDriveHttp,
-						log: (message) => this.log(message),
-						onSignInLost: () => {
-							new Notice("YAOS: Google access was lost. Sign in again in the YAOS settings.", 12000);
-						},
-					})
-					: undefined,
+				transportFactory: this.getDriveCarrier()?.transportFactory,
 				getSocketTicket: isDriveCarrier(this.settings) ? undefined : (() => {
 				// Each VaultSync instance gets its own ticket cache.  The cache
 				// is discarded when VaultSync is torn down and recreated.
@@ -2197,13 +2194,29 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		return this.capabilityUpdateService?.authMode ?? "unknown";
 	}
 
+	/** The Google Drive carrier, or null unless the user chose it. Created once, so every part shares one sign-in. */
+	private getDriveCarrier(): DriveCarrier | null {
+		if (!isDriveCarrier(this.settings)) return null;
+		this.driveCarrier ??= createDriveCarrier({
+			getSettings: () => this.settings,
+			http: obsidianDriveHttp,
+			log: (message) => this.log(message),
+			onSignInLost: () => {
+				new Notice("YAOS: Google access was lost. Sign in again in the YAOS settings.", 12000);
+			},
+		});
+		return this.driveCarrier;
+	}
+
 	get serverSupportsAttachments(): boolean {
-		if (isDriveCarrier(this.settings)) return false;
+		// Drive stores attachments itself, so this is true there.
+		if (isDriveCarrier(this.settings)) return true;
 		return this.capabilityUpdateService?.supportsAttachments ?? true;
 	}
 
 	get serverSupportsSnapshots(): boolean {
-		if (isDriveCarrier(this.settings)) return false;
+		// Likewise for restore points.
+		if (isDriveCarrier(this.settings)) return true;
 		return this.capabilityUpdateService?.supportsSnapshots ?? true;
 	}
 

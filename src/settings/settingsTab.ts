@@ -444,7 +444,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 		};
 		if (!drive) return definitions.map(withCarrierRow);
 
-		const serverOnlyGroups = new Set(["Setup", "Sync status", "Updates", "Attachments", "Collaboration"]);
+		const serverOnlyGroups = new Set(["Setup", "Sync status", "Updates", "Collaboration"]);
 		const kept = definitions.filter((item) => {
 			if (isGroupDefinition(item) && typeof item.heading === "string") {
 				return !serverOnlyGroups.has(item.heading);
@@ -452,7 +452,20 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			if (isPageDefinition(item) && item.name === "Manual connection") return false;
 			return true;
 		});
-		return [...this.driveDefinitions(), ...kept.map(withCarrierRow)];
+		return [...this.driveDefinitions(), ...kept.map(withCarrierRow).map((item) => this.withDriveAttachmentText(item))];
+	}
+
+	/** Attachments and snapshots live on Drive, so the server wording of the Attachments group is replaced. */
+	private withDriveAttachmentText(item: SettingDefinitionItem): SettingDefinitionItem {
+		if (!isGroupDefinition(item) || item.heading !== "Attachments") return item;
+		const folder = `YAOS ${this.host.settings.vaultId || "..."} blobs`;
+		const items = (item.items ?? []).map((entry) => {
+			if ("name" in entry && entry.name === "Attachment storage" && !("items" in entry)) {
+				return { ...entry, desc: `Stored in your Google Drive (folder "${folder}"). Snapshots are kept there too.` };
+			}
+			return entry;
+		});
+		return { ...item, items };
 	}
 
 	private async runDriveAction(action: () => Promise<void> | undefined): Promise<void> {

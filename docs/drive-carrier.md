@@ -13,10 +13,40 @@ only used when you pick it in *Settings > YAOS > Advanced > Sync carrier*.
 - Other devices notice new files by polling (about every 3 seconds), so edits
   arrive after a few seconds, not instantly.
 - Cursors and presence of other devices are not shared (local only).
-- Attachments and server snapshots are not available with this carrier yet.
+- Attachments and snapshots are stored in Drive too (see below).
 - The status bar's "saved" state means "stored on Drive".
 - Only the `drive.file` scope is requested, so YAOS can only see files it
   created itself, never the rest of the Drive.
+
+## Attachments and snapshots
+
+Both live in their own Drive folders, separate from the folder that is polled
+for changes:
+
+- **Attachments**: folder `YAOS <vault id> blobs`. One file per attachment,
+  named by its SHA-256. Every upload is checked (hash of the content and the
+  size Drive stored), and every download is checked against its hash, so a
+  damaged file is never written into your vault. Identical attachments are
+  stored once. Whether an attachment already exists is answered from one
+  folder listing that is reused for 30 seconds, to stay within Drive's
+  request limits.
+- **Snapshots** (restore points): folder `YAOS <vault id> snapshots`. Each
+  snapshot is a data file (`snapdat-<id>.bin`, the whole document, compressed,
+  with a checksum) plus a small index file (`snapidx-<id>.json`) that is
+  written last, so a snapshot only appears once it is complete. The daily
+  snapshot is taken once per UTC day across all devices. *Take a snapshot now*
+  makes a pinned one. The existing "browse snapshots" and restore screens work
+  unchanged.
+- **Cleanup** keeps every pinned (manual) snapshot plus the **newest 14**
+  daily ones and removes the rest, together with leftovers of interrupted
+  snapshot writes (older than 10 minutes). This is a Drive-carrier choice;
+  it is not the Worker's retention policy.
+- The attachment size limit and concurrency settings apply as before.
+
+Limits: a damaged attachment on Drive keeps failing and is not repaired
+automatically; delete that file in the `... blobs` folder on drive.google.com
+and let a device that still has the original upload it again. Drive's own
+storage quota applies.
 
 ## Setup (once per Google account)
 
