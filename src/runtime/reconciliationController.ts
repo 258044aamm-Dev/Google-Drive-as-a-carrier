@@ -41,6 +41,7 @@ import { planClosedFileReconcile } from "./reconcile/closedFilePlanner";
 import { planBaselineAdvancement, type BaselineActionKind } from "./reconcile/baselineAdvancementPolicy";
 import { evaluateSafetyBrake } from "./reconcile/safetyBrakePolicy";
 import { classifyMissingOnDisk, evaluateOfflineDeleteBatch } from "./reconcile/offlineDeletePolicy";
+import { bothSidesChangedFromBaseline } from "./reconcile/boundDivergencePolicy";
 import {
 	computeRecoveryFingerprint,
 	evaluateFingerprintQuarantine,
@@ -1751,6 +1752,7 @@ export class ReconciliationController {
 					return true;
 				}
 				// recovery.apply.start: before the actual diff application
+				await this.preserveCrdtIfBothSidesChanged(file.path, crdtContent ?? "", content, "bound-file-local-only-divergence");
 				this.deps.recordFlightPathEvent?.({
 					priority: "important",
 					kind: PRODUCT_EVENT_KIND.recoveryApplyStart,
@@ -1992,6 +1994,7 @@ export class ReconciliationController {
 				)) {
 					return true;
 				}
+				await this.preserveCrdtIfBothSidesChanged(file.path, crdtContent ?? "", content, "bound-file-open-idle-disk-recovery");
 				this.deps.recordFlightPathEvent?.({
 					priority: "important",
 					kind: PRODUCT_EVENT_KIND.recoveryApplyStart,
@@ -2627,6 +2630,52 @@ export class ReconciliationController {
 			deleted.add(path);
 		}
 		return createdOnDisk.filter((p) => !deleted.has(p));
+	}
+
+	/**
+	 * SYNC-02: the caller is about to overwrite the CRDT text of an editor-bound
+	 * note with the disk text. If both sides changed from the last synced text,
+	 * keep the CRDT version as a conflict note first, so the edit is not lost
+	 * silently. Same artifact path, cap and dedupe as the ambiguous-divergence
+	 * branch; no baseline means no claim and nothing is preserved.
+	 */
+	private async preserveCrdtIfBothSidesChanged(
+		path: string,
+		crdtContent: string,
+		diskContent: string,
+		branch: string,
+	): Promise<void> {
+		const baselineHash = this.deps.getDiskIndex()[path]?.contentHash;
+		if (!baselineHash) return;
+		const [diskHash, crdtHash] = await Promise.all([
+			contentBaselineHash(diskContent),
+			contentBaselineHash(crdtContent),
+		]);
+		if (!bothSidesChangedFromBaseline({ baselineHash, diskHash, crdtHash })) return;
+		const fingerprint = `${crdtHash}\x00${diskHash}\x00both-changed`;
+		if (this.lastConflictFingerprints.get(path) === fingerprint) return;
+		try {
+			const conflictPath = await this.createMarkdownConflictArtifact(path, crdtContent, branch, "crdt");
+			this.lastConflictFingerprints.set(path, fingerprint);
+			this.deps.trace("conflict", "bound-file-both-sides-changed-preserved", {
+				path,
+				branch,
+				conflictPath,
+				crdtLength: crdtContent.length,
+				diskLength: diskContent.length,
+			});
+			if (conflictPath !== null) {
+				this.showConflictNotice(
+					`Conflict detected for "${path.split("/").pop()}" — the other version was preserved as a local-only conflict note.`,
+				);
+			}
+		} catch (err) {
+			this.deps.trace("conflict", "bound-file-both-sides-changed-preserve-failed", {
+				path,
+				branch,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
 	}
 
 	/** True when the file system has the path; any doubt counts as "exists". */

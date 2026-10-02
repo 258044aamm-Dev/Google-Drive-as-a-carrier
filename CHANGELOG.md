@@ -8,6 +8,16 @@ Version numbers like `2.1.1-drive.3` exist only in each release's `manifest.json
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
+## Unreleased - 2.1.1-drive.10 (committed locally, not published)
+
+### Fixed (engine, every carrier including Cloudflare)
+- **Engine step 3 (upstream SYNC-02): an edit on one side of an open note is no longer discarded without a trace.** When an open (editor-bound) note had changed on BOTH sides since the last synced text, one side was overwritten silently: the editor/disk text over the shared document ("local only" branch), or an external disk edit over it ("idle" branch). With the remembered baseline hash it is now known when both sides differ from the baseline and from each other; then the side about to be overwritten is first kept as a `(YAOS conflict - crdt ...)` note. Which side wins is unchanged. Normal typing lag (the document still at the baseline), a missing baseline, equal texts and repeated events make no copy (same cap and dedupe as the existing conflict notes).
+  - Code: `src/runtime/reconcile/boundDivergencePolicy.ts`; `ReconciliationController.preserveCrdtIfBothSidesChanged` called before the two overwrites.
+  - Found but NOT changed: if an open note's disk file lags behind a remote edit and still equals the old baseline, the "idle" branch can write that old text back over the shared document unless the user typed recently. That needs the real editor to judge, so it is only recorded here.
+
+### Tests
+- New `engine-bound-both-changed` (13 checks): the policy, both branches, the ordinary cases (no copy), no baseline, a repeated event. Three fail without the change.
+
 ## Unreleased - 2.1.1-drive.9 (committed locally, not published)
 
 ### Fixed (engine, every carrier including Cloudflare)
