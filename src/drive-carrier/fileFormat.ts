@@ -5,9 +5,10 @@
  *   0       4     magic "YDS1"
  *   4       1     format version (FORMAT_VERSION)
  *   5       1     kind (1 = update segment, 2 = full snapshot)
- *   6       2     reserved, zero
+ *   6       1     flags (bit 0: the payload is encrypted)
+ *   7       1     reserved, zero
  *   8       32    SHA-256 of the payload
- *   40      n     payload: a Yjs update
+ *   40      n     payload: a Yjs update (or, with the encrypted flag, the sealed update)
  *
  * The checksum lets a reader reject a damaged or truncated file instead of
  * applying garbage. An unknown version or kind is rejected the same way.
@@ -19,6 +20,7 @@ export const KIND_SNAPSHOT = 2;
 
 const MAGIC = [0x59, 0x44, 0x53, 0x31];
 const HEADER_BYTES = 40;
+const FLAG_ENCRYPTED = 1;
 
 export type FileKind = typeof KIND_SEGMENT | typeof KIND_SNAPSHOT;
 
@@ -35,11 +37,12 @@ export async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
 	return new Uint8Array(await crypto.subtle.digest("SHA-256", copy));
 }
 
-export async function encodeFile(kind: FileKind, payload: Uint8Array): Promise<Uint8Array> {
+export async function encodeFile(kind: FileKind, payload: Uint8Array, encrypted = false): Promise<Uint8Array> {
 	const out = new Uint8Array(HEADER_BYTES + payload.length);
 	out.set(MAGIC, 0);
 	out[4] = FORMAT_VERSION;
 	out[5] = kind;
+	if (encrypted) out[6] = FLAG_ENCRYPTED;
 	out.set(await sha256(payload), 8);
 	out.set(payload, HEADER_BYTES);
 	return out;
@@ -48,6 +51,8 @@ export async function encodeFile(kind: FileKind, payload: Uint8Array): Promise<U
 export interface DecodedFile {
 	kind: FileKind;
 	payload: Uint8Array;
+	/** The payload is sealed (see driveCrypto) and must be opened before use. */
+	encrypted: boolean;
 }
 
 export async function decodeFile(bytes: Uint8Array): Promise<DecodedFile> {
@@ -67,7 +72,7 @@ export async function decodeFile(bytes: Uint8Array): Promise<DecodedFile> {
 	for (let i = 0; i < 32; i++) {
 		if (actual[i] !== expected[i]) throw new CorruptFileError("checksum mismatch");
 	}
-	return { kind, payload };
+	return { kind, payload, encrypted: ((bytes[6] ?? 0) & FLAG_ENCRYPTED) !== 0 };
 }
 
 // ---------------------------------------------------------------------------

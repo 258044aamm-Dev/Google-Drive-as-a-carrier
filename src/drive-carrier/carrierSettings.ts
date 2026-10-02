@@ -13,6 +13,11 @@ export interface DriveCarrierSettings {
 	driveClientSecret?: string;
 	driveRefreshToken?: string;
 	driveDeviceId?: string;
+	/**
+	 * Encrypts everything stored on Drive when the vault is first created there.
+	 * Kept in the plugin's data like the Google sign-in; it is the same on every device.
+	 */
+	driveEncryptionPassphrase?: string;
 }
 
 export function currentCarrier(settings: DriveCarrierSettings): CarrierKind {

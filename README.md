@@ -60,6 +60,10 @@ Text sync works out of the box. To sync images, PDFs, and other attachments, add
 
 R2 also enables daily automatic snapshots and on-demand point-in-time backups. You can browse snapshots, diff against current state, and selectively restore individual files. If you skip R2, text sync still works — you just won't have attachment sync or snapshots.
 
+## Experimental: Google Drive instead of Cloudflare
+
+If you would rather not run a Cloudflare Worker, YAOS can sync through a folder in your own Google Drive (Settings > YAOS > Advanced > Sync carrier). It needs no server, supports attachments and snapshots, and can encrypt everything with a passphrase. It polls, so changes arrive in a few seconds rather than instantly, and live cursors are not shared. Setup and limits: [docs/drive-carrier.md](docs/drive-carrier.md). It is off by default and does not change anything for Cloudflare users.
+
 ## Works with AI agents
 
 Because Obsidian vaults are just local Markdown files, YAOS plays unusually well with scripts, CLI tools, and AI agents that edit files directly on disk. The CRDT state stays aligned with the filesystem, so changes from any source — git, shell scripts, agents writing to disk — propagate cleanly across devices instead of falling back to conflicted-copy workflows.

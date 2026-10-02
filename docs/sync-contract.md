@@ -133,6 +133,10 @@ Forbidden claims:
 - `lastLocalUpdateWhileConnectedAt` means sent;
 - a historical receipt confirms current state.
 
+## Receipt on the Drive carrier
+
+With the experimental Drive carrier the same receipt message is produced locally, and "saved" means: the file holding the latest local state was stored on Drive and Drive reported the size we sent. It says nothing about other devices; they pick the file up on their next poll (3 s in use, up to 30 s idle, 2 minutes hidden on desktop, paused hidden on phones). The forbidden claims above apply unchanged.
+
 ## Failure posture
 
 - Persistence corruption: fail the room closed.

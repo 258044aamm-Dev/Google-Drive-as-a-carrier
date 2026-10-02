@@ -1,6 +1,8 @@
 import type { BlobStoreClient } from "../sync/blobSync";
 import { DriveError, type DriveApi } from "./driveApi";
+import { EncryptionError, type DriveSealer } from "./driveCrypto";
 import { ensureFolder, oldestFirst, sha256Hex } from "./driveFolders";
+import type { DriveKeyring } from "./driveKeyring";
 
 const HEX_64 = /^[0-9a-f]{64}$/;
 /** How long a listing of the blob folder is trusted before a "not found" is re-checked. */
@@ -9,6 +11,11 @@ const LISTING_MAX_AGE_MS = 30_000;
 export interface DriveBlobStoreOptions {
 	vaultId: string;
 	now?: () => number;
+	/**
+	 * Decides whether the vault is encrypted. With it, attachments are sealed and
+	 * their file names are keyed hashes. Without it, attachments are stored as they are.
+	 */
+	keyring?: DriveKeyring;
 }
 
 /** The name of the Drive folder holding this vault's attachments. */
@@ -37,7 +44,7 @@ async function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promi
 export class DriveBlobStore implements BlobStoreClient {
 	private folderId: string | null = null;
 	private folderPending: Promise<string> | null = null;
-	/** hash -> file id, from the last listing and from our own uploads. */
+	/** file name -> file id, from the last listing and from our own uploads. */
 	private known = new Map<string, string>();
 	private listedAt = -Infinity;
 	private readonly now: () => number;
@@ -64,6 +71,15 @@ export class DriveBlobStore implements BlobStoreClient {
 		return this.folderPending;
 	}
 
+	private async sealer(): Promise<DriveSealer | null> {
+		return this.options.keyring ? await this.options.keyring.ready() : null;
+	}
+
+	/** The file name an attachment is stored under: its hash, or a keyed hash of it when encrypted. */
+	private async nameFor(hash: string, sealer: DriveSealer | null): Promise<string> {
+		return sealer ? await sealer.blobName(hash) : hash;
+	}
+
 	private async refreshListing(): Promise<void> {
 		const folderId = await this.folder();
 		const files = oldestFirst(await this.api.listFiles(folderId));
@@ -78,9 +94,11 @@ export class DriveBlobStore implements BlobStoreClient {
 	async exists(hashes: string[]): Promise<string[]> {
 		const wanted = hashes.filter((h) => HEX_64.test(h));
 		if (wanted.length === 0) return [];
-		const missing = wanted.some((h) => !this.known.has(h));
+		const sealer = await this.sealer();
+		const names = await Promise.all(wanted.map((h) => this.nameFor(h, sealer)));
+		const missing = names.some((n) => !this.known.has(n));
 		if (missing && this.now() - this.listedAt >= LISTING_MAX_AGE_MS) await this.refreshListing();
-		return wanted.filter((h) => this.known.has(h));
+		return wanted.filter((_, i) => this.known.has(names[i] ?? ""));
 	}
 
 	async upload(hash: string, _contentType: string, data: ArrayBuffer, timeoutMs: number): Promise<void> {
@@ -93,13 +111,16 @@ export class DriveBlobStore implements BlobStoreClient {
 		if ((await sha256Hex(bytes)) !== hash) {
 			throw new Error(`blob upload failed: content does not match hash ${hash.slice(0, 12)}`);
 		}
+		const sealer = await this.sealer();
+		const name = await this.nameFor(hash, sealer);
+		const stored = sealer ? await sealer.seal(bytes, "blob") : bytes;
 		const folderId = await this.folder();
-		const info = await this.api.createFile(folderId, hash, bytes);
-		if (info.size !== bytes.length) {
+		const info = await this.api.createFile(folderId, name, stored);
+		if (info.size !== stored.length) {
 			await this.api.deleteFile(info.id).catch(() => undefined);
-			throw new DriveError(502, `Attachment ${hash.slice(0, 12)} was stored with a different size (${info.size} != ${bytes.length})`);
+			throw new DriveError(502, `Attachment ${hash.slice(0, 12)} was stored with a different size (${info.size} != ${stored.length})`);
 		}
-		this.known.set(hash, info.id);
+		this.known.set(name, info.id);
 	}
 
 	async download(hash: string, timeoutMs: number): Promise<ArrayBuffer> {
@@ -108,18 +129,30 @@ export class DriveBlobStore implements BlobStoreClient {
 	}
 
 	private async downloadInner(hash: string): Promise<ArrayBuffer> {
-		let id = this.known.get(hash);
+		const sealer = await this.sealer();
+		const name = await this.nameFor(hash, sealer);
+		let id = this.known.get(name);
 		if (id === undefined) {
 			await this.refreshListing();
-			id = this.known.get(hash);
+			id = this.known.get(name);
 		}
 		if (id === undefined) throw new DriveError(404, `blob download failed: 404 attachment ${hash.slice(0, 12)} is not on Drive`);
 		let bytes: Uint8Array;
 		try {
 			bytes = await this.api.readFile(id);
 		} catch (err) {
-			if (err instanceof DriveError && err.notFound) this.known.delete(hash);
+			if (err instanceof DriveError && err.notFound) this.known.delete(name);
 			throw err;
+		}
+		if (sealer) {
+			try {
+				bytes = await sealer.open(bytes, "blob");
+			} catch (err) {
+				if (err instanceof EncryptionError) {
+					throw new DriveError(502, `blob download failed: attachment ${hash.slice(0, 12)} on Drive is damaged`);
+				}
+				throw err;
+			}
 		}
 		if ((await sha256Hex(bytes)) !== hash) {
 			throw new DriveError(502, `blob download failed: attachment ${hash.slice(0, 12)} on Drive is damaged`);

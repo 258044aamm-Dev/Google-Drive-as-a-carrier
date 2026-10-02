@@ -4,11 +4,13 @@ import { Awareness } from "y-protocols/awareness";
 import type { SyncTransport } from "../sync/transport";
 import { makeSvEchoMessage } from "../sync/svEchoMessage";
 import { DriveError, type DriveApi, type DriveFileInfo } from "./driveApi";
+import { EncryptionError } from "./driveCrypto";
+import { DRIVE_LAYOUT_SCHEMA, DriveKeyring, FatalCarrierError } from "./driveKeyring";
+import type { ActivityEvent, ActivitySource } from "./activity";
 import {
 	CorruptFileError,
 	KIND_SEGMENT,
 	KIND_SNAPSHOT,
-	META_NAME,
 	classifyName,
 	decodeFile,
 	encodeFile,
@@ -17,8 +19,7 @@ import {
 	type FileKind,
 } from "./fileFormat";
 
-/** Schema of the Drive layout. A device refuses a vault folder written with another one. */
-export const DRIVE_LAYOUT_SCHEMA = 1;
+export { DRIVE_LAYOUT_SCHEMA };
 
 export interface DriveTransportOptions {
 	vaultId: string;
@@ -28,6 +29,24 @@ export interface DriveTransportOptions {
 	folderName?: string;
 	/** Delay between polls while everything works. */
 	pollIntervalMs?: number;
+	/**
+	 * Request budget. After this long without a local edit, a remote change or the
+	 * window coming to the front, polling slows down to `idlePollIntervalMs`.
+	 * Unset: never slow down.
+	 */
+	idleAfterMs?: number;
+	idlePollIntervalMs?: number;
+	/**
+	 * Polling interval while the window is hidden (needs `activity`). 0 stops polling
+	 * until the window is visible again (phones suspend apps anyway). Unset: same as normal.
+	 */
+	backgroundPollIntervalMs?: number;
+	/** Tells the transport when the window is shown, hidden, or the network returns. */
+	activity?: ActivitySource;
+	/** Checks the vault folder's meta file and holds the encryption key. Default: not encrypted. */
+	keyring?: DriveKeyring;
+	/** Called once when the carrier stops for a reason retrying cannot fix. */
+	onFatal?: (message: string) => void;
 	/** Local edits are batched for this long before one segment is uploaded. */
 	batchMs?: number;
 	/** Compact when this many segment files exist... */
@@ -102,7 +121,11 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	/** Last error seen, for diagnostics. */
 	lastError: string | null = null;
 
-	private readonly opts: Required<Omit<DriveTransportOptions, "ignoreOrigin" | "log" | "folderName">> & {
+	private readonly opts: Required<Omit<DriveTransportOptions, "ignoreOrigin" | "log" | "folderName" | "idleAfterMs" | "idlePollIntervalMs" | "backgroundPollIntervalMs" | "activity" | "keyring" | "onFatal">> & {
+		idleAfterMs: number | undefined;
+		idlePollIntervalMs: number | undefined;
+		backgroundPollIntervalMs: number | undefined;
+		onFatal: ((message: string) => void) | undefined;
 		folderName: string;
 		ignoreOrigin: (origin: unknown) => boolean;
 		log: (message: string) => void;
@@ -132,8 +155,14 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	private tickTimer: number | null = null;
 	private flushTimer: number | null = null;
 
+	private readonly keyring: DriveKeyring;
+	private lastActivityAt: number;
+	private visible = true;
+	private unsubscribeActivity: (() => void) | null = null;
+
 	private readonly onDocUpdate = (update: Uint8Array, origin: unknown): void => {
 		if (origin === this || this.opts.ignoreOrigin(origin)) return;
+		this.lastActivityAt = this.opts.now();
 		this.pending.push(update);
 		if (this.pending.length > MAX_PENDING_PARTS) {
 			this.pending = [Y.mergeUpdates(this.pending)];
@@ -152,6 +181,10 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			vaultId: options.vaultId,
 			deviceId: options.deviceId,
 			pollIntervalMs: options.pollIntervalMs ?? 3000,
+			idleAfterMs: options.idleAfterMs,
+			idlePollIntervalMs: options.idlePollIntervalMs,
+			backgroundPollIntervalMs: options.backgroundPollIntervalMs,
+			onFatal: options.onFatal,
 			batchMs: options.batchMs ?? 2000,
 			compactSegmentCount: options.compactSegmentCount ?? 50,
 			compactSegmentBytes: options.compactSegmentBytes ?? 1_000_000,
@@ -163,8 +196,18 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			log: options.log ?? (() => undefined),
 		};
 		this.receiptEpoch = `drive:${options.deviceId}:${this.opts.now()}`;
+		this.lastActivityAt = this.opts.now();
+		this.keyring = options.keyring ?? new DriveKeyring(api, {
+			vaultId: options.vaultId,
+			passphrase: "",
+			folderName: this.opts.folderName,
+		});
 		this.awareness = new Awareness(doc);
 		doc.on("update", this.onDocUpdate);
+		if (options.activity) {
+			this.visible = options.activity.isVisible();
+			this.unsubscribeActivity = options.activity.subscribe((event) => this.onActivity(event));
+		}
 	}
 
 	get synced(): boolean {
@@ -192,6 +235,8 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		this.destroyed = true;
 		this.started = false;
 		this.clearTimers();
+		this.unsubscribeActivity?.();
+		this.unsubscribeActivity = null;
 		this.doc.off("update", this.onDocUpdate);
 		this.awareness.destroy();
 		this.wsconnected = false;
@@ -304,11 +349,12 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		const message = err instanceof Error ? err.message : String(err);
 		this.lastError = message;
 		this.opts.log(`drive carrier: ${message}`);
-		if (err instanceof LayoutMismatchError) {
+		if (err instanceof FatalCarrierError) {
 			this.fatalError = message;
 			this.started = false;
 			this.clearTimers();
 			this.markOffline();
+			this.opts.onFatal?.(message);
 			return;
 		}
 		if (this.failures >= FAILURES_BEFORE_OFFLINE) this.markOffline();
@@ -325,26 +371,70 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		this.flushTimer = null;
 	}
 
-	private nextDelay(): number {
-		if (this.failures === 0) return this.opts.pollIntervalMs;
-		const backoff = MIN_BACKOFF_MS * 2 ** Math.min(this.failures - 1, 10);
-		return Math.min(this.opts.maxBackoffMs, backoff);
+	/**
+	 * How long to wait before the next poll, or null when polling is paused
+	 * (window hidden and background polling switched off). This is the
+	 * request budget: failures back off, an idle device slows down, a hidden
+	 * window slows down or stops.
+	 */
+	nextPollDelayMs(): number | null {
+		if (this.failures > 0) {
+			if (!this.visible && this.opts.backgroundPollIntervalMs === 0) return null;
+			const backoff = MIN_BACKOFF_MS * 2 ** Math.min(this.failures - 1, 10);
+			return Math.min(this.opts.maxBackoffMs, backoff);
+		}
+		const normal = this.opts.pollIntervalMs;
+		if (!this.visible && this.opts.backgroundPollIntervalMs !== undefined) {
+			const background = this.opts.backgroundPollIntervalMs;
+			return background === 0 ? null : Math.max(normal, background);
+		}
+		const idleAfter = this.opts.idleAfterMs;
+		const idleEvery = this.opts.idlePollIntervalMs;
+		if (idleAfter !== undefined && idleEvery !== undefined && this.opts.now() - this.lastActivityAt >= idleAfter) {
+			return Math.max(normal, idleEvery);
+		}
+		return normal;
 	}
 
 	private scheduleTick(): void {
 		if (!this.opts.autoTimers || !this.started || this.destroyed || this.fatalError) return;
 		if (this.tickTimer !== null) window.clearTimeout(this.tickTimer);
+		this.tickTimer = null;
+		const delay = this.nextPollDelayMs();
+		if (delay === null) return;
 		this.tickTimer = window.setTimeout(() => {
 			this.tickTimer = null;
 			void this.syncNow().then(() => this.scheduleTick());
-		}, this.nextDelay());
+		}, delay);
+	}
+
+	private onActivity(event: ActivityEvent): void {
+		if (this.destroyed) return;
+		if (event === "hidden") {
+			this.visible = false;
+			if (!this.started) return;
+			// Send what is waiting before the app may be suspended, then poll less or not at all.
+			if (this.pending.length > 0) void this.flush().catch(() => undefined);
+			this.scheduleTick();
+			return;
+		}
+		if (event === "visible" || event === "online") {
+			if (event === "visible") this.visible = true;
+			this.lastActivityAt = this.opts.now();
+			if (!this.started || this.fatalError || !this.visible) return;
+			// Back in front or back online: look right now instead of waiting for the next timer.
+			if (this.tickTimer !== null) window.clearTimeout(this.tickTimer);
+			this.tickTimer = null;
+			void this.syncNow().then(() => this.scheduleTick());
+		}
 	}
 
 	private scheduleFlush(): void {
 		if (!this.opts.autoTimers || !this.started || this.destroyed || this.flushTimer !== null) return;
 		this.flushTimer = window.setTimeout(() => {
 			this.flushTimer = null;
-			void this.syncNow();
+			// A cycle also polls, so restart the poll timer from the (now busy) state.
+			void this.syncNow().then(() => this.scheduleTick());
 		}, this.opts.batchMs);
 	}
 
@@ -375,31 +465,7 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		const chosen = folders[0];
 		if (!chosen) throw new DriveError(500, "Could not create the vault folder");
 		this.folderId = chosen.id;
-		await this.ensureMeta(chosen.id);
-	}
-
-	private async ensureMeta(folderId: string): Promise<void> {
-		const files = await this.api.listFiles(folderId);
-		const metas = files.filter((f) => f.name === META_NAME).sort((a, b) => a.createdTime - b.createdTime);
-		const first = metas[0];
-		if (!first) {
-			const body = JSON.stringify({ app: "yaos-drive", schema: DRIVE_LAYOUT_SCHEMA, vaultId: this.opts.vaultId });
-			await this.api.createFile(folderId, META_NAME, new TextEncoder().encode(body));
-			return;
-		}
-		const raw = new TextDecoder().decode(await this.api.readFile(first.id));
-		let schema: unknown;
-		try {
-			const parsed: unknown = JSON.parse(raw);
-			schema = typeof parsed === "object" && parsed !== null && "schema" in parsed ? parsed.schema : undefined;
-		} catch {
-			schema = undefined;
-		}
-		if (schema !== DRIVE_LAYOUT_SCHEMA) {
-			throw new LayoutMismatchError(
-				`This vault folder on Drive uses layout ${String(schema)}, but this plugin understands layout ${DRIVE_LAYOUT_SCHEMA}. Update the plugin on all devices.`,
-			);
-		}
+		await this.keyring.ensureMeta(chosen.id);
 	}
 
 	// ---------------------------------------------------------------------
@@ -423,7 +489,9 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	private async uploadUpdate(kind: FileKind, update: Uint8Array): Promise<DriveFileInfo> {
 		const folderId = this.folderId;
 		if (folderId === null) throw new DriveError(500, "No vault folder");
-		const data = await encodeFile(kind, update);
+		const sealer = this.keyring.sealer;
+		const body = sealer ? await sealer.seal(update, kind === KIND_SEGMENT ? "segment" : "snapshot") : update;
+		const data = await encodeFile(kind, body, sealer !== null);
 		const now = this.opts.now();
 		const name = kind === KIND_SEGMENT
 			? segmentName(now, this.opts.deviceId, this.counter++)
@@ -540,9 +608,15 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		}
 		try {
 			const decoded = await decodeFile(bytes);
-			return { state: "ok", payload: decoded.payload, kind: decoded.kind };
+			const sealer = this.keyring.sealer;
+			if (decoded.encrypted !== (sealer !== null)) {
+				return { state: "corrupt", reason: decoded.encrypted ? "encrypted file in an unencrypted vault" : "unencrypted file in an encrypted vault" };
+			}
+			if (!sealer) return { state: "ok", payload: decoded.payload, kind: decoded.kind };
+			const plain = await sealer.open(decoded.payload, decoded.kind === KIND_SEGMENT ? "segment" : "snapshot");
+			return { state: "ok", payload: plain, kind: decoded.kind };
 		} catch (err) {
-			if (err instanceof CorruptFileError) return { state: "corrupt", reason: err.message };
+			if (err instanceof CorruptFileError || err instanceof EncryptionError) return { state: "corrupt", reason: err.message };
 			throw err;
 		}
 	}
@@ -577,6 +651,7 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			this.known.set(name, { id: info.id, size: info.size, kind: nameKind, state: "corrupt" });
 			return;
 		}
+		this.lastActivityAt = this.opts.now();
 		try {
 			this.mergeRemote(result.payload);
 		} catch {
@@ -665,12 +740,5 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			this.opts.log(`drive carrier: could not delete an old file: ${err instanceof Error ? err.message : String(err)}`);
 			return false;
 		}
-	}
-}
-
-class LayoutMismatchError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "LayoutMismatchError";
 	}
 }

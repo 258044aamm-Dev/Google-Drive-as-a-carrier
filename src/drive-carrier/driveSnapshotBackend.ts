@@ -3,7 +3,9 @@ import { gunzipSync, gzipSync } from "fflate";
 import type { SnapshotBackend } from "../snapshots/snapshotBackend";
 import type { SnapshotIndex, SnapshotResult } from "../sync/snapshotClient";
 import type { DriveApi, DriveFileInfo } from "./driveApi";
+import { EncryptionError, type DriveSealer } from "./driveCrypto";
 import { ensureFolder, oldestFirst, sha256Hex } from "./driveFolders";
+import type { DriveKeyring } from "./driveKeyring";
 import { KIND_SNAPSHOT, decodeFile, encodeFile } from "./fileFormat";
 
 const INDEX_PREFIX = "snapidx-";
@@ -22,6 +24,8 @@ export interface DriveSnapshotBackendOptions {
 	getDoc: () => Y.Doc | null;
 	now?: () => number;
 	random?: () => string;
+	/** Decides whether snapshots are sealed. Without it they are stored as they are. */
+	keyring?: DriveKeyring;
 }
 
 export function snapshotFolderName(vaultId: string): string {
@@ -91,7 +95,12 @@ export class DriveSnapshotBackend implements SnapshotBackend {
 		return this.folderId;
 	}
 
+	private async sealer(): Promise<DriveSealer | null> {
+		return this.options.keyring ? await this.options.keyring.ready() : null;
+	}
+
 	private async readIndexes(files: DriveFileInfo[]): Promise<{ file: DriveFileInfo; index: SnapshotIndex }[]> {
+		const sealer = await this.sealer();
 		const wanted = files
 			.filter((f) => idFromIndexName(f.name) !== null)
 			.sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
@@ -101,7 +110,8 @@ export class DriveSnapshotBackend implements SnapshotBackend {
 			const batch = wanted.slice(i, i + 4);
 			const results = await Promise.all(batch.map(async (file) => {
 				try {
-					const index = parseIndex(decoder.decode(await this.api.readFile(file.id)));
+					const stored = await this.api.readFile(file.id);
+					const index = parseIndex(decoder.decode(sealer ? await sealer.open(stored, "snapshot-index") : stored));
 					return index && idFromIndexName(file.name) === index.snapshotId ? { file, index } : null;
 				} catch {
 					return null;
@@ -173,13 +183,15 @@ export class DriveSnapshotBackend implements SnapshotBackend {
 		const identical = latest?.fullUpdateHash === fullUpdateHash;
 
 		// Content first, index last: a snapshot is only listed once it is complete.
-		const data = await encodeFile(KIND_SNAPSHOT, compressed);
+		const sealer = await this.sealer();
+		const data = await encodeFile(KIND_SNAPSHOT, sealer ? await sealer.seal(compressed, "snapshot-data") : compressed, sealer !== null);
 		const stored = await this.api.createFile(folderId, dataName(id), data);
 		if (stored.size !== data.length) {
 			await this.api.deleteFile(stored.id).catch(() => undefined);
 			throw new Error(`Snapshot upload was stored with a different size (${stored.size} != ${data.length})`);
 		}
-		await this.api.createFile(folderId, indexName(id), new TextEncoder().encode(JSON.stringify(index)));
+		const indexBytes = new TextEncoder().encode(JSON.stringify(index));
+		await this.api.createFile(folderId, indexName(id), sealer ? await sealer.seal(indexBytes, "snapshot-index") : indexBytes);
 		return { status: "created", snapshotId: id, snapshotKey: dataName(id), index, snapshotIdenticalToLatest: identical };
 	}
 
@@ -238,8 +250,21 @@ export class DriveSnapshotBackend implements SnapshotBackend {
 		if (!file) throw new Error("Snapshot download failed (404)");
 		const decoded = await decodeFile(await this.api.readFile(file.id));
 		if (decoded.kind !== KIND_SNAPSHOT) throw new Error("Snapshot download failed (not a snapshot file)");
+		const sealer = await this.sealer();
+		if (decoded.encrypted !== (sealer !== null)) {
+			throw new Error(decoded.encrypted ? "Snapshot download failed (encrypted snapshot in an unencrypted vault)" : "Snapshot download failed (unencrypted snapshot in an encrypted vault)");
+		}
+		let payload = decoded.payload;
+		if (sealer) {
+			try {
+				payload = await sealer.open(payload, "snapshot-data");
+			} catch (err) {
+				if (err instanceof EncryptionError) throw new Error(`Snapshot download failed (${err.message})`);
+				throw err;
+			}
+		}
 		const doc = new Y.Doc();
-		Y.applyUpdate(doc, gunzipSync(decoded.payload));
+		Y.applyUpdate(doc, gunzipSync(payload));
 		return doc;
 	}
 }

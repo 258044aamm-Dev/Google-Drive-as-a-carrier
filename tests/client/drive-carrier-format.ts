@@ -60,4 +60,17 @@ s.section("Test 3: names");
 	s.check(segmentName(5, "d", 0) < segmentName(50, "d", 0), "names sort by time");
 }
 
+s.section("Test: the encrypted flag");
+{
+	const payload = new Uint8Array([1, 2, 3]);
+	const plain = await encodeFile(KIND_SEGMENT, payload);
+	const flagged = await encodeFile(KIND_SEGMENT, payload, true);
+	s.check(plain[6] === 0 && plain[7] === 0, "plain files keep the flag and reserved bytes at zero (as before)");
+	s.check(flagged[6] === 1 && flagged[7] === 0, "the encrypted flag is bit 0 of byte 6");
+	s.check((await decodeFile(plain)).encrypted === false && (await decodeFile(flagged)).encrypted === true, "decoding reports the flag");
+	const noFlag = flagged.slice();
+	noFlag[6] = 0;
+	s.check((await decodeFile(noFlag)).encrypted === false, "the flag is not covered by the checksum, so it is checked against the vault instead (see the crypto suite)");
+}
+
 await s.done();

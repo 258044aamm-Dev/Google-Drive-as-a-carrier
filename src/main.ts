@@ -1,4 +1,4 @@
-import { MarkdownView, Notice, Plugin, TFile, arrayBufferToHex } from "obsidian";
+import { MarkdownView, Notice, Platform, Plugin, TFile, arrayBufferToHex } from "obsidian";
 import {
 	DEFAULT_SETTINGS,
 	VaultSyncSettingTab,
@@ -2204,6 +2204,10 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			onSignInLost: () => {
 				new Notice("YAOS: Google access was lost. Sign in again in the YAOS settings.", 12000);
 			},
+			onFatal: (message) => {
+				new Notice(`YAOS: Google Drive sync stopped. ${message}`, 15000);
+			},
+			isMobile: () => Platform.isMobile,
 		});
 		return this.driveCarrier;
 	}

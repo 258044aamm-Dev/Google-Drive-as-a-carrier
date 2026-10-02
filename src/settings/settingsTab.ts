@@ -45,7 +45,8 @@ type DeclarativeSettingKey =
 	| "debug"
 	| "carrier"
 	| "driveClientId"
-	| "driveClientSecret";
+	| "driveClientSecret"
+	| "driveEncryptionPassphrase";
 
 interface SettingsUpdateState {
 	serverVersion: string | null;
@@ -503,6 +504,11 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 						control: { type: "text", key: "driveClientSecret", placeholder: "Paste the client secret" },
 					},
 					{
+						name: "Encryption passphrase",
+						desc: "Optional. Encrypts everything YAOS stores on Drive. Set it before the first sync of a new vault and use the same passphrase on every device; it cannot be added to a vault that already exists on Drive, and a lost passphrase cannot be recovered. Reload the plugin after changing it.",
+						control: { type: "text", key: "driveEncryptionPassphrase", placeholder: "Leave empty for no encryption" },
+					},
+					{
 						name: signedIn ? "Signed in to Google" : "Sign in with Google",
 						desc: signedIn
 							? "Sign in again if sync reports that access was lost."
@@ -540,6 +546,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			case "carrier": return currentCarrier(this.host.settings);
 			case "driveClientId": return this.host.settings.driveClientId ?? "";
 			case "driveClientSecret": return this.host.settings.driveClientSecret ?? "";
+			case "driveEncryptionPassphrase": return this.host.settings.driveEncryptionPassphrase ?? "";
 			default: throw new Error(`Unknown Yaos setting: ${key}`);
 		}
 	}
@@ -642,6 +649,10 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 				return;
 			case "driveClientSecret":
 				await this.host.updateSettings((settings) => { settings.driveClientSecret = expectStringValue(key, value).trim(); }, "settings:drive-client-secret");
+				this.update();
+				return;
+			case "driveEncryptionPassphrase":
+				await this.host.updateSettings((settings) => { settings.driveEncryptionPassphrase = expectStringValue(key, value); }, "settings:drive-encryption-passphrase");
 				this.update();
 				return;
 			default:

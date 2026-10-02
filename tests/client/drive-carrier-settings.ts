@@ -137,7 +137,8 @@ s.section("Test 2: saved settings are untouched unless the carrier is chosen");
 	const loaded = await store.load();
 	await store.save(store.withSettings(loaded.persistedState, loaded.settings));
 	s.check(saved !== null && !Object.keys(saved).some((k) => k === "carrier" || k.startsWith("drive")), "saving an old user's data writes no carrier keys");
-	const kept = readVaultSyncSettings({ carrier: "drive", driveClientId: "i", driveRefreshToken: "r" }).settings;
+	const kept = readVaultSyncSettings({ carrier: "drive", driveClientId: "i", driveRefreshToken: "r", driveEncryptionPassphrase: "pp" }).settings;
+	s.check(kept.driveEncryptionPassphrase === "pp", "a saved passphrase survives loading");
 	s.check(kept.carrier === "drive" && kept.driveClientId === "i" && kept.driveRefreshToken === "r", "chosen values survive loading");
 }
 
@@ -154,7 +155,7 @@ s.section("Test 3: default (Cloudflare) screens are the same as before, plus one
 	const cItems = configured.tab.getSettingDefinitions();
 	s.check(groupHeadings(cItems).join() === "Sync status,Updates,This device,What syncs,Attachments,Collaboration", `configured groups (${groupHeadings(cItems).join()})`);
 	const defs = flatten(cItems);
-	s.check(!defs.some((d) => d.name === "Sign in with Google" || d.name === "Google client ID"), "no Drive rows for Cloudflare users");
+	s.check(!defs.some((d) => d.name === "Sign in with Google" || d.name === "Google client ID" || d.name === "Encryption passphrase"), "no Drive rows for Cloudflare users");
 	s.check(defs.some((d) => d.control?.key === "host") && defs.some((d) => d.control?.key === "token"), "server rows still present");
 	s.check(configured.tab.getControlValue("carrier") === "cloudflare", "dropdown shows Cloudflare");
 }
@@ -178,6 +179,13 @@ s.section("Test 4: choosing the carrier");
 	s.check(f.settings.driveClientId === "id-1" && f.settings.driveClientSecret === "sec", "client details are trimmed and saved");
 	s.check(f.tab.getControlValue("driveClientId") === "id-1" && f.tab.getControlValue("driveClientSecret") === "sec", "and read back");
 	s.check(makeFixture().tab.getControlValue("driveClientId") === "", "empty by default");
+	s.check(f.tab.getControlValue("driveEncryptionPassphrase") === "" && f.settings.driveEncryptionPassphrase === undefined, "no encryption passphrase by default");
+	await f.tab.setControlValue("driveEncryptionPassphrase", "  my pass phrase ");
+	s.check(f.settings.driveEncryptionPassphrase === "  my pass phrase ", "the passphrase is saved exactly as typed (spaces can be part of it)");
+	s.check(f.tab.getControlValue("driveEncryptionPassphrase") === "  my pass phrase ", "and read back");
+	let badPass = false;
+	try { await f.tab.setControlValue("driveEncryptionPassphrase", 5); } catch { badPass = true; }
+	s.check(badPass, "a non-string passphrase is rejected");
 }
 
 s.section("Test 5: Drive screens");
@@ -228,6 +236,8 @@ s.section("Test 5: Drive screens");
 	s.check(f.calls.join() === "signIn,signOut", "sign out calls the host");
 	s.check(defs2.some((d) => d.control?.key === "vaultId"), "vault ID editable on the Drive screen");
 	s.check(defs2.some((d) => d.control?.key === "driveClientId") && defs2.some((d) => d.control?.key === "driveClientSecret"), "client fields present");
+	const pass = defs2.find((d) => d.control?.key === "driveEncryptionPassphrase");
+	s.check(pass?.name === "Encryption passphrase" && String(pass.desc).includes("before the first sync") && String(pass.desc).includes("cannot be recovered"), "the passphrase row warns about the one-time choice and about loss");
 }
 
 s.section("Test 6: a host without Drive support does not break the screen");
