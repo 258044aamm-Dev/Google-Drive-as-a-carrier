@@ -39,7 +39,7 @@ Tombstoned Markdown bodies are reaped after their grace period while tombstone m
 
 ### Google Drive carrier (experimental, off by default)
 
-An alternative `SyncTransport` lives in `src/drive-carrier/` and is used only when the user picks it in Advanced settings. It exchanges Yjs updates as immutable files in a Drive folder, so there is no server, no authoritative copy and no push channel: devices poll. Attachments and snapshots go to their own Drive folders through two small optional interfaces (`BlobStoreClient` in `blobSync.ts`, `SnapshotBackend` in `src/snapshots/`); without the carrier those default to the Worker code paths unchanged. Everything stored can optionally be encrypted with a vault passphrase. See [drive-carrier.md](drive-carrier.md) for layout, limits and the request budget.
+An alternative `SyncTransport` lives in `src/drive-carrier/` and is used only when the user picks it in the settings (the "Sync carrier" row). It exchanges Yjs updates as immutable files in a Drive folder, so there is no server, no authoritative copy and no push channel: devices poll. Attachments and snapshots go to their own Drive folders through two small optional interfaces (`BlobStoreClient` in `blobSync.ts`, `SnapshotBackend` in `src/snapshots/`); without the carrier those default to the Worker code paths unchanged. Everything stored can optionally be encrypted with a vault passphrase. See [drive-carrier.md](drive-carrier.md) for layout, limits and the request budget.
 
 ### Disk to CRDT
 

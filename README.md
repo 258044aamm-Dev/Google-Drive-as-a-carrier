@@ -62,7 +62,7 @@ R2 also enables daily automatic snapshots and on-demand point-in-time backups. Y
 
 ## Experimental: Google Drive instead of Cloudflare
 
-If you would rather not run a Cloudflare Worker, YAOS can sync through a folder in your own Google Drive (Settings > YAOS > Advanced > Sync carrier). It needs no server, supports attachments and snapshots, and can encrypt everything with a passphrase. It polls, so changes arrive in a few seconds rather than instantly, and live cursors are not shared. Setup and limits: [docs/drive-carrier.md](docs/drive-carrier.md). It is off by default and does not change anything for Cloudflare users.
+If you would rather not run a Cloudflare Worker, YAOS can sync through a folder in your own Google Drive (Settings > YAOS > Setup > Sync carrier; once a Cloudflare server is set up it is under Advanced). It needs no server, supports attachments and snapshots, and can encrypt everything with a passphrase. It polls, so changes arrive in a few seconds rather than instantly, and live cursors are not shared. Setup and limits: [docs/drive-carrier.md](docs/drive-carrier.md). It is off by default and does not change anything for Cloudflare users.
 
 ## Works with AI agents
 

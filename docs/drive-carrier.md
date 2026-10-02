@@ -5,7 +5,7 @@ alternative that needs **no server**: devices exchange the same Yjs updates by
 writing small immutable files into a folder in the user's own Google Drive.
 
 It is **off by default**. Nothing changes for existing setups; the carrier is
-only used when you pick it in *Settings > YAOS > Advanced > Sync carrier*.
+only used when you pick it in *Settings > YAOS > Setup > Sync carrier* (if a Cloudflare server is already set up, it is the first row under *Advanced*).
 
 ## How it behaves
 
@@ -110,7 +110,7 @@ devices**. YAOS cannot ship one for you, so you create your own (free):
 
 Then, on each device:
 
-1. Settings > YAOS > Advanced > **Sync carrier** > *Google Drive (experimental)*, then reload the plugin.
+1. Settings > YAOS > Setup > **Sync carrier** > *Google Drive (experimental)* (under *Advanced* if a server is already set up), then reload the plugin.
 2. Paste the **client ID** and **client secret**.
 3. Press **Sign in with Google**, open the shown address on any device and enter the code.
 4. Reload the plugin. Syncing starts.

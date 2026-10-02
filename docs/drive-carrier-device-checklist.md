@@ -10,7 +10,7 @@ device and plugin build.
 - [ ] Google Cloud project with the Drive API enabled and an OAuth client of type
       "TVs and limited-input devices" (see `drive-carrier.md`). Client is **published**.
 - [ ] Two devices at minimum: one desktop and one phone (ideally also a tablet).
-- [ ] Desktop: Settings > YAOS > Advanced > Sync carrier > Google Drive. Reload.
+- [ ] Desktop: Settings > YAOS > Setup > Sync carrier > Google Drive (on a vault with a Cloudflare server already set up it is the first row under Advanced). Reload.
 - [ ] Note the vault ID. Set the same one on the second device.
 
 ## 1. Sign-in
