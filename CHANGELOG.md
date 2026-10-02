@@ -8,7 +8,61 @@ Version numbers like `2.1.1-drive.3` exist only in each release's `manifest.json
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
-## Unreleased - 2.1.1-drive.11 (committed locally, not published)
+## 2.1.1-drive.7 - 2026-10-03
+
+One test build that gathers everything done since `2.1.1-drive.6`. **Some of it changes behaviour for every carrier, Cloudflare included** (the engine fixes and the upstream issue fixes below); each change is narrow, has its own tests that fail without it, and leaves the existing suites unchanged. The Drive-only items change nothing unless Google Drive is the carrier.
+
+**Part: Google Drive carrier hardening**
+
+### Fixed (Google Drive carrier)
+- **Encrypted vaults could upload plaintext after one failed start-up call.** If reading or writing `meta.json` failed once when connecting, later cycles skipped the key check and uploaded unencrypted files into the encrypted vault; other devices then rejected them and marked their own files "damaged". The folder now counts as ready only after the key check succeeds, and uploads refuse to run while the key is not ready.
+- **A device whose clock was wrong could make Drive lose data.** Old snapshots were pruned by file name, which carries the creating device's clock, so a device could delete its own newest snapshot. Pruning now orders by Drive's own creation time and never deletes the snapshot it just wrote. The device's picture of what Drive holds is rebuilt after it deletes files, so the repair pass and the "saved" status stay correct.
+- **"Synced" was reported with an incomplete document** (a file vanishing during the first read, a missing or hand-deleted file). The carrier now looks again up to three times and does not report synced while an update cannot be applied; it stays connected so edits still upload, and says why (`lastError`, `unreadableFiles`).
+- **One request that never answered froze syncing until restart.** Each cycle now has a five-minute limit; after that it counts as a failure and the normal retry back-off takes over.
+- A lagging file listing no longer causes duplicate uploads and a false "not saved" status (own fresh uploads are kept for 60 s).
+- Closing the app now sends edits still waiting for the 2-second batch.
+- A comment promised that a duplicate empty vault folder is removed; it is not, and the comment now says so.
+
+### Fixed (Google Drive carrier, engine interaction)
+- **A deleted note came back, with an OLD copy of its text.** If a note was edited and then deleted on one device, another device often received both in one poll. It compared its disk file (not yet updated with the edit) to the already updated document, took the file for "locally modified", kept it and revived the note. It now compares the disk file with the last content known to be in sync (the stored content hash); a file that matches is untouched and the delete is applied. A file the user really edited is still kept. Only wired when Google Drive is the carrier.
+- **A deleted note came back after a reopen when two devices had created the same path.** Two ids for one path meant a delete removed only one of them. With Google Drive, a delete now removes every active id for that path.
+
+### Tests (Google Drive carrier hardening)
+- `drive-carrier-hardening` (23 checks): one regression per carrier fix, each reproduced against the earlier code.
+- `drive-carrier-fuzz` (about 6 s, fixed seeds): 155 random runs across five configurations (three and four devices, interleaved calls, clocks that disagree, compaction every segment, encrypted). The earlier code fails 46 of them.
+- `drive-carrier-engine` (18 checks): real `VaultSync` and `DiskMirror` over the fake Drive for the two deletion fixes, the user-edit case, and the unchanged default behaviour.
+
+**Part: Engine step 1**
+
+### Changed (engine, now for every carrier including Cloudflare)
+- **Engine step 1: the two delete fixes are no longer limited to Google Drive.** Both were Drive-only in `2.1.1-drive.7`; they now apply to Cloudflare too. A remote delete is applied when the disk file still equals the last synced content, even if an edit arrived in the same batch; a delete removes every active id for the path. A file you really edited is still kept. Chosen on purpose: the same symptom is reported upstream (kavinsood/yaos #78).
+- Code: `src/main.ts` always wires the baseline provider; `VaultSync.handleDelete` always removes duplicate ids (the `_tombstoneDuplicateIds` flag is gone).
+
+### Tests (Engine step 1)
+- `drive-carrier-engine` grows to 20 checks: duplicate-id delete with the Cloudflare constructor, and the provider is not gated on the carrier.
+
+**Part: Engine step 2**
+
+### Fixed (engine, every carrier including Cloudflare)
+- **Engine step 2 (upstream SYNC-01): a note you deleted while YAOS was off, or before the first sync finished, no longer comes back.** At the next full reconcile a note that is in the shared document but missing on disk was always written back. Now one content rule decides: the device remembers a hash of the text it last had in sync (the disk index). If that hash still equals the document's text, nothing changed since the file was there, so its absence is a delete made on this device; it is recorded as deleted and the other devices follow. Everything else is as before and the note is written back: no remembered hash (a note this device never had), the document text changed meanwhile (someone edited it, so the edit is not lost), an ignored path, or a file the file system still has.
+  - A brake keeps a vault that looks emptied (the file list not loaded) from being mass-deleted: more than 20 notes and more than 25 % of tracked notes, or several notes with no markdown file found at all, are written back instead and the block is traced (`reconcile-offline-delete-blocked`).
+  - Only in full (authoritative) reconciles. Code: new `src/runtime/reconcile/offlineDeletePolicy.ts`; `ReconciliationController` calls it before writing the "missing on disk" notes.
+  - Not covered: a delete whose event was lost after a reconcile already dropped the file's remembered hash, and notes edited on this device and never re-synced to a settled hash; both are written back as before.
+
+### Tests (Engine step 2)
+- New `engine-offline-delete` (24 checks): the policy and the brake, and the real `VaultSync` + `ReconciliationController` for delete, edited-meanwhile, never-had, ignored, vault list incomplete, conservative mode, mass delete, and delete propagation. Five of them fail without the change.
+
+**Part: Engine step 3**
+
+### Fixed (engine, every carrier including Cloudflare)
+- **Engine step 3 (upstream SYNC-02): an edit on one side of an open note is no longer discarded without a trace.** When an open (editor-bound) note had changed on BOTH sides since the last synced text, one side was overwritten silently: the editor/disk text over the shared document ("local only" branch), or an external disk edit over it ("idle" branch). With the remembered baseline hash it is now known when both sides differ from the baseline and from each other; then the side about to be overwritten is first kept as a `(YAOS conflict - crdt ...)` note. Which side wins is unchanged. Normal typing lag (the document still at the baseline), a missing baseline, equal texts and repeated events make no copy (same cap and dedupe as the existing conflict notes).
+  - Code: `src/runtime/reconcile/boundDivergencePolicy.ts`; `ReconciliationController.preserveCrdtIfBothSidesChanged` called before the two overwrites.
+  - Found but NOT changed: if an open note's disk file lags behind a remote edit and still equals the old baseline, the "idle" branch can write that old text back over the shared document unless the user typed recently. That needs the real editor to judge, so it is only recorded here.
+
+### Tests (Engine step 3)
+- New `engine-bound-both-changed` (13 checks): the policy, both branches, the ordinary cases (no copy), no baseline, a repeated event. Three fail without the change.
+
+**Part: Server, startup, attachments and status bar**
 
 ### Fixed (snapshots; server and Google Drive)
 - **Snapshot lists said "0 notes".** The note count of a snapshot was read from `pathToId`, a map that current vaults no longer fill. A vault with thousands of notes showed `markdownFileCount: 0` (upstream issue #78 reported it for the Cloudflare server). The count now comes from the active entries of `meta`; documents without a schema version or with schema v1 keep the old count. Same fix in the Google Drive snapshot backend, which had copied the bug. Only the number in the snapshot list changes; snapshot content and restore are untouched.
@@ -35,58 +89,8 @@ This file is specific to this fork. It is not part of upstream YAOS.
 - **"Receipt: local state not yet received by server" no longer shows while only the newest edit is waiting** (upstream issue #68). When the server has already confirmed an earlier state (`lastKnownServerReceiptEchoAt` is set) and the newest edit is not confirmed yet, a connected device now reads "Receipt: latest edit awaiting server confirmation". Before any confirmation, and when offline, the old wording stays. Only the text changes: the tracker, the confirmation rule and the stored data are untouched.
 - **Why it is not a deeper fix:** the maintainer called the label non-breaking, and the reported state vectors could not be reproduced as a fault in the tracker, so the confirmation rule is left alone.
 
-### Tests
+### Tests (Server, startup, attachments and status bar)
 - `tombstone-reaper` gains Test 17 for the two new fields and Test 18 for the multi-pass loop (1154 tombstones, budget 0, expiring clock, clean document). New `engine-tombstone-age` (6 checks). New `engine-startup-layout` (9 checks): the wait helper, the reconcile with an open versus a not-yet-open note (shows the copy appearing only in the second case), and the position of the wait in `initSync`. `server-ack-tracker` gains Test 13 (the issue's sequence: confirmed, more typing, an echo behind it, then a dominating echo; label checked at each step). New `blob-oversize-local` (12 checks, 8 fail without the change): oversize file kept, no fetch, one notice, controls for small, missing and unlimited, and the same through a reconcile. New `active-files-count` (6 checks, one fails without the change); `drive-carrier-snapshots` gains a current-model check (fails without the change).
-
-## Unreleased - 2.1.1-drive.10 (committed locally, not published)
-
-### Fixed (engine, every carrier including Cloudflare)
-- **Engine step 3 (upstream SYNC-02): an edit on one side of an open note is no longer discarded without a trace.** When an open (editor-bound) note had changed on BOTH sides since the last synced text, one side was overwritten silently: the editor/disk text over the shared document ("local only" branch), or an external disk edit over it ("idle" branch). With the remembered baseline hash it is now known when both sides differ from the baseline and from each other; then the side about to be overwritten is first kept as a `(YAOS conflict - crdt ...)` note. Which side wins is unchanged. Normal typing lag (the document still at the baseline), a missing baseline, equal texts and repeated events make no copy (same cap and dedupe as the existing conflict notes).
-  - Code: `src/runtime/reconcile/boundDivergencePolicy.ts`; `ReconciliationController.preserveCrdtIfBothSidesChanged` called before the two overwrites.
-  - Found but NOT changed: if an open note's disk file lags behind a remote edit and still equals the old baseline, the "idle" branch can write that old text back over the shared document unless the user typed recently. That needs the real editor to judge, so it is only recorded here.
-
-### Tests
-- New `engine-bound-both-changed` (13 checks): the policy, both branches, the ordinary cases (no copy), no baseline, a repeated event. Three fail without the change.
-
-## Unreleased - 2.1.1-drive.9 (committed locally, not published)
-
-### Fixed (engine, every carrier including Cloudflare)
-- **Engine step 2 (upstream SYNC-01): a note you deleted while YAOS was off, or before the first sync finished, no longer comes back.** At the next full reconcile a note that is in the shared document but missing on disk was always written back. Now one content rule decides: the device remembers a hash of the text it last had in sync (the disk index). If that hash still equals the document's text, nothing changed since the file was there, so its absence is a delete made on this device; it is recorded as deleted and the other devices follow. Everything else is as before and the note is written back: no remembered hash (a note this device never had), the document text changed meanwhile (someone edited it, so the edit is not lost), an ignored path, or a file the file system still has.
-  - A brake keeps a vault that looks emptied (the file list not loaded) from being mass-deleted: more than 20 notes and more than 25 % of tracked notes, or several notes with no markdown file found at all, are written back instead and the block is traced (`reconcile-offline-delete-blocked`).
-  - Only in full (authoritative) reconciles. Code: new `src/runtime/reconcile/offlineDeletePolicy.ts`; `ReconciliationController` calls it before writing the "missing on disk" notes.
-  - Not covered: a delete whose event was lost after a reconcile already dropped the file's remembered hash, and notes edited on this device and never re-synced to a settled hash; both are written back as before.
-
-### Tests
-- New `engine-offline-delete` (24 checks): the policy and the brake, and the real `VaultSync` + `ReconciliationController` for delete, edited-meanwhile, never-had, ignored, vault list incomplete, conservative mode, mass delete, and delete propagation. Five of them fail without the change.
-
-## Unreleased - 2.1.1-drive.8 (committed locally, not published)
-
-### Changed (engine, now for every carrier including Cloudflare)
-- **Engine step 1: the two delete fixes are no longer limited to Google Drive.** Both were Drive-only in `2.1.1-drive.7`; they now apply to Cloudflare too. A remote delete is applied when the disk file still equals the last synced content, even if an edit arrived in the same batch; a delete removes every active id for the path. A file you really edited is still kept. Chosen on purpose: the same symptom is reported upstream (kavinsood/yaos #78).
-- Code: `src/main.ts` always wires the baseline provider; `VaultSync.handleDelete` always removes duplicate ids (the `_tombstoneDuplicateIds` flag is gone).
-
-### Tests
-- `drive-carrier-engine` grows to 20 checks: duplicate-id delete with the Cloudflare constructor, and the provider is not gated on the carrier.
-
-## Unreleased - 2.1.1-drive.7 (committed locally, not published)
-
-### Fixed (Google Drive carrier)
-- **Encrypted vaults could upload plaintext after one failed start-up call.** If reading or writing `meta.json` failed once when connecting, later cycles skipped the key check and uploaded unencrypted files into the encrypted vault; other devices then rejected them and marked their own files "damaged". The folder now counts as ready only after the key check succeeds, and uploads refuse to run while the key is not ready.
-- **A device whose clock was wrong could make Drive lose data.** Old snapshots were pruned by file name, which carries the creating device's clock, so a device could delete its own newest snapshot. Pruning now orders by Drive's own creation time and never deletes the snapshot it just wrote. The device's picture of what Drive holds is rebuilt after it deletes files, so the repair pass and the "saved" status stay correct.
-- **"Synced" was reported with an incomplete document** (a file vanishing during the first read, a missing or hand-deleted file). The carrier now looks again up to three times and does not report synced while an update cannot be applied; it stays connected so edits still upload, and says why (`lastError`, `unreadableFiles`).
-- **One request that never answered froze syncing until restart.** Each cycle now has a five-minute limit; after that it counts as a failure and the normal retry back-off takes over.
-- A lagging file listing no longer causes duplicate uploads and a false "not saved" status (own fresh uploads are kept for 60 s).
-- Closing the app now sends edits still waiting for the 2-second batch.
-- A comment promised that a duplicate empty vault folder is removed; it is not, and the comment now says so.
-
-### Fixed (Google Drive carrier, engine interaction)
-- **A deleted note came back, with an OLD copy of its text.** If a note was edited and then deleted on one device, another device often received both in one poll. It compared its disk file (not yet updated with the edit) to the already updated document, took the file for "locally modified", kept it and revived the note. It now compares the disk file with the last content known to be in sync (the stored content hash); a file that matches is untouched and the delete is applied. A file the user really edited is still kept. Only wired when Google Drive is the carrier.
-- **A deleted note came back after a reopen when two devices had created the same path.** Two ids for one path meant a delete removed only one of them. With Google Drive, a delete now removes every active id for that path.
-
-### Tests
-- `drive-carrier-hardening` (23 checks): one regression per carrier fix, each reproduced against the earlier code.
-- `drive-carrier-fuzz` (about 6 s, fixed seeds): 155 random runs across five configurations (three and four devices, interleaved calls, clocks that disagree, compaction every segment, encrypted). The earlier code fails 46 of them.
-- `drive-carrier-engine` (18 checks): real `VaultSync` and `DiskMirror` over the fake Drive for the two deletion fixes, the user-edit case, and the unchanged default behaviour.
 
 ## 2.1.1-drive.6 - 2026-10-02
 

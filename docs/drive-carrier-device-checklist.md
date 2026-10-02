@@ -139,3 +139,11 @@ What the trace shows for a note `X`:
 - [ ] Turn the plugin off, create `Offline test B` on device 1 only and never sync it; nothing is deleted. A brand new third device that joins gets every note.
 - [ ] With debug mode on, the trace shows `reconcile.file.decision` with `treat-as-local-delete` for the deleted note.
 
+
+## 15. Startup, attachments, status bar, snapshots (scratch vault)
+
+- [ ] **Open note at startup (#77).** Create `Startup test`, type a few lines, leave it open in a tab, close Obsidian fully within a second of the last keystroke, reopen. No `Startup test (YAOS conflict - disk ...)` note appears. With debug mode on, the trace may show `startup-layout-wait` (normal).
+- [ ] **Big attachment (#75).** Set Attachments > maximum size to 1 MB (or lower). Put a 2 MB image in the vault. On the other device make the synced list point at a smaller version of the same name (or edit the image there to be small and sync). The big local file stays as it is, and one notice names the file and the limit. Raise the limit: the next sync updates it.
+- [ ] **Status bar (#68).** With Cloudflare, type continuously for 30 s. The receipt text does not say "local state not yet received by server"; at worst it says "latest edit awaiting server confirmation", and it goes back to "server saved latest local state" a moment after you stop.
+- [ ] **Snapshot list (#78).** Take a snapshot of a vault with notes. The list shows the real note count, not 0.
+- [ ] Nothing else looks different: sync, delete, rename, attachments, conflict notes behave as in sections 1-14.
