@@ -79,6 +79,8 @@ export interface VaultSyncSettingsHost {
 	/** Google Drive carrier only. Absent on hosts that do not offer it. */
 	signInToDrive?(): Promise<void>;
 	signOutOfDrive?(): Promise<void>;
+	/** Opens the step-by-step Google Drive setup wizard. */
+	openDriveWizard?(): void;
 }
 
 const CLOUDFLARE_DEPLOY_URL = "https://deploy.workers.cloudflare.com/?url=https://github.com/kavinsood/yaos/tree/main/server";
@@ -506,9 +508,15 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 				items: [
 					{
 						name: "Status",
-						desc: signedIn ? status.label : "Not signed in. Enter your Google client details below, then sign in.",
+						desc: signedIn ? status.label : "Not signed in. Press \"Set up Google Drive\" below for a step-by-step guide, or enter your Google client details by hand.",
 					},
 					carrierRow,
+					{
+						name: "Set up Google Drive",
+						desc: "A short step-by-step guide: connect to Google, choose encryption, then create your vault or join one you already have.",
+						visible: () => typeof this.host.openDriveWizard === "function",
+						action: () => { this.host.openDriveWizard?.(); },
+					},
 					{ name: "Folder on Drive", desc: driveFolderLabel(settings.vaultId || "Not set") },
 					{
 						name: "Vault ID",
@@ -663,6 +671,8 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 				await this.host.updateSettings((settings) => { settings.carrier = nextValue; }, "settings:carrier");
 				new Notice("Reload the plugin (or restart Obsidian) to switch the sync carrier.", 8000);
 				this.update();
+				// Choosing Drive for the first time: walk the user through the rest.
+				if (nextValue === "drive" && !isDriveSignedIn(this.host.settings)) this.host.openDriveWizard?.();
 				return;
 			}
 			case "driveClientId":

@@ -74,6 +74,19 @@ device and plugin build.
 - [ ] A device left on the default carrier (Cloudflare) still syncs, shows the old settings screens (plus the one carrier row), and attachments/snapshots go to R2.
 - [ ] Switching to Drive and back to Cloudflare restores the old behaviour.
 
+## 10. Setup wizard (scratch vault, new install)
+
+- [ ] Fresh vault, Cloudflare not set up: Setup > Sync carrier > Google Drive. The wizard opens by itself.
+- [ ] Every Google Cloud button opens the right page; the wording matches what you see (the console changes; note any step that is out of date).
+- [ ] Paste client ID/secret; the sign-in code appears; approve it on the phone. The wizard moves on by itself.
+- [ ] Encryption: leave the passphrase empty (Next blocked), mismatch (blocked), then valid.
+- [ ] After "Create": folder `YAOS <vault id>` in Drive holds only `meta.json`; no test file is left.
+- [ ] Copy the setup code. Second device: Join my existing vault > paste > sign in. Notes appear.
+- [ ] Join with a code made without the passphrase: you are asked for it; a wrong one is refused and nothing is saved.
+- [ ] Cancel in the middle (before "Create"): nothing in Drive, settings unchanged.
+- [ ] Turn airplane mode on at "Create": a clear message and Try again works.
+- [ ] A Cloudflare vault: the settings screen shows no wizard row.
+
 ## 9. Things to report
 
 Latency from edit to arrival (median, worst), any error text shown, Drive request

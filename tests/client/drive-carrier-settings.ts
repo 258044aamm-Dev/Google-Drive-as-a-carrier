@@ -70,7 +70,7 @@ interface Fixture {
 	calls: string[];
 }
 
-function makeFixture(overrides: Partial<VaultSyncSettings> = {}, withDriveHost = true): Fixture {
+function makeFixture(overrides: Partial<VaultSyncSettings> = {}, withDriveHost = true, wizardCalls?: string[]): Fixture {
 	const settings: VaultSyncSettings = { ...DEFAULT_SETTINGS, ...overrides };
 	const reasons: string[] = [];
 	const calls: string[] = [];
@@ -103,6 +103,7 @@ function makeFixture(overrides: Partial<VaultSyncSettings> = {}, withDriveHost =
 		buildSetupDeepLink: () => null,
 		buildMobileSetupUrl: () => null,
 		buildRecoveryKitText: () => null,
+		...(wizardCalls ? { openDriveWizard: () => { wizardCalls.push("wizard"); } } : {}),
 		...(withDriveHost ? {
 			signInToDrive: async () => { calls.push("signIn"); },
 			signOutOfDrive: async () => { calls.push("signOut"); },
@@ -220,7 +221,7 @@ s.section("Test 5: Drive screens");
 	const adv = advancedItems(items).map((i) => "name" in i ? i.name : "");
 	s.check(!adv.includes("Sync carrier (experimental)") && !adv.includes("Deployment repository URL") && !adv.includes("Deployment default branch") && adv.includes("Vault ID"), `Advanced drops the server-only rows and no longer holds the carrier row (${adv.join("|")})`);
 	const driveRows = groupItems(items, "Google Drive carrier");
-	s.check(driveRows[0] === "Status" && driveRows[1] === "Sync carrier (experimental)", `the carrier choice is at the top of the Drive group, to switch back (${driveRows.slice(0, 3).join("|")})`);
+	s.check(driveRows[0] === "Status" && driveRows[1] === "Sync carrier (experimental)" && driveRows[2] === "Set up Google Drive", `the carrier choice and the wizard button are at the top of the Drive group (${driveRows.slice(0, 4).join("|")})`);
 	s.check(flatten(items).filter((d) => d.name === "Sync carrier (experimental)").length === 1, "and appears only once");
 	const driveNames = flatten(items).map((d) => String(d.name));
 	for (const gone of ["Deploy your server", "Setup required", "Server", "Server URL", "Sync token", "Pair another device", "Back up connection details", "Refresh attachment capability", "Set up attachment storage", "Deployment repository URL", "Deployment default branch", "Check for updates"]) {
@@ -298,6 +299,43 @@ s.section("Test 7: the transport factory");
 	doc.getText("t").insert(0, "typed ");
 	s.check((transport as DriveTransport).pendingParts === 1, "real edits are queued");
 	transport.destroy();
+}
+
+s.section("Test 8: the setup wizard hooks");
+{
+	const calls: string[] = [];
+	const f = makeFixture({ carrier: "drive" }, true, calls);
+	const row = flatten(f.tab.getSettingDefinitions()).find((d) => d.name === "Set up Google Drive");
+	const rowVisible = row && "visible" in row ? row.visible : undefined;
+	s.check(!!row && typeof rowVisible === "function" && rowVisible() === true, "the wizard row is shown when the host can open the wizard");
+	press(row);
+	s.check(calls.join() === "wizard", "pressing it opens the wizard");
+	const noHost = makeFixture({ carrier: "drive" }, true);
+	const hidden = flatten(noHost.tab.getSettingDefinitions()).find((d) => d.name === "Set up Google Drive");
+	const hiddenVisible = hidden && "visible" in hidden ? hidden.visible : undefined;
+	s.check(typeof hiddenVisible === "function" && hiddenVisible() === false, "without a wizard host the row stays hidden");
+	for (const settings of [{}, { host: "https://sync.example", token: "tok" }] as Partial<VaultSyncSettings>[]) {
+		const cf = makeFixture(settings, true, calls);
+		const rows = flatten(cf.tab.getSettingDefinitions()).filter((d) => d.name === "Set up Google Drive");
+		s.check(rows.length === 0, "Cloudflare screens never contain the wizard row");
+	}
+
+	// Choosing Drive opens the wizard only when nobody is signed in yet.
+	const before = calls.length;
+	const fresh = makeFixture({}, true, calls);
+	await fresh.tab.setControlValue("carrier", "drive");
+	s.check(calls.length === before + 1, "choosing Drive while signed out opens the wizard");
+	const signedIn = makeFixture({ driveClientId: "i", driveClientSecret: "x", driveRefreshToken: "r" }, true, calls);
+	await signedIn.tab.setControlValue("carrier", "drive");
+	s.check(calls.length === before + 1, "choosing Drive while signed in does not");
+	const back = makeFixture({ carrier: "drive" }, true, calls);
+	await back.tab.setControlValue("carrier", "cloudflare");
+	s.check(calls.length === before + 1, "choosing Cloudflare never opens it");
+	const noWizardHost = makeFixture({}, true);
+	await noWizardHost.tab.setControlValue("carrier", "drive");
+	s.check(noWizardHost.settings.carrier === "drive", "a host without the wizard still just saves the choice");
+	const status = flatten(f.tab.getSettingDefinitions()).find((d) => d.name === "Status");
+	s.check(/Not signed in/.test(String(status?.desc ?? "")) && /Set up Google Drive/.test(String(status?.desc ?? "")), "the Status row points to the wizard");
 }
 
 /** Click a setting row that has an action. */

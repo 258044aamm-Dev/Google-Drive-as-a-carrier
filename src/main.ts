@@ -94,6 +94,9 @@ import {
 } from "./drive-carrier/carrierSettings";
 import { createDriveCarrier, type DriveCarrier } from "./drive-carrier/driveCarrierRuntime";
 import { DriveSignInModal } from "./drive-carrier/DriveSignInModal";
+import { DriveSetupWizard } from "./drive-carrier/wizard/DriveSetupWizard";
+import { BUNDLED_GOOGLE_CLIENT } from "./drive-carrier/wizard/bundledClient";
+import type { FinishResult, WizardSettingsPatch } from "./drive-carrier/wizard/wizardController";
 import { GoogleAuthError } from "./drive-carrier/googleAuth";
 import { obsidianDriveHttp } from "./drive-carrier/obsidianDriveHttp";
 import { signInWithGoogle } from "./drive-carrier/signIn";
@@ -592,6 +595,16 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		}
 
 		this.addSettingTab(new VaultSyncSettingTab(this.app, this, this));
+		// Google Drive setup wizard command: listed only while the Drive carrier is chosen.
+		this.addCommand({
+			id: "drive-setup-wizard",
+			name: "Set up Google Drive",
+			checkCallback: (checking: boolean) => {
+				if (!isDriveCarrier(this.settings)) return false;
+				if (!checking) this.openDriveWizard();
+				return true;
+			},
+		});
 
 		this.statusBarEl = this.addStatusBarItem();
 		this.updateStatusBar("disconnected");
@@ -612,7 +625,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		if (isDriveCarrier(this.settings)) {
 			if (!isDriveSignedIn(this.settings)) {
 				this.log("Google Drive carrier selected but not signed in — sync disabled");
-				new Notice("YAOS: sign in to Google in the YAOS settings to enable sync.", 10000);
+				new Notice("YAOS: Google Drive is not set up yet. Open the YAOS settings and press \"Set up Google Drive\".", 10000);
 				finishOnload("drive-not-signed-in");
 				return;
 			}
@@ -2164,6 +2177,57 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			if (error instanceof GoogleAuthError && error.code === "cancelled") return;
 			new Notice(`YAOS: ${error instanceof Error ? error.message : String(error)}`, 12000);
 		}
+	}
+
+	/** Google Drive carrier: the step-by-step setup wizard. */
+	openDriveWizard(): void {
+		new DriveSetupWizard(this.app, {
+			http: obsidianDriveHttp,
+			sleep: (ms) => new Promise<void>((resolve) => { window.setTimeout(resolve, ms); }),
+			getSettings: () => this.settings,
+			applySettings: (patch) => this.applyDriveWizardSettings(patch),
+			newVaultId: generateVaultId,
+			bundledClient: BUNDLED_GOOGLE_CLIENT,
+			copyText: (text) => navigator.clipboard.writeText(text),
+			openUrl: (url) => { window.open(url, "_blank", "noopener"); },
+			finishSetup: () => this.finishDriveSetup(),
+			reloadApp: () => {
+				const commands = (this.app as unknown as { commands?: { executeCommandById?: (id: string) => boolean } }).commands;
+				commands?.executeCommandById?.("app:reload");
+			},
+		}).open();
+	}
+
+	private async applyDriveWizardSettings(patch: WizardSettingsPatch): Promise<void> {
+		await this.updateSettings((settings) => {
+			settings.carrier = patch.carrier;
+			settings.vaultId = patch.vaultId;
+			settings.driveClientId = patch.driveClientId;
+			settings.driveClientSecret = patch.driveClientSecret;
+			settings.driveRefreshToken = patch.driveRefreshToken;
+			settings.driveEncryptionPassphrase = patch.driveEncryptionPassphrase;
+		}, "settings:drive-wizard");
+	}
+
+	/**
+	 * After the wizard: start syncing now when nothing is running yet (the same
+	 * start the Cloudflare setup link uses), otherwise ask for a reload so a
+	 * running sync is never switched under its feet.
+	 */
+	private async finishDriveSetup(): Promise<FinishResult> {
+		if (!isDriveCarrier(this.settings) || !isDriveSignedIn(this.settings)) return "reload";
+		if (this.vaultSync) return "reload";
+		if (!this.settings.driveDeviceId) {
+			await this.updateSettings((settings) => {
+				settings.driveDeviceId = newDriveDeviceId(randomId);
+			}, "settings:drive-device-id");
+		}
+		this.driveCarrier = null;
+		this.applyRuntimeSettings("drive-wizard");
+		await this.initSync();
+		if (!this.vaultSync) return "reload";
+		if (!this.teardownLifecycle.isClosing) this.mountQaDebugApi();
+		return "started";
 	}
 
 	async signOutOfDrive(): Promise<void> {

@@ -8,6 +8,28 @@ Version numbers like `2.1.1-drive.3` exist only in each release's `manifest.json
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
+## 2.1.1-drive.4 - 2026-10-02
+
+### Added
+- **Google Drive setup wizard** for people who have never set up anything like this. It opens when you choose Google Drive for the first time, from a **Set up Google Drive** button in the Google Drive section, and from the command **YAOS: Set up Google Drive**. Two paths: *Start a new vault* and *Join my existing vault*.
+  - Guides you through Google Cloud step by step (project, Drive API, consent screen, client of type "TVs and Limited Input devices", Publish app) with a button for each Google page, then pastes and checks the client details.
+  - Signs in with Google by itself (code shown in the wizard), then asks about encryption (on by default, with a clear warning that a lost passphrase cannot be recovered).
+  - Creates the vault only after a test: it makes, reads and deletes a small file in the new `YAOS <vault id>` folder, then writes `meta.json`. Settings are saved at the very end; cancelling earlier changes nothing.
+  - Ends with a **setup code** (`YAOS-DRIVE1:...`) for the second device. It holds the vault ID, the client details and optionally the passphrase, never the sign-in token. The wizard warns to keep it private.
+  - Joining checks the vault first: not found, wrong or missing passphrase, a passphrase for an unencrypted vault, or a different layout are each explained, and nothing is saved until the check passes.
+  - A device that is already set up gets a warning before it makes a new vault.
+  - Syncing starts straight away after setup when nothing was running (otherwise a Reload button is shown).
+  - The built-in shared Google client is **not included yet** (placeholder is empty), so this build offers the "own client" path only.
+- Tests: `drive-carrier-wizard-code` (50 checks) and `drive-carrier-wizard-flow` (132 checks) plus 10 new checks in `drive-carrier-settings`, all against the fake Drive.
+
+### Changed
+- The Drive group's Status row, when signed out, says to press "Set up Google Drive". The older manual rows still work.
+- The notice shown when Google Drive is chosen but not set up points to the wizard.
+
+### Notes
+- Cloudflare users see no difference: the wizard is only reachable once Google Drive is chosen, and the new row appears only in the Google Drive section.
+- Not tested against real Google yet: the wording of Google Cloud's console may differ from the guide.
+
 ## 2.1.1-drive.3 - 2026-10-02
 
 ### Changed

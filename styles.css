@@ -178,3 +178,23 @@ body .cm-editor .cm-ySelectionInfo {
 	letter-spacing: 0.15em;
 	text-align: center;
 }
+
+/* Google Drive setup wizard (opened only for the Drive carrier). */
+.yaos-drive-wizard { max-width: 34rem; }
+.yaos-wizard-progress { opacity: 0.7; font-size: 0.85em; margin-bottom: 0.5em; }
+.yaos-wizard-note { padding: 0.6em 0.8em; margin: 0.8em 0; border-radius: 6px; background: var(--background-secondary); }
+.yaos-wizard-warn { border-left: 3px solid var(--text-warning); }
+.yaos-wizard-info { border-left: 3px solid var(--interactive-accent); }
+.yaos-wizard-code { word-break: break-all; user-select: all; }
+.yaos-wizard-field { margin: 0.8em 0; }
+.yaos-wizard-field label { display: block; margin-bottom: 0.25em; }
+.yaos-wizard-check { display: flex; align-items: center; gap: 0.4em; }
+.yaos-wizard-input { width: 100%; }
+textarea.yaos-wizard-input { min-height: 5em; font-family: var(--font-monospace); }
+.yaos-wizard-help { opacity: 0.7; font-size: 0.85em; }
+.yaos-wizard-problem { color: var(--text-error); font-size: 0.85em; }
+.yaos-wizard-busy { opacity: 0.8; }
+.yaos-wizard-checklist { list-style: none; padding-left: 0; }
+.yaos-wizard-link-button { display: block; margin: 0.8em 0; }
+.yaos-wizard-buttons { flex-wrap: wrap; gap: 0.5em; }
+.yaos-wizard-plain { background: transparent; box-shadow: none; }

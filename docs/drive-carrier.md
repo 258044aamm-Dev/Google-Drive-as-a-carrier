@@ -95,6 +95,37 @@ the tests assert these budgets.
 Because phones suspend apps, changes made on another device while the phone app
 is in the background arrive when you open it again.
 
+## Setup wizard (recommended)
+
+Choose **Google Drive (experimental)** under Settings > YAOS > Setup > Sync
+carrier, or press **Set up Google Drive** in the Google Drive section, or run
+the command **YAOS: Set up Google Drive**. A short wizard walks you through:
+
+1. **Start a new vault** or **Join my existing vault** (a second device).
+2. **Google client.** If this build contains a built-in client you just choose
+   it; otherwise (or if you choose "use my own") the wizard shows each Google
+   Cloud page with a button, tells you what to click, and asks you to paste the
+   client ID and secret. Those pages are the same five steps listed under
+   "Setup" below.
+3. **Sign in with Google.** A code appears; open google.com/device on any
+   device and enter it.
+4. **Encryption** (new vault only; on by default). The passphrase cannot be
+   recovered; without it nobody, including you, can read the notes on Drive.
+5. **Create.** The wizard checks that it can create, read and delete a file in
+   a new `YAOS <vault id>` folder, writes `meta.json`, and only then saves your
+   settings. Nothing is saved or written to Drive if you cancel earlier.
+6. **Setup code.** A `YAOS-DRIVE1:...` code holds the vault ID, the client
+   details and (if you tick the box) the passphrase. It never contains your
+   sign-in token. Paste it on the second device under **Join my existing
+   vault**. Treat it like a password and never put it in a note inside the vault.
+
+On a device that is already set up, the wizard first warns that a new vault
+leaves the old Drive folder untouched, and asks you to confirm.
+
+The wizard starts syncing straight away when nothing was running; if sync was
+already running in the session it offers a Reload button instead. The manual
+steps below still work and are unchanged.
+
 ## Setup (once per Google account)
 
 Google's device sign-in needs an OAuth client of type **TVs and limited-input
