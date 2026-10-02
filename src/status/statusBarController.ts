@@ -131,6 +131,11 @@ export function getServerReceiptStatusLabel(
 		label = durable
 			? "Receipt: server saved latest local state"
 			: "Receipt: server received latest local state";
+	} else if (receipt.serverAppliedLocalState === false && connected && receipt.lastKnownServerReceiptEchoAt !== null) {
+		// The server has confirmed an earlier state, so sync works; only the
+		// newest edit is still waiting. "Not yet received" read like a fault
+		// while typing (upstream issue #68).
+		label = "Receipt: latest edit awaiting server confirmation";
 	} else if (receipt.serverAppliedLocalState === false && connected) {
 		label = "Receipt: local state not yet received by server";
 	} else if (receipt.serverAppliedLocalState === false && !connected) {
