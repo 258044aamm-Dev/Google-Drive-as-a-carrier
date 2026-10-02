@@ -17,8 +17,14 @@ This file is specific to this fork. It is not part of upstream YAOS.
 ### Added (server diagnostics)
 - **The tombstone reaper's trace now explains an idle pass.** Two new fields, `oldestTombstoneAgeMs` and `nextEligibleAt`, say how old the oldest deleted note is and when the first one becomes eligible. A report like "reaped: 0, every tombstone within the grace window" (upstream issue #78) can now be told from a real fault: if even the oldest is younger than 30 days, nothing is wrong. Nothing is reaped differently.
 
+### Checked, no code change (re-deleting does not refresh a tombstone)
+- A question from upstream issue #78 was whether deleting a note again keeps pushing its deletion time forward, so the 30-day grace never ends. It does not: a second delete finds no active note for the path and does nothing, a reconcile does not touch the time, and only a delete after a re-create counts as a new deletion. Pinned by the new `engine-tombstone-age` test so a future change cannot break it silently.
+
+### Changed (server)
+- **A load now clears more than 500 old deleted bodies.** The reaper still caps one pass at 500 bodies (so no single update grows), but after a pass that left some behind, the server runs further passes within a 50 ms budget instead of waiting for the next cold load. Vaults with 500 or fewer eligible bodies run exactly one pass, as before. New function `reapTombstonedBodiesUntilDone` in `server/src/tombstoneReaper.ts`; `server.ts` calls it in place of the single pass. Durable Object behaviour itself could not be run here; the function is tested on documents.
+
 ### Tests
-- `tombstone-reaper` gains Test 17 for the two new fields. New `active-files-count` (6 checks, one fails without the change); `drive-carrier-snapshots` gains a current-model check (fails without the change).
+- `tombstone-reaper` gains Test 17 for the two new fields and Test 18 for the multi-pass loop (1154 tombstones, budget 0, expiring clock, clean document). New `engine-tombstone-age` (6 checks). New `active-files-count` (6 checks, one fails without the change); `drive-carrier-snapshots` gains a current-model check (fails without the change).
 
 ## Unreleased - 2.1.1-drive.10 (committed locally, not published)
 
