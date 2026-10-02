@@ -140,6 +140,13 @@ export class DiskMirror {
 	private _onDiskWriteCallback: ((path: string, contentHash: string) => void) | null = null;
 
 	/**
+	 * Optional: the content hash this device last knew to be on disk and in sync
+	 * for a path. Only wired for the Google Drive carrier. When set, a remote
+	 * delete treats a disk file that still matches it as untouched.
+	 */
+	private remoteDeleteBaselineHash: ((path: string) => string | null) | null = null;
+
+	/**
 	 * Per-path timestamp of the most recent successful `flushWrite`. Updated
 	 * on every `vault.modify` and `vault.create` we issue. Read by the main
 	 * vault.on("modify") handler so `disk.modify.observed` events can carry
@@ -187,6 +194,18 @@ export class DiskMirror {
 	 */
 	setDiskWriteCallback(callback: (path: string, contentHash: string) => void): void {
 		this._onDiskWriteCallback = callback;
+	}
+
+	/**
+	 * Drive carrier only. A remote delete used to compare the disk with the CRDT
+	 * text at the moment the delete was seen. The carrier hands over an edit and
+	 * the delete that follows it in one poll, so the disk was still the text from
+	 * before that edit, looked "locally modified", and the delete was undone with
+	 * the OLD text. The last known synced hash tells an untouched file from an
+	 * edited one.
+	 */
+	setRemoteDeleteBaselineProvider(provider: ((path: string) => string | null) | null): void {
+		this.remoteDeleteBaselineHash = provider;
 	}
 
 	// -------------------------------------------------------------------
@@ -674,7 +693,18 @@ export class DiskMirror {
 					if (lastKnownContent !== null) {
 						try {
 							const diskContent = await this.app.vault.read(file);
-							if (diskContent !== lastKnownContent) {
+							const matchesSyncedBaseline = diskContent !== lastKnownContent
+								&& this.remoteDeleteBaselineHash !== null
+								&& await this.diskMatchesSyncedBaseline(normalized, diskContent);
+							if (matchesSyncedBaseline) {
+								this.trace?.("disk", "remote-delete-clean-by-baseline", {
+									path,
+									normalizedPath: normalized,
+									diskLength: diskContent.length,
+									crdtLength: lastKnownContent.length,
+								});
+							}
+							if (diskContent !== lastKnownContent && !matchesSyncedBaseline) {
 								// Known baseline exists, local file differs → known dirty.
 								// Preserve and revive: local dirty work wins over remote delete.
 								decision = { kind: "preserve-revive", diskContent };
@@ -930,6 +960,12 @@ export class DiskMirror {
 		} else {
 			this.scheduleWrite(newNormalized);
 		}
+	}
+
+	private async diskMatchesSyncedBaseline(path: string, diskContent: string): Promise<boolean> {
+		const baseline = this.remoteDeleteBaselineHash?.(path) ?? null;
+		if (!baseline) return false;
+		return (await contentBaselineHash(diskContent)) === baseline;
 	}
 
 	private async deleteLocalReplica(file: TFile): Promise<"trash"> {

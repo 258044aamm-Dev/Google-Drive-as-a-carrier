@@ -50,6 +50,8 @@ export class FakeDrive {
 		deleteFile: 0,
 	};
 	latencyHook: ((op: FakeOp) => Promise<void>) | null = null;
+	/** Files for which this returns true are missing from listings (a lagging file listing); reads still work. */
+	hideFromListing: ((name: string) => boolean) | null = null;
 	private nextId = 1;
 	private readonly failures: { op: FakeOp; status: number; count: number }[] = [];
 	private readonly loseResponse: { count: number }[] = [];
@@ -143,7 +145,7 @@ export class FakeDriveClient implements DriveApi {
 	async listFiles(folderId: string): Promise<DriveFileInfo[]> {
 		await this.drive.enter("listFiles");
 		return Array.from(this.drive.files.values())
-			.filter((f) => f.parent === folderId)
+			.filter((f) => f.parent === folderId && !(this.drive.hideFromListing?.(f.name) ?? false))
 			.map((f) => ({ id: f.id, name: f.name, size: f.data.length, createdTime: f.createdTime }));
 	}
 

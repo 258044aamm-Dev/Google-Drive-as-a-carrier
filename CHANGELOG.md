@@ -8,6 +8,26 @@ Version numbers like `2.1.1-drive.3` exist only in each release's `manifest.json
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
+## Unreleased - 2.1.1-drive.7 (committed locally, not published)
+
+### Fixed (Google Drive carrier)
+- **Encrypted vaults could upload plaintext after one failed start-up call.** If reading or writing `meta.json` failed once when connecting, later cycles skipped the key check and uploaded unencrypted files into the encrypted vault; other devices then rejected them and marked their own files "damaged". The folder now counts as ready only after the key check succeeds, and uploads refuse to run while the key is not ready.
+- **A device whose clock was wrong could make Drive lose data.** Old snapshots were pruned by file name, which carries the creating device's clock, so a device could delete its own newest snapshot. Pruning now orders by Drive's own creation time and never deletes the snapshot it just wrote. The device's picture of what Drive holds is rebuilt after it deletes files, so the repair pass and the "saved" status stay correct.
+- **"Synced" was reported with an incomplete document** (a file vanishing during the first read, a missing or hand-deleted file). The carrier now looks again up to three times and does not report synced while an update cannot be applied; it stays connected so edits still upload, and says why (`lastError`, `unreadableFiles`).
+- **One request that never answered froze syncing until restart.** Each cycle now has a five-minute limit; after that it counts as a failure and the normal retry back-off takes over.
+- A lagging file listing no longer causes duplicate uploads and a false "not saved" status (own fresh uploads are kept for 60 s).
+- Closing the app now sends edits still waiting for the 2-second batch.
+- A comment promised that a duplicate empty vault folder is removed; it is not, and the comment now says so.
+
+### Fixed (Google Drive carrier, engine interaction)
+- **A deleted note came back, with an OLD copy of its text.** If a note was edited and then deleted on one device, another device often received both in one poll. It compared its disk file (not yet updated with the edit) to the already updated document, took the file for "locally modified", kept it and revived the note. It now compares the disk file with the last content known to be in sync (the stored content hash); a file that matches is untouched and the delete is applied. A file the user really edited is still kept. Only wired when Google Drive is the carrier.
+- **A deleted note came back after a reopen when two devices had created the same path.** Two ids for one path meant a delete removed only one of them. With Google Drive, a delete now removes every active id for that path.
+
+### Tests
+- `drive-carrier-hardening` (23 checks): one regression per carrier fix, each reproduced against the earlier code.
+- `drive-carrier-fuzz` (about 6 s, fixed seeds): 155 random runs across five configurations (three and four devices, interleaved calls, clocks that disagree, compaction every segment, encrypted). The earlier code fails 46 of them.
+- `drive-carrier-engine` (18 checks): real `VaultSync` and `DiskMirror` over the fake Drive for the two deletion fixes, the user-edit case, and the unchanged default behaviour.
+
 ## 2.1.1-drive.6 - 2026-10-02
 
 ### Changed

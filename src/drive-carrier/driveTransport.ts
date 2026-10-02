@@ -5,6 +5,7 @@ import type { SyncTransport } from "../sync/transport";
 import { makeSvEchoMessage } from "../sync/svEchoMessage";
 import { DriveError, type DriveApi, type DriveFileInfo } from "./driveApi";
 import { EncryptionError } from "./driveCrypto";
+import { withTimeout } from "./timeout";
 import { DRIVE_LAYOUT_SCHEMA, DriveKeyring, FatalCarrierError } from "./driveKeyring";
 import type { ActivityEvent, ActivitySource } from "./activity";
 import {
@@ -57,6 +58,10 @@ export interface DriveTransportOptions {
 	reconcileIntervalMs?: number;
 	/** Largest wait after repeated failures. */
 	maxBackoffMs?: number;
+	/** One whole cycle (upload, poll, repair, compact) may take this long before it counts as a failure. Default 5 minutes (a large first snapshot on a slow link must still fit). */
+	cycleTimeoutMs?: number;
+	/** How long a file this device just uploaded may be missing from the listing before it is forgotten. Default 60 s. */
+	listingGraceMs?: number;
 	/** false: no timers at all; the owner drives the transport with syncNow(). */
 	autoTimers?: boolean;
 	/** Origins whose Y.Doc updates are NOT local edits (e.g. the IndexedDB persistence). */
@@ -70,6 +75,10 @@ type FileState = "applied" | "corrupt" | "gone";
 interface KnownFile {
 	id: string;
 	size: number;
+	/** Drive's own creation time. Never a device clock, so it is safe to order by. */
+	created?: number;
+	/** When this device uploaded it (this device's clock; only used for the listing grace). */
+	uploadedAt?: number;
 	kind: "segment" | "snapshot";
 	state: FileState;
 	/** The Yjs update the file holds. Kept for applied files so Drive's content can be recomputed. */
@@ -81,6 +90,8 @@ const FAILURES_BEFORE_OFFLINE = 2;
 const DOWNLOAD_PARALLELISM = 4;
 const KEEP_SNAPSHOTS = 2;
 const MAX_PENDING_PARTS = 200;
+/** How many times one cycle re-reads Drive while the picture is incomplete. */
+const MAX_COMPLETE_POLLS = 3;
 /** Never compact more often than this, so a failing cleanup cannot spam snapshots. */
 const MIN_COMPACT_GAP_MS = 30_000;
 
@@ -186,6 +197,8 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			backgroundPollIntervalMs: options.backgroundPollIntervalMs,
 			onFatal: options.onFatal,
 			batchMs: options.batchMs ?? 2000,
+			cycleTimeoutMs: options.cycleTimeoutMs ?? 300_000,
+			listingGraceMs: options.listingGraceMs ?? 60_000,
 			compactSegmentCount: options.compactSegmentCount ?? 50,
 			compactSegmentBytes: options.compactSegmentBytes ?? 1_000_000,
 			reconcileIntervalMs: options.reconcileIntervalMs ?? 5 * 60_000,
@@ -232,6 +245,11 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 
 	destroy(): void {
 		if (this.destroyed) return;
+		// Best effort: send what is waiting. Plugin unload cannot wait for the network,
+		// but the request usually still completes; anything lost is re-sent at next start.
+		if (this.started && this.pending.length > 0 && this.folderId !== null) {
+			void this.flush().catch(() => undefined);
+		}
 		this.destroyed = true;
 		this.started = false;
 		this.clearTimers();
@@ -256,20 +274,54 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	 */
 	async syncNow(): Promise<boolean> {
 		if (this.destroyed || this.fatalError) return false;
-		return this.serial(async () => {
-			try {
-				if (this.folderId === null) await this.prepareFolder();
-				await this.flushLocked();
-				await this.pollLocked();
-				await this.maybeReconcileLocked();
-				await this.maybeCompactLocked();
-				this.recordSuccess();
-				return true;
-			} catch (err) {
-				this.recordFailure(err);
-				return false;
-			}
-		});
+		return this.serial(() => this.cycle(async () => {
+			if (this.folderId === null) await this.prepareFolder();
+			await this.flushLocked();
+			await this.pollCompleteLocked();
+			await this.maybeReconcileLocked();
+			await this.maybeCompactLocked();
+			this.recordSuccess();
+			return true;
+		}));
+	}
+
+	/**
+	 * Run one cycle under a time limit. A request that never answers (Wi-Fi to
+	 * mobile switch, suspended socket) used to hold the serial chain forever;
+	 * now the cycle fails, the failure back-off applies, and the next cycle runs.
+	 */
+	private async cycle(work: () => Promise<boolean>): Promise<boolean> {
+		try {
+			return await withTimeout(work(), this.opts.cycleTimeoutMs, "a sync cycle");
+		} catch (err) {
+			this.recordFailure(err);
+			return false;
+		}
+	}
+
+	/**
+	 * Poll, and if the picture is incomplete (a file vanished between listing and
+	 * reading, or an update depends on one we have not seen) look again a few
+	 * times before the caller reports "synced".
+	 */
+	private async pollCompleteLocked(): Promise<void> {
+		for (let attempt = 0; attempt < MAX_COMPLETE_POLLS; attempt++) {
+			await this.pollLocked();
+			if (this.isComplete()) return;
+		}
+	}
+
+	/** True when every update this device has read could be applied and nothing is waiting for a missing file. */
+	private isComplete(): boolean {
+		if (this.pollSawGone) return false;
+		return this.doc.store.pendingStructs === null && this.doc.store.pendingDs === null;
+	}
+
+	/** Number of files on Drive this device cannot read (damaged, wrong key, plaintext in an encrypted vault). */
+	get unreadableFiles(): number {
+		let n = 0;
+		for (const f of this.known.values()) if (f.state === "corrupt") n++;
+		return n;
 	}
 
 	/** Upload pending local edits now. Rejects if the upload fails (edits stay queued). */
@@ -294,18 +346,13 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	private async attemptConnect(): Promise<void> {
 		this.wsconnecting = true;
 		this.emit("status", [{ status: "connecting" }]);
-		const ok = await this.serial(async () => {
-			try {
-				await this.prepareFolder();
-				await this.flushLocked();
-				await this.pollLocked();
-				await this.reconcileLocked();
-				return true;
-			} catch (err) {
-				this.recordFailure(err);
-				return false;
-			}
-		});
+		const ok = await this.serial(() => this.cycle(async () => {
+			await this.prepareFolder();
+			await this.flushLocked();
+			await this.pollCompleteLocked();
+			await this.reconcileLocked();
+			return true;
+		}));
 		this.wsconnecting = false;
 		if (ok) {
 			this.failures = 0;
@@ -321,6 +368,14 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		this.wsconnected = true;
 		if (!wasOnline) this.emit("status", [{ status: "connected" }]);
 		if (!this._synced) {
+			// The engine takes "synced" as "I now hold the whole vault" and then lets
+			// notes missing from the document be created from disk. Do not say it
+			// while a file is missing or an update cannot be applied yet.
+			if (!this.isComplete()) {
+				this.opts.log("drive carrier: connected, but some updates are missing; not reporting synced yet");
+				this.lastError = "Some updates on Google Drive are missing or cannot be applied yet";
+				return;
+			}
 			this._synced = true;
 			this.emit("sync", [true]);
 			this.emitReceipt();
@@ -460,12 +515,16 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			if (!folders.some((f) => f.id === created.id)) folders.push(created);
 		}
 		// Two devices may have created the folder at the same moment: everyone picks the
-		// same one (oldest, then lowest id), and an empty duplicate is removed.
+		// same one (oldest, then lowest id). A stray empty duplicate is left alone.
 		folders.sort((a, b) => a.createdTime - b.createdTime || (a.id < b.id ? -1 : 1));
 		const chosen = folders[0];
 		if (!chosen) throw new DriveError(500, "Could not create the vault folder");
-		this.folderId = chosen.id;
+		// The folder counts as ready only once the keyring knows whether the vault is
+		// encrypted. Setting it first let a later cycle skip this step after one failed
+		// meta.json call and upload plaintext into an encrypted vault.
 		await this.keyring.ensureMeta(chosen.id);
+		if (!this.keyring.isReady) throw new DriveError(500, "The vault key is not ready");
+		this.folderId = chosen.id;
 	}
 
 	// ---------------------------------------------------------------------
@@ -489,6 +548,7 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	private async uploadUpdate(kind: FileKind, update: Uint8Array): Promise<DriveFileInfo> {
 		const folderId = this.folderId;
 		if (folderId === null) throw new DriveError(500, "No vault folder");
+		if (!this.keyring.isReady) throw new DriveError(500, "The vault key is not ready");
 		const sealer = this.keyring.sealer;
 		const body = sealer ? await sealer.seal(update, kind === KIND_SEGMENT ? "segment" : "snapshot") : update;
 		const data = await encodeFile(kind, body, sealer !== null);
@@ -505,6 +565,8 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		this.known.set(name, {
 			id: info.id,
 			size: info.size,
+			created: info.createdTime,
+			uploadedAt: now,
 			kind: kind === KIND_SEGMENT ? "segment" : "snapshot",
 			state: "applied",
 			payload: update,
@@ -593,6 +655,9 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		// files above were applied, so a snapshot that replaces them is already in.
 		for (const [name, file] of Array.from(this.known.entries())) {
 			if (present.has(name)) continue;
+			// A listing can lag behind an upload. Keep our own fresh uploads for a short
+			// grace period instead of concluding they vanished (which would re-upload them).
+			if (file.uploadedAt !== undefined && this.opts.now() - file.uploadedAt < this.opts.listingGraceMs) continue;
 			this.known.delete(name);
 			if (file.state === "applied") this.remoteDirty = true;
 		}
@@ -657,7 +722,7 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		} catch {
 			// The update applied but could not be merged into the cache; reconcile will cover it.
 		}
-		this.known.set(name, { id: info.id, size: info.size, kind: nameKind, state: "applied", payload: result.payload });
+		this.known.set(name, { id: info.id, size: info.size, created: info.createdTime, kind: nameKind, state: "applied", payload: result.payload });
 	}
 
 	// ---------------------------------------------------------------------
@@ -719,16 +784,25 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			if (entry[1].kind === "segment" && entry[1].state === "applied") covered.push(entry);
 		}
 		if (covered.length === 0) return;
-		await this.uploadUpdate(KIND_SNAPSHOT, Y.encodeStateAsUpdate(this.doc));
+		const written = await this.uploadUpdate(KIND_SNAPSHOT, Y.encodeStateAsUpdate(this.doc));
 		for (const [name, file] of covered) {
 			if (await this.deleteQuiet(file.id)) this.known.delete(name);
 		}
+		// Keep the newest snapshots by Drive's own creation time. A device name carries
+		// the creator's clock, and a clock running ahead used to outrank every later
+		// snapshot, so the one just written could be the one deleted.
 		const snaps = Array.from(this.known.entries())
-			.filter(([, f]) => f.kind === "snapshot" && f.state === "applied")
-			.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-		for (const [name, file] of snaps.slice(0, Math.max(0, snaps.length - KEEP_SNAPSHOTS))) {
+			.filter(([, f]) => f.kind === "snapshot" && f.state === "applied" && f.id !== written.id)
+			.sort((a, b) => ((a[1].created ?? 0) - (b[1].created ?? 0)) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+		// The snapshot just written always stays; keep the newest of the others beside it.
+		const keepOthers = Math.max(0, KEEP_SNAPSHOTS - 1);
+		for (const [name, file] of snaps.slice(0, Math.max(0, snaps.length - keepOthers))) {
 			if (await this.deleteQuiet(file.id)) this.known.delete(name);
 		}
+		// Files left Drive by this device's own hand: the picture of Drive must be rebuilt
+		// from what remains, or the repair pass and the "saved" receipt would read stale data.
+		this.remoteDirty = true;
+		this.rebuildRemoteIfDirty();
 	}
 
 	private async deleteQuiet(id: string): Promise<boolean> {

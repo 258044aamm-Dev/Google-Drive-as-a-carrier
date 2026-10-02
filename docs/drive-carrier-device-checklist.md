@@ -114,3 +114,21 @@ counts, device model and OS version, plugin build.
 - [ ] Turn the network off during sign-in-code check: "No connection to the sign-in service" and Try again works.
 - [ ] A vault made with your own client still opens with the old way only; nothing about it changed.
 
+## 13. Deleted notes that come back (trace test, scratch vault, two devices)
+
+Purpose: find out which cause is real on your devices. Takes about 10 minutes.
+
+1. On BOTH devices: Settings > YAOS > Advanced > turn on **Debug mode**, then reload Obsidian. Wait until sync is idle.
+2. Create a new note `Delete test A` on device 1, type a line, wait 30 s until it appears on device 2. Do not touch it again.
+3. On device 1, delete it from the file explorer (note closed). Write down the time.
+4. Wait 30 s. Check device 2: is it gone? Then fully close and reopen Obsidian on BOTH devices. Is it back, and on which device first?
+5. Repeat with `Delete test B`, but this time create it on both devices before the first sync (turn the network off on both, create a note with the same name on each, turn the network on), then delete it on one device.
+6. Repeat with `Delete test C`: type a line on device 1 and delete it within 5 seconds.
+7. On each device run the command **Export debug trace** and note where the file is written (`.obsidian/plugins/yaos/` folder; the trace is also kept in `flight-logs/`).
+8. Send the two trace files (or just the lines around the delete) with the times you wrote down.
+
+What the trace shows for a note `X`:
+- `disk.delete.observed` for `X` on the deleting device and `markdown-tombstoned`: the delete was recorded. If these are missing, the delete was never recorded (it happened before start-up finished, or the event was dropped).
+- `delete.remote.observed` then `delete.disk.applied` on the other device: normal. `delete.preserved` (`local-dirty-wins-over-remote-delete`): the other device thought the file was edited.
+- A `reconcile.file.decision` / created-on-disk entry for `X` after a reopen: the engine wrote the note back because the document still had it active.
+

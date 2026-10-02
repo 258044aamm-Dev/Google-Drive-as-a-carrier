@@ -272,6 +272,12 @@ export class VaultSync {
 	private _serverAckPersistenceUnavailable = false;
 	private _serverReceiptStartupValidation: ServerReceiptStartupValidation = "not_started";
 	private readonly _svEchoCounters = createSvEchoCounters();
+	/**
+	 * True when a carrier other than the Cloudflare server moves the document
+	 * (Google Drive). Only then does a delete also tombstone duplicate file ids
+	 * for the same path; the Cloudflare behaviour is unchanged.
+	 */
+	private readonly _tombstoneDuplicateIds: boolean;
 
 	/** Buffered renames for batch flush. */
 	private _renameBatch: Map<string, string> = new Map(); // oldPath -> newPath
@@ -400,6 +406,7 @@ export class VaultSync {
 		const syncPrefix = `/vault/sync/${encodeURIComponent(roomId)}`;
 
 		const transportFactory = options?.transportFactory;
+		this._tombstoneDuplicateIds = transportFactory !== undefined;
 		const cloudflare = transportFactory
 			? null
 			: new YSyncProvider(settings.host, roomId, this.ydoc, {
@@ -1763,6 +1770,17 @@ export class VaultSync {
 		return tombstonedIds;
 	}
 
+	/** Active file ids other than `exceptId` whose metadata path is `path`. */
+	private activeIdsForPath(path: string, exceptId: string): string[] {
+		const ids: string[] = [];
+		this.meta.forEach((value: unknown, fileId: string) => {
+			if (fileId === exceptId || isFileMetaDeletedValue(value)) return;
+			const candidate = getMetaPath(value);
+			if (candidate && this.normPath(candidate) === path) ids.push(fileId);
+		});
+		return ids;
+	}
+
 	handleDelete(path: string, device?: string, opId?: string): void {
 		path = this.normPath(path);
 
@@ -1809,11 +1827,19 @@ export class VaultSync {
 			return;
 		}
 
+		// Two devices that create the same path before they see each other leave two
+		// active ids for it. Tombstoning only the winner made the other id the path's
+		// owner, and the note came back at the next reconcile.
+		const duplicateIds = this._tombstoneDuplicateIds ? this.activeIdsForPath(resolvedPath, fileId) : [];
+
 		this.ydoc.transact(() => {
 			if (this.shouldWriteLegacyPathMap()) {
 				this.pathToId.delete(resolvedPath);
 			}
 			this.setMetaDeleted(fileId, resolvedPath, device);
+			for (const duplicateId of duplicateIds) {
+				this.setMetaDeleted(duplicateId, resolvedPath, device);
+			}
 		}, ORIGIN_SEED);
 
 		this._pathIndexesDirty = true;

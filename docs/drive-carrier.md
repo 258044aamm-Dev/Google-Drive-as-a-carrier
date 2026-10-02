@@ -168,6 +168,16 @@ save-confirmation state* and *Reset local cache (re-sync from Google Drive)*; th
 two confirmation texts of *Reset local cache* and *Nuclear reset* do the same.
 Cloudflare screens and names are unchanged.
 
+## Hardening (limits and what is guarded)
+
+- **Key check before any upload.** The folder is used only after the key check (`meta.json`) succeeded; an encrypted vault never receives plaintext, even after a failed start-up call.
+- **Snapshots are pruned by Drive's creation time**, not by file name, so a wrong device clock cannot delete the newest data. Wrong clocks still affect the note-collision tie-break and snapshot day names (same as with Cloudflare).
+- **Not "synced" while incomplete.** If a file is missing or an update cannot be applied, the carrier stays connected, keeps uploading your edits and does not claim to be synced. Check `unreadableFiles` in diagnostics for damaged files.
+- **Time limit.** One sync cycle may take five minutes; a stuck request then counts as a failure and is retried with back-off.
+- **Deletes.** A remote delete is applied when the disk file still matches the last synced content, even if an edit arrived in the same poll. A file you really edited is kept (and the note is revived with your text). A delete removes every active id for the path.
+- **Not covered:** no garbage collection of attachment files on Drive; memory use grows with vault size (every applied update payload and two snapshots are kept in memory); a plaintext and an encrypted vault started at the same moment in one folder end up split; a stray empty duplicate vault folder is not removed.
+- **Simulation suite.** `drive-carrier-fuzz` (about 6 s, fixed seeds) must stay green; rerun one configuration with `FUZZ_ONLY=<part of the name> FUZZ_SEEDS=<n>`.
+
 ## Setup (once per Google account)
 
 Google's device sign-in needs an OAuth client of type **TVs and limited-input
