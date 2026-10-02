@@ -424,27 +424,45 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 
 	/**
 	 * The carrier choice is added to the finished list instead of being woven
-	 * into it, so the Cloudflare screens above stay exactly as they were.
-	 * With the default carrier only one extra row appears (in Advanced). With
-	 * the Drive carrier, the server-only screens are replaced by the Drive one.
+	 * into it, so the Cloudflare screens above stay as they were. It shows up
+	 * where the user is deciding how to sync:
+	 *  - before a server is set up: in the Setup group, right after "Deploy your server";
+	 *  - with the Drive carrier: in the Drive group, so it is easy to switch back;
+	 *  - with a configured server: in Advanced (nobody is choosing anymore).
+	 * With the Drive carrier the server-only screens are replaced by the Drive one.
 	 */
 	private applyCarrierChoice(definitions: SettingDefinitionItem[]): SettingDefinitionItem[] {
-		const carrierRow: SettingDefinitionItem = {
+		const carrierRow: SettingDefinition = {
 			name: "Sync carrier (experimental)",
 			desc: "Where your notes are exchanged between devices. Changing it needs a reload of the plugin. Google Drive needs no server, but changes arrive in a few seconds instead of instantly.",
 			control: { type: "dropdown", key: "carrier", options: CARRIER_OPTIONS },
 		};
 		const drive = isDriveCarrier(this.host.settings);
-		const withCarrierRow = (item: SettingDefinitionItem): SettingDefinitionItem => {
+		const isSetupGroup = (item: SettingDefinitionItem): item is SettingDefinitionGroup =>
+			isGroupDefinition(item) && item.heading === "Setup";
+		const carrierInAdvanced = (item: SettingDefinitionItem): SettingDefinitionItem => {
+			if (!isPageDefinition(item) || item.name !== "Advanced" || !item.items) return item;
+			return { ...item, items: [carrierRow, ...item.items] };
+		};
+		const carrierInSetup = (item: SettingDefinitionItem): SettingDefinitionItem => {
+			if (!isSetupGroup(item)) return item;
+			const items = [...(item.items ?? [])];
+			const deploy = items.findIndex((entry) => "name" in entry && entry.name === "Deploy your server");
+			items.splice(deploy >= 0 ? deploy + 1 : items.length, 0, carrierRow);
+			return { ...item, items };
+		};
+		if (!drive) {
+			return definitions.map(definitions.some(isSetupGroup) ? carrierInSetup : carrierInAdvanced);
+		}
+
+		const withoutServerRows = (item: SettingDefinitionItem): SettingDefinitionItem => {
 			if (!isPageDefinition(item) || item.name !== "Advanced" || !item.items) return item;
 			const serverOnly = new Set(["Deployment repository URL", "Deployment default branch"]);
-			const items = drive
-				? item.items.filter((entry) => !("name" in entry && typeof entry.name === "string" && serverOnly.has(entry.name)))
-				: item.items;
-			return { ...item, items: [carrierRow, ...items] };
+			return {
+				...item,
+				items: item.items.filter((entry) => !("name" in entry && typeof entry.name === "string" && serverOnly.has(entry.name))),
+			};
 		};
-		if (!drive) return definitions.map(withCarrierRow);
-
 		const serverOnlyGroups = new Set(["Setup", "Sync status", "Updates", "Collaboration"]);
 		const kept = definitions.filter((item) => {
 			if (isGroupDefinition(item) && typeof item.heading === "string") {
@@ -453,7 +471,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			if (isPageDefinition(item) && item.name === "Manual connection") return false;
 			return true;
 		});
-		return [...this.driveDefinitions(), ...kept.map(withCarrierRow).map((item) => this.withDriveAttachmentText(item))];
+		return [...this.driveDefinitions(carrierRow), ...kept.map(withoutServerRows).map((item) => this.withDriveAttachmentText(item))];
 	}
 
 	/** Attachments and snapshots live on Drive, so the server wording of the Attachments group is replaced. */
@@ -474,7 +492,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 		this.update();
 	}
 
-	private driveDefinitions(): SettingDefinitionItem[] {
+	private driveDefinitions(carrierRow: SettingDefinition): SettingDefinitionItem[] {
 		const settings = this.host.settings;
 		const signedIn = isDriveSignedIn(settings);
 		const status = this.host.getSettingsStatusSummary();
@@ -487,6 +505,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 						name: "Status",
 						desc: signedIn ? status.label : "Not signed in. Enter your Google client details below, then sign in.",
 					},
+					carrierRow,
 					{ name: "Folder on Drive", desc: driveFolderLabel(settings.vaultId || "Not set") },
 					{
 						name: "Vault ID",

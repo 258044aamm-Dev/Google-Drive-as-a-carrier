@@ -50,6 +50,15 @@ function groupHeadings(items: SettingDefinitionItem[]): string[] {
 	return items.flatMap((item) => "type" in item && item.type === "group" && "heading" in item && typeof item.heading === "string" ? [item.heading] : []);
 }
 
+function groupItems(items: SettingDefinitionItem[], heading: string): string[] {
+	for (const item of items) {
+		if ("type" in item && item.type === "group" && item.heading === heading) {
+			return (item.items ?? []).map((i) => ("name" in i ? String(i.name) : ""));
+		}
+	}
+	return [];
+}
+
 function pageNames(items: SettingDefinitionItem[]): string[] {
 	return items.flatMap((item) => "type" in item && item.type === "page" ? [item.name] : []);
 }
@@ -150,10 +159,15 @@ s.section("Test 3: default (Cloudflare) screens are the same as before, plus one
 	s.check(pageNames(items).join() === "Manual connection,Advanced", "pages unchanged");
 	const adv = advancedItems(items);
 	const advNames = adv.map((i) => "name" in i ? i.name : "");
-	s.check(advNames.join("|") === ["Sync carrier (experimental)", "Vault ID", "Deployment repository URL", "Deployment default branch", "Edits from other apps", "Frontmatter safety guard", "Debug mode", "Reload required"].join("|"), `Advanced = old rows + carrier row first (${advNames.join("|")})`);
+	s.check(advNames.join("|") === ["Vault ID", "Deployment repository URL", "Deployment default branch", "Edits from other apps", "Frontmatter safety guard", "Debug mode", "Reload required"].join("|"), `Advanced is exactly as before when no server is set up yet (${advNames.join("|")})`);
+	s.check(groupItems(items, "Setup").join("|") === "Setup required|Deploy your server|Sync carrier (experimental)", `Setup: the carrier choice comes right after "Deploy your server" (${groupItems(items, "Setup").join("|")})`);
+	const setupRow = flatten(items).find((d) => d.name === "Sync carrier (experimental)");
+	s.check(setupRow?.control?.key === "carrier" && flatten(items).filter((d) => d.name === "Sync carrier (experimental)").length === 1, "one carrier dropdown, bound to the carrier setting");
 	const configured = makeFixture({ host: "https://sync.example", token: "tok", vaultId: "vid" });
 	const cItems = configured.tab.getSettingDefinitions();
 	s.check(groupHeadings(cItems).join() === "Sync status,Updates,This device,What syncs,Attachments,Collaboration", `configured groups (${groupHeadings(cItems).join()})`);
+	s.check(advancedItems(cItems).map((i) => ("name" in i ? i.name : "")).join("|") === ["Sync carrier (experimental)", "Vault ID", "Deployment repository URL", "Deployment default branch", "Edits from other apps", "Frontmatter safety guard", "Debug mode", "Reload required"].join("|"), "a configured Cloudflare user finds the carrier row first in Advanced");
+	s.check(!groupItems(cItems, "Sync status").includes("Sync carrier (experimental)"), "and the Sync status group is untouched");
 	const defs = flatten(cItems);
 	s.check(!defs.some((d) => d.name === "Sign in with Google" || d.name === "Google client ID" || d.name === "Encryption passphrase"), "no Drive rows for Cloudflare users");
 	s.check(defs.some((d) => d.control?.key === "host") && defs.some((d) => d.control?.key === "token"), "server rows still present");
@@ -204,7 +218,10 @@ s.section("Test 5: Drive screens");
 	s.check(!flatten(items).some((d) => String(d.desc ?? "").includes("Cloudflare")), "no Cloudflare wording in the Attachments group");
 	s.check(!pageNames(items).includes("Manual connection") && pageNames(items).includes("Advanced"), "server page hidden, Advanced kept");
 	const adv = advancedItems(items).map((i) => "name" in i ? i.name : "");
-	s.check(adv[0] === "Sync carrier (experimental)" && !adv.includes("Deployment repository URL") && !adv.includes("Deployment default branch") && adv.includes("Vault ID"), `Advanced keeps the carrier row and drops server-only rows (${adv.join("|")})`);
+	s.check(!adv.includes("Sync carrier (experimental)") && !adv.includes("Deployment repository URL") && !adv.includes("Deployment default branch") && adv.includes("Vault ID"), `Advanced drops the server-only rows and no longer holds the carrier row (${adv.join("|")})`);
+	const driveRows = groupItems(items, "Google Drive carrier");
+	s.check(driveRows[0] === "Status" && driveRows[1] === "Sync carrier (experimental)", `the carrier choice is at the top of the Drive group, to switch back (${driveRows.slice(0, 3).join("|")})`);
+	s.check(flatten(items).filter((d) => d.name === "Sync carrier (experimental)").length === 1, "and appears only once");
 	const defs = flatten(items);
 	const byName = (n: string) => defs.find((d) => d.name === n);
 	s.check(byName("Folder on Drive") !== undefined && "desc" in (byName("Folder on Drive") ?? {}), "folder name shown");
