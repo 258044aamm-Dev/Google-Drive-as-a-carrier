@@ -61,6 +61,12 @@ export interface SyncTransport {
 export interface SyncTransportContext {
 	doc: Doc;
 	vaultId: string;
+	/**
+	 * True for the origin the local on-disk copy of the document uses when it
+	 * loads itself into the Y.Doc. A carrier must not send those updates out
+	 * again as if they were new edits.
+	 */
+	isLocalStoreOrigin: (origin: unknown) => boolean;
 }
 
 export type SyncTransportFactory = (ctx: SyncTransportContext) => SyncTransport;

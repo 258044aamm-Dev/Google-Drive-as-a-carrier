@@ -87,6 +87,16 @@ import {
 import { CoalescedStatusRefresh } from "./status/coalescedStatusRefresh";
 import { formatUnknown, yTextToString } from "./utils/format";
 import { randomId } from "./utils/randomId";
+import {
+	isDriveCarrier,
+	isDriveSignedIn,
+	newDriveDeviceId,
+} from "./drive-carrier/carrierSettings";
+import { createDriveTransportFactory } from "./drive-carrier/driveCarrierRuntime";
+import { DriveSignInModal } from "./drive-carrier/DriveSignInModal";
+import { GoogleAuthError } from "./drive-carrier/googleAuth";
+import { obsidianDriveHttp } from "./drive-carrier/obsidianDriveHttp";
+import { signInWithGoogle } from "./drive-carrier/signIn";
 import { ConfirmModal } from "./ui/ConfirmModal";
 import { runSchemaMigrationToV2 } from "./migrations/schemaV2";
 import { installTelemetryRuntime, type TelemetryRuntimeHandle } from "./telemetry/installTelemetryRuntime";
@@ -591,6 +601,30 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			this.log(`Startup onload complete (${outcome}) in ${durationMs}ms`);
 		};
 
+		// Google Drive carrier (opt-in). Everything below this block is the
+		// Cloudflare path and is not reached when the Drive carrier is chosen.
+		if (isDriveCarrier(this.settings)) {
+			if (!isDriveSignedIn(this.settings)) {
+				this.log("Google Drive carrier selected but not signed in — sync disabled");
+				new Notice("YAOS: sign in to Google in the YAOS settings to enable sync.", 10000);
+				finishOnload("drive-not-signed-in");
+				return;
+			}
+			if (!this.settings.driveDeviceId) {
+				await this.updateSettings((settings) => {
+					settings.driveDeviceId = newDriveDeviceId(randomId);
+				}, "settings:drive-device-id");
+			}
+			this.applyRuntimeSettings("onload-pre-sync");
+			void this.initSync().then(() => {
+				if (!this.teardownLifecycle.isClosing) this.mountQaDebugApi();
+			}).catch((error: unknown) => {
+				console.error("[yaos] Startup sync continuation failed:", error);
+			});
+			finishOnload("drive-sync-started");
+			return;
+		}
+
 		if (this.settings.host) {
 			void this.refreshServerCapabilities("startup-background");
 			void this.refreshUpdateManifest("startup-background");
@@ -683,7 +717,17 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				onFlightEvent: (event) => this.recordFlightEvent(event as FlightEventInput),
 				onFlightPathEvent: (event) => this.recordFlightPathEvent(event),
 				onServerReceiptStatusChanged: () => this.queueReceiptStatusRefresh(),
-				getSocketTicket: (() => {
+				transportFactory: isDriveCarrier(this.settings)
+					? createDriveTransportFactory({
+						getSettings: () => this.settings,
+						http: obsidianDriveHttp,
+						log: (message) => this.log(message),
+						onSignInLost: () => {
+							new Notice("YAOS: Google access was lost. Sign in again in the YAOS settings.", 12000);
+						},
+					})
+					: undefined,
+				getSocketTicket: isDriveCarrier(this.settings) ? undefined : (() => {
 				// Each VaultSync instance gets its own ticket cache.  The cache
 				// is discarded when VaultSync is torn down and recreated.
 				const ticketCache = createSocketTicketCache();
@@ -2098,6 +2142,40 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		await this.saveSettings(reason);
 	}
 
+	/** Google Drive carrier: show the sign-in code and store the refresh token when the user approves. */
+	async signInToDrive(): Promise<void> {
+		const clientId = this.settings.driveClientId?.trim() ?? "";
+		const clientSecret = this.settings.driveClientSecret?.trim() ?? "";
+		if (!clientId || !clientSecret) {
+			new Notice("Enter the Google client ID and client secret first.", 8000);
+			return;
+		}
+		const modal = new DriveSignInModal(this.app, () => undefined);
+		modal.open();
+		try {
+			const result = await signInWithGoogle({ clientId, clientSecret }, modal, {
+				http: obsidianDriveHttp,
+				sleep: (ms) => new Promise<void>((resolve) => { window.setTimeout(resolve, ms); }),
+			});
+			await this.updateSettings((settings) => {
+				settings.driveRefreshToken = result.refreshToken;
+			}, "settings:drive-sign-in");
+			modal.close();
+			new Notice("Signed in to Google. Reload the plugin (or restart Obsidian) to start syncing.", 12000);
+		} catch (error: unknown) {
+			modal.close();
+			if (error instanceof GoogleAuthError && error.code === "cancelled") return;
+			new Notice(`YAOS: ${error instanceof Error ? error.message : String(error)}`, 12000);
+		}
+	}
+
+	async signOutOfDrive(): Promise<void> {
+		await this.updateSettings((settings) => {
+			settings.driveRefreshToken = "";
+		}, "settings:drive-sign-out");
+		new Notice("Signed out of Google on this device. Reload the plugin to stop syncing.", 8000);
+	}
+
 	private applyRuntimeSettings(reason: string): void {
 		this.runtimeConfig = buildRuntimeConfig(this.settings, this.app.vault.configDir);
 		this.excludePatterns = this.runtimeConfig.excludePatterns;
@@ -2120,10 +2198,12 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	}
 
 	get serverSupportsAttachments(): boolean {
+		if (isDriveCarrier(this.settings)) return false;
 		return this.capabilityUpdateService?.supportsAttachments ?? true;
 	}
 
 	get serverSupportsSnapshots(): boolean {
+		if (isDriveCarrier(this.settings)) return false;
 		return this.capabilityUpdateService?.supportsSnapshots ?? true;
 	}
 

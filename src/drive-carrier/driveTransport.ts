@@ -2,6 +2,7 @@ import * as Y from "yjs";
 import { ObservableV2 } from "lib0/observable";
 import { Awareness } from "y-protocols/awareness";
 import type { SyncTransport } from "../sync/transport";
+import { makeSvEchoMessage } from "../sync/svEchoMessage";
 import { DriveError, type DriveApi, type DriveFileInfo } from "./driveApi";
 import {
 	CorruptFileError,
@@ -117,6 +118,10 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	private pollSawGone = false;
 	private pending: Uint8Array[] = [];
 	private counter = 0;
+	/** Number of files this session has stored on Drive. Reported as the "persistence generation" in receipts. */
+	private storedGeneration = 0;
+	/** Names this session's receipts, so a restart re-baselines the receipt tracker instead of confusing it. */
+	private readonly receiptEpoch: string;
 	private lastReconcileAt = 0;
 	private lastCompactAt = -Infinity;
 
@@ -157,6 +162,7 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			now: options.now ?? (() => Date.now()),
 			log: options.log ?? (() => undefined),
 		};
+		this.receiptEpoch = `drive:${options.deviceId}:${this.opts.now()}`;
 		this.awareness = new Awareness(doc);
 		doc.on("update", this.onDocUpdate);
 	}
@@ -272,6 +278,7 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		if (!this._synced) {
 			this._synced = true;
 			this.emit("sync", [true]);
+			this.emitReceipt();
 		}
 	}
 
@@ -435,7 +442,39 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			payload: update,
 		});
 		this.mergeRemote(update);
+		this.storedGeneration++;
+		this.emitReceipt();
 		return info;
+	}
+
+	/**
+	 * Tell the engine what Drive holds, in the same message the Cloudflare
+	 * server uses for "saved on server", so the existing status bar and
+	 * receipt tracking read "saved to Drive" without any change. Only sent
+	 * while the picture of Drive is trustworthy (no file just vanished).
+	 */
+	private emitReceipt(): void {
+		if (this.remoteDirty) return;
+		try {
+			// An empty Drive still gets a receipt: it gives the tracker its
+			// starting point (generation 0) before any edit is uploaded.
+			const known = this.remoteState ?? Y.encodeStateAsUpdate(new Y.Doc());
+			const message = JSON.parse(makeSvEchoMessage(Y.encodeStateVectorFromUpdate(known))) as Record<string, unknown>;
+			// The "stored since you looked" counter is only honest when nothing
+			// is waiting to be uploaded; otherwise an earlier upload finishing
+			// could be mistaken for the newest edit being safe. Without the
+			// counter the receipt falls back to comparing state vectors, which
+			// is exact for anything that adds data. (Before this session has
+			// stored anything the counter is only a starting point, so it is
+			// always safe to send.)
+			if (this.pending.length === 0 || this.storedGeneration === 0) {
+				message.gen = this.storedGeneration;
+				message.genEpoch = this.receiptEpoch;
+			}
+			this.emit("custom-message", [JSON.stringify(message)]);
+		} catch (err) {
+			this.opts.log(`Could not build a receipt: ${err instanceof Error ? err.message : String(err)}`);
+		}
 	}
 
 	private rebuildRemoteIfDirty(): void {

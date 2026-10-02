@@ -4,8 +4,18 @@ import {
 	Plugin,
 	PluginSettingTab,
 	type SettingDefinition,
+	type SettingDefinitionGroup,
 	type SettingDefinitionItem,
+	type SettingDefinitionPage,
 } from "obsidian";
+import {
+	currentCarrier,
+	driveFolderLabel,
+	isCarrierKind,
+	isDriveCarrier,
+	isDriveSignedIn,
+	type CarrierKind,
+} from "../drive-carrier/carrierSettings";
 import { PairDeviceModal } from "./PairDeviceModal";
 import { RecoveryKitModal } from "./RecoveryKitModal";
 import {
@@ -32,7 +42,10 @@ type DeclarativeSettingKey =
 	| "updateRepoBranch"
 	| "externalEditPolicy"
 	| "frontmatterGuardEnabled"
-	| "debug";
+	| "debug"
+	| "carrier"
+	| "driveClientId"
+	| "driveClientSecret";
 
 interface SettingsUpdateState {
 	serverVersion: string | null;
@@ -62,10 +75,17 @@ export interface VaultSyncSettingsHost {
 	buildSetupDeepLink(): string | null;
 	buildMobileSetupUrl(): string | null;
 	buildRecoveryKitText(): string | null;
+	/** Google Drive carrier only. Absent on hosts that do not offer it. */
+	signInToDrive?(): Promise<void>;
+	signOutOfDrive?(): Promise<void>;
 }
 
 const CLOUDFLARE_DEPLOY_URL = "https://deploy.workers.cloudflare.com/?url=https://github.com/kavinsood/yaos/tree/main/server";
 const ATTACHMENT_SETUP_VIDEO_URL = "https://youtu.be/Z7xCMEYfdFM";
+const CARRIER_OPTIONS: Record<CarrierKind, string> = {
+	cloudflare: "Cloudflare Worker (default)",
+	drive: "Google Drive (experimental)",
+};
 const EXTERNAL_EDIT_OPTIONS: Record<ExternalEditPolicy, string> = {
 	always: "Always import",
 	"closed-only": "Only when file is closed",
@@ -82,6 +102,14 @@ function isInsecureRemoteHost(host: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+function isPageDefinition(item: SettingDefinitionItem): item is SettingDefinitionPage {
+	return "type" in item && item.type === "page";
+}
+
+function isGroupDefinition(item: SettingDefinitionItem): item is SettingDefinitionGroup {
+	return "type" in item && item.type === "group";
 }
 
 function shortenMiddle(value: string, maxLength = 36): string {
@@ -390,7 +418,93 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			},
 		);
 
-		return definitions;
+		return this.applyCarrierChoice(definitions);
+	}
+
+	/**
+	 * The carrier choice is added to the finished list instead of being woven
+	 * into it, so the Cloudflare screens above stay exactly as they were.
+	 * With the default carrier only one extra row appears (in Advanced). With
+	 * the Drive carrier, the server-only screens are replaced by the Drive one.
+	 */
+	private applyCarrierChoice(definitions: SettingDefinitionItem[]): SettingDefinitionItem[] {
+		const carrierRow: SettingDefinitionItem = {
+			name: "Sync carrier (experimental)",
+			desc: "Where your notes are exchanged between devices. Changing it needs a reload of the plugin. Google Drive needs no server, but changes arrive in a few seconds instead of instantly.",
+			control: { type: "dropdown", key: "carrier", options: CARRIER_OPTIONS },
+		};
+		const drive = isDriveCarrier(this.host.settings);
+		const withCarrierRow = (item: SettingDefinitionItem): SettingDefinitionItem => {
+			if (!isPageDefinition(item) || item.name !== "Advanced" || !item.items) return item;
+			const serverOnly = new Set(["Deployment repository URL", "Deployment default branch"]);
+			const items = drive
+				? item.items.filter((entry) => !("name" in entry && typeof entry.name === "string" && serverOnly.has(entry.name)))
+				: item.items;
+			return { ...item, items: [carrierRow, ...items] };
+		};
+		if (!drive) return definitions.map(withCarrierRow);
+
+		const serverOnlyGroups = new Set(["Setup", "Sync status", "Updates", "Attachments", "Collaboration"]);
+		const kept = definitions.filter((item) => {
+			if (isGroupDefinition(item) && typeof item.heading === "string") {
+				return !serverOnlyGroups.has(item.heading);
+			}
+			if (isPageDefinition(item) && item.name === "Manual connection") return false;
+			return true;
+		});
+		return [...this.driveDefinitions(), ...kept.map(withCarrierRow)];
+	}
+
+	private async runDriveAction(action: () => Promise<void> | undefined): Promise<void> {
+		await action();
+		this.update();
+	}
+
+	private driveDefinitions(): SettingDefinitionItem[] {
+		const settings = this.host.settings;
+		const signedIn = isDriveSignedIn(settings);
+		const status = this.host.getSettingsStatusSummary();
+		return [
+			{
+				type: "group",
+				heading: "Google Drive carrier",
+				items: [
+					{
+						name: "Status",
+						desc: signedIn ? status.label : "Not signed in. Enter your Google client details below, then sign in.",
+					},
+					{ name: "Folder on Drive", desc: driveFolderLabel(settings.vaultId || "Not set") },
+					{
+						name: "Vault ID",
+						desc: "Every device that syncs this vault must use exactly this ID (Advanced > Vault ID).",
+						control: { type: "text", key: "vaultId", placeholder: "Generated automatically" },
+					},
+					{
+						name: "Google client ID",
+						desc: "From your own Google Cloud project: an OAuth client of type \"TVs and limited-input devices\".",
+						control: { type: "text", key: "driveClientId", placeholder: "Paste the client ID" },
+					},
+					{
+						name: "Google client secret",
+						desc: "From the same OAuth client. Stored only in this vault's plugin data.",
+						control: { type: "text", key: "driveClientSecret", placeholder: "Paste the client secret" },
+					},
+					{
+						name: signedIn ? "Signed in to Google" : "Sign in with Google",
+						desc: signedIn
+							? "Sign in again if sync reports that access was lost."
+							: "Shows a short code to enter at google.com/device. Only files created by YAOS are accessible.",
+						action: () => { void this.runDriveAction(() => this.host.signInToDrive?.()); },
+					},
+					{
+						name: "Sign out",
+						desc: "Forget the Google sign-in on this device. Your notes on Drive stay where they are.",
+						visible: () => isDriveSignedIn(this.host.settings),
+						action: () => { void this.runDriveAction(() => this.host.signOutOfDrive?.()); },
+					},
+				],
+			},
+		];
 	}
 
 	getControlValue(key: string): unknown {
@@ -410,6 +524,9 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			case "externalEditPolicy": return this.host.settings.externalEditPolicy;
 			case "frontmatterGuardEnabled": return this.host.settings.frontmatterGuardEnabled;
 			case "debug": return this.host.settings.debug;
+			case "carrier": return currentCarrier(this.host.settings);
+			case "driveClientId": return this.host.settings.driveClientId ?? "";
+			case "driveClientSecret": return this.host.settings.driveClientSecret ?? "";
 			default: throw new Error(`Unknown Yaos setting: ${key}`);
 		}
 	}
@@ -497,6 +614,22 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 				await this.host.updateSettings((settings) => {
 					settings.debug = expectBooleanValue(key, value);
 				}, "settings:debug");
+				return;
+			case "carrier": {
+				const nextValue = expectStringValue(key, value);
+				if (!isCarrierKind(nextValue)) throw new RangeError(`Unsupported sync carrier: ${nextValue}`);
+				await this.host.updateSettings((settings) => { settings.carrier = nextValue; }, "settings:carrier");
+				new Notice("Reload the plugin (or restart Obsidian) to switch the sync carrier.", 8000);
+				this.update();
+				return;
+			}
+			case "driveClientId":
+				await this.host.updateSettings((settings) => { settings.driveClientId = expectStringValue(key, value).trim(); }, "settings:drive-client-id");
+				this.update();
+				return;
+			case "driveClientSecret":
+				await this.host.updateSettings((settings) => { settings.driveClientSecret = expectStringValue(key, value).trim(); }, "settings:drive-client-secret");
+				this.update();
 				return;
 			default:
 				throw new Error(`Unknown Yaos setting: ${key}`);

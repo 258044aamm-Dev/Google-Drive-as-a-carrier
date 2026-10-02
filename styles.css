@@ -170,3 +170,11 @@ body.vault-crdt-show-cursors .cm-editor .cm-ySelectionCaret {
 body .cm-editor .cm-ySelectionInfo {
 	display: none;
 }
+
+/* Google Drive carrier: the sign-in code shown to the user. */
+.yaos-drive-signin-code {
+	font-size: 2em;
+	font-weight: bold;
+	letter-spacing: 0.15em;
+	text-align: center;
+}

@@ -437,7 +437,11 @@ export class VaultSync {
 			connect: false,
 			maxBackoffTime: MAX_BACKOFF_TIME_MS,
 		});
-		const provider = cloudflare ?? transportFactory?.({ doc: this.ydoc, vaultId: roomId });
+		const provider = cloudflare ?? transportFactory?.({
+			doc: this.ydoc,
+			vaultId: roomId,
+			isLocalStoreOrigin: (origin) => origin !== null && origin === this.persistence,
+		});
 		if (!provider) throw new Error("No sync transport could be created");
 		this.cloudflareProvider = cloudflare;
 		this.provider = provider;
