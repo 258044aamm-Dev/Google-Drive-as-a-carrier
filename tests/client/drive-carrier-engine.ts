@@ -147,7 +147,7 @@ s.section("1c: the same, but the user really edited the note on the computer: lo
 s.section("1d: without the Drive baseline provider the engine behaves exactly as before");
 {
 	const r = await run({ baseline: false, computerPollsAfterEdit: false });
-	s.check(r.computerHasFile && r.phoneActive && r.phoneText === "version 1", "the original behaviour is unchanged (characterisation of the Cloudflare path)");
+	s.check(r.computerHasFile && r.phoneActive && r.phoneText === "version 1", "without a provider the old behaviour is unchanged (characterisation)");
 }
 
 s.section("2: two ids for one path: one delete removes the note");
@@ -169,12 +169,31 @@ s.section("2: two ids for one path: one delete removes the note");
 	for (const d of [A, B]) await d.vs.destroy().catch(() => undefined);
 }
 
-s.section("3: the carrier flag is what enables it (Cloudflare construction keeps the old delete)");
+s.section("3: the same two fixes apply with the Cloudflare constructor (no carrier)");
 {
-	const src = readSource("src/sync/vaultSync.ts");
-	s.check(/_tombstoneDuplicateIds = transportFactory !== undefined/.test(src), "duplicate-id tombstoning is tied to a non-Cloudflare transport");
+	// The real provider registers unload listeners on `window`; Node has none.
+	const host: { addEventListener?: unknown; removeEventListener?: unknown } = window;
+	const hadListeners = "addEventListener" in host;
+	if (!hadListeners) { host.addEventListener = () => undefined; host.removeEventListener = () => undefined; }
+	const cf = new VaultSync({ ...DEFAULT_SETTINGS, host: "https://sync.invalid", token: "t", vaultId: "cf-dup", deviceName: "cf" });
+	cf.provider.disconnect();
+	// Two ids for one path, as two devices that created it before meeting leave behind.
+	cf.ydoc.transact(() => {
+		const meta = cf.ydoc.getMap("meta");
+		for (const id of ["id-one", "id-two"]) {
+			const m = new Y.Map<unknown>(); m.set("path", "Untitled.md"); m.set("mtime", id === "id-one" ? 2 : 1);
+			meta.set(id, m);
+		}
+	});
+	s.check(activeIdCount(cf, "Untitled.md") === 2, "setup: two active ids for the path");
+	cf.handleDelete("Untitled.md", "cf");
+	s.check(activeIdCount(cf, "Untitled.md") === 0, "one delete removes both ids with the Cloudflare constructor too");
+	await cf.destroy().catch(() => undefined);
+	if (!hadListeners) { delete host.addEventListener; delete host.removeEventListener; }
+
 	const main = readSource("src/main.ts");
-	s.check(/if \(isDriveCarrier\(this\.settings\)\) \{\s*this\.diskMirror\.setRemoteDeleteBaselineProvider/.test(main), "the baseline provider is only wired in Drive mode");
+	s.check(/this\.diskMirror\.setRemoteDeleteBaselineProvider\(/.test(main), "main.ts wires the baseline provider");
+	s.check(!/isDriveCarrier\(this\.settings\)\) \{\s*this\.diskMirror\.setRemoteDeleteBaselineProvider/.test(main), "the provider is not gated on the carrier");
 }
 
 await s.done();

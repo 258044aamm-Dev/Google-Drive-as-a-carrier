@@ -8,6 +8,15 @@ Version numbers like `2.1.1-drive.3` exist only in each release's `manifest.json
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
+## Unreleased - 2.1.1-drive.8 (committed locally, not published)
+
+### Changed (engine, now for every carrier including Cloudflare)
+- **Engine step 1: the two delete fixes are no longer limited to Google Drive.** Both were Drive-only in `2.1.1-drive.7`; they now apply to Cloudflare too. A remote delete is applied when the disk file still equals the last synced content, even if an edit arrived in the same batch; a delete removes every active id for the path. A file you really edited is still kept. Chosen on purpose: the same symptom is reported upstream (kavinsood/yaos #78).
+- Code: `src/main.ts` always wires the baseline provider; `VaultSync.handleDelete` always removes duplicate ids (the `_tombstoneDuplicateIds` flag is gone).
+
+### Tests
+- `drive-carrier-engine` grows to 20 checks: duplicate-id delete with the Cloudflare constructor, and the provider is not gated on the carrier.
+
 ## Unreleased - 2.1.1-drive.7 (committed locally, not published)
 
 ### Fixed (Google Drive carrier)

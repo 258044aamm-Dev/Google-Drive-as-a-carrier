@@ -272,13 +272,6 @@ export class VaultSync {
 	private _serverAckPersistenceUnavailable = false;
 	private _serverReceiptStartupValidation: ServerReceiptStartupValidation = "not_started";
 	private readonly _svEchoCounters = createSvEchoCounters();
-	/**
-	 * True when a carrier other than the Cloudflare server moves the document
-	 * (Google Drive). Only then does a delete also tombstone duplicate file ids
-	 * for the same path; the Cloudflare behaviour is unchanged.
-	 */
-	private readonly _tombstoneDuplicateIds: boolean;
-
 	/** Buffered renames for batch flush. */
 	private _renameBatch: Map<string, string> = new Map(); // oldPath -> newPath
 	private _renameBatchNewToOld: Map<string, string> = new Map(); // newPath -> oldPath
@@ -406,7 +399,6 @@ export class VaultSync {
 		const syncPrefix = `/vault/sync/${encodeURIComponent(roomId)}`;
 
 		const transportFactory = options?.transportFactory;
-		this._tombstoneDuplicateIds = transportFactory !== undefined;
 		const cloudflare = transportFactory
 			? null
 			: new YSyncProvider(settings.host, roomId, this.ydoc, {
@@ -1830,7 +1822,7 @@ export class VaultSync {
 		// Two devices that create the same path before they see each other leave two
 		// active ids for it. Tombstoning only the winner made the other id the path's
 		// owner, and the note came back at the next reconcile.
-		const duplicateIds = this._tombstoneDuplicateIds ? this.activeIdsForPath(resolvedPath, fileId) : [];
+		const duplicateIds = this.activeIdsForPath(resolvedPath, fileId);
 
 		this.ydoc.transact(() => {
 			if (this.shouldWriteLegacyPathMap()) {

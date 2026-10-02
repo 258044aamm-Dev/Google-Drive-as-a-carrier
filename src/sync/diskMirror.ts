@@ -141,7 +141,7 @@ export class DiskMirror {
 
 	/**
 	 * Optional: the content hash this device last knew to be on disk and in sync
-	 * for a path. Only wired for the Google Drive carrier. When set, a remote
+	 * for a path. When set, a remote
 	 * delete treats a disk file that still matches it as untouched.
 	 */
 	private remoteDeleteBaselineHash: ((path: string) => string | null) | null = null;
@@ -197,8 +197,8 @@ export class DiskMirror {
 	}
 
 	/**
-	 * Drive carrier only. A remote delete used to compare the disk with the CRDT
-	 * text at the moment the delete was seen. The carrier hands over an edit and
+	 * A remote delete used to compare the disk with the CRDT
+	 * text at the moment the delete was seen. A batching carrier (Google Drive) hands over an edit and
 	 * the delete that follows it in one poll, so the disk was still the text from
 	 * before that edit, looked "locally modified", and the delete was undone with
 	 * the OLD text. The last known synced hash tells an untouched file from an

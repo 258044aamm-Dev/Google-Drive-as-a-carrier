@@ -867,13 +867,11 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 					this.diskIndex[path] = { mtime: 0, size: 0, contentHash };
 				}
 			});
-			// Google Drive only: a remote delete needs the last synced content hash
-			// to tell an untouched file from an edited one (see DiskMirror).
-			if (isDriveCarrier(this.settings)) {
-				this.diskMirror.setRemoteDeleteBaselineProvider(
-					(path) => this.diskIndex[path]?.contentHash ?? null,
-				);
-			}
+			// A remote delete needs the last synced content hash to tell an
+			// untouched file from an edited one (see DiskMirror).
+			this.diskMirror.setRemoteDeleteBaselineProvider(
+				(path) => this.diskIndex[path]?.contentHash ?? null,
+			);
 
 			// 4b. BlobSyncManager (if attachment sync is enabled)
 			this.attachmentOrchestrator?.start("startup", false);
