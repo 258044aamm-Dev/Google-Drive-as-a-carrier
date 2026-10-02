@@ -301,3 +301,50 @@ export function reapTombstonedBodies(doc: Y.Doc, options: ReapOptions = {}): Rea
 
 	return result;
 }
+
+/** Extra reaping time one load may spend on passes after the first, in ms. */
+export const TOMBSTONE_REAP_EXTRA_BUDGET_MS = 50;
+
+export interface ReapUntilDoneOptions extends ReapOptions {
+	/** Time allowed for passes after the first. Default `TOMBSTONE_REAP_EXTRA_BUDGET_MS`. */
+	extraBudgetMs?: number;
+	/** Injectable monotonic clock in ms, for tests. */
+	clock?: () => number;
+}
+
+/**
+ * One pass, then more passes while eligible bodies remain and the time budget
+ * lasts.
+ *
+ * A vault with more than `maxPerRun` eligible tombstones used to need one cold
+ * load per 500 (upstream issue #78: 1154 tombstones). Each pass is still its own
+ * transaction capped at `maxPerRun`, so no update gets larger. When nothing is
+ * left after the first pass (the usual case) this is exactly one pass.
+ *
+ * The result is the first pass's picture with the work of all passes added:
+ * `reaped` and `charsFreed` are sums, `remaining`, `oldestTombstoneAgeMs` and
+ * `nextEligibleAt` describe the state after the last pass.
+ */
+export function reapTombstonedBodiesUntilDone(doc: Y.Doc, options: ReapUntilDoneOptions = {}): ReapResult {
+	const clock = options.clock ?? (() => Date.now());
+	const budget = options.extraBudgetMs ?? TOMBSTONE_REAP_EXTRA_BUDGET_MS;
+	const first = reapTombstonedBodies(doc, options);
+	let last = first;
+	let reaped = first.reaped;
+	let charsFreed = first.charsFreed;
+	const startedAt = clock();
+	while (last.remaining > 0 && last.reaped > 0 && clock() - startedAt < budget) {
+		last = reapTombstonedBodies(doc, options);
+		reaped += last.reaped;
+		charsFreed += last.charsFreed;
+	}
+	if (last === first) return first;
+	return {
+		...first,
+		reaped,
+		charsFreed,
+		remaining: last.remaining,
+		oldestTombstoneAgeMs: last.oldestTombstoneAgeMs,
+		nextEligibleAt: last.nextEligibleAt,
+	};
+}
