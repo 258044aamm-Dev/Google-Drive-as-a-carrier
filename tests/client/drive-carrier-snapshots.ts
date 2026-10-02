@@ -86,6 +86,23 @@ s.section("Test 1: take, list, fetch");
 	back.destroy();
 }
 
+s.section("Test 1b: a current-model document is counted from meta (not from the empty pathToId)");
+{
+	const drive = new FakeDrive();
+	const clock = { t: T0 };
+	const doc = new Y.Doc();
+	doc.getMap<unknown>("sys").set("schemaVersion", 3);
+	const meta = doc.getMap<unknown>("meta");
+	for (const [id, path, deleted] of [["i1", "a.md", false], ["i2", "b.md", false], ["i3", "c.md", true]] as const) {
+		const m = new Y.Map<unknown>();
+		m.set("path", path);
+		if (deleted) m.set("deletedAt", 1_700_000_000_000);
+		meta.set(id, m);
+	}
+	const res = await makeBackend(drive, doc, clock).now("laptop");
+	s.check(res.index?.markdownFileCount === 2, `two active notes, the deleted one is not counted (got ${String(res.index?.markdownFileCount)})`);
+}
+
 s.section("Test 2: daily snapshot");
 {
 	const drive = new FakeDrive();

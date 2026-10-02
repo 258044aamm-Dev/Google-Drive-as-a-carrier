@@ -7,6 +7,7 @@ import { EncryptionError, type DriveSealer } from "./driveCrypto";
 import { ensureFolder, oldestFirst, sha256Hex } from "./driveFolders";
 import type { DriveKeyring } from "./driveKeyring";
 import { KIND_SNAPSHOT, decodeFile, encodeFile } from "./fileFormat";
+import { isFileMetaDeletedValue } from "../sync/fileMeta";
 
 const INDEX_PREFIX = "snapidx-";
 const INDEX_SUFFIX = ".json";
@@ -64,6 +65,24 @@ function parseIndex(raw: string): SnapshotIndex | null {
 	if (typeof r.snapshotId !== "string" || typeof r.createdAt !== "string" || typeof r.day !== "string") return null;
 	if (typeof r.crdtSizeBytes !== "number" || typeof r.markdownFileCount !== "number" || typeof r.blobFileCount !== "number") return null;
 	return parsed as SnapshotIndex;
+}
+
+/**
+ * Notes in the document. From schema v2 `meta` is authoritative and `pathToId`
+ * is frozen or empty, so counting it reported "0 notes" (upstream issue #78 saw
+ * the same in the server's snapshot index). Documents without a schema version
+ * keep the legacy count.
+ */
+function countActiveNotes(doc: Y.Doc): number {
+	const schema = doc.getMap<unknown>("sys").get("schemaVersion");
+	if (!(typeof schema === "number" && Number.isFinite(schema) && schema >= 2)) {
+		return doc.getMap<string>("pathToId").size;
+	}
+	let active = 0;
+	doc.getMap<unknown>("meta").forEach((value) => {
+		if (!isFileMetaDeletedValue(value)) active++;
+	});
+	return active;
 }
 
 function defaultRandom(): string {
@@ -150,7 +169,6 @@ export class DriveSnapshotBackend implements SnapshotBackend {
 		const compressed = gzipSync(raw);
 		const fullUpdateHash = await sha256Hex(raw);
 
-		const pathToId = doc.getMap<string>("pathToId");
 		const pathToBlob = doc.getMap<unknown>("pathToBlob");
 		const sys = doc.getMap<unknown>("sys");
 		const referencedBlobHashes: string[] = [];
@@ -168,7 +186,7 @@ export class DriveSnapshotBackend implements SnapshotBackend {
 			createdAt: new Date(now).toISOString(),
 			day: this.today(),
 			schemaVersion: typeof sys.get("schemaVersion") === "number" ? sys.get("schemaVersion") as number : undefined,
-			markdownFileCount: pathToId.size,
+			markdownFileCount: countActiveNotes(doc),
 			blobFileCount: pathToBlob.size,
 			crdtSizeBytes: compressed.byteLength,
 			crdtRawSizeBytes: raw.byteLength,

@@ -164,7 +164,7 @@ function readDeletedAt(value: unknown): number | null {
 }
 
 /** Whether a metadata value is a tombstone, in either shape. */
-function isTombstone(value: unknown): boolean {
+export function isTombstone(value: unknown): boolean {
 	if (readDeletedAt(value) !== null) return true;
 	const nested = asMapLike(value);
 	if (nested) return nested.get("deleted") === true;
