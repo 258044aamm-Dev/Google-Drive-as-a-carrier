@@ -78,9 +78,9 @@ function makeMirrorHarness() {
 	const meta = doc.getMap("meta");
 	const idToText = doc.getMap("idToText");
 	// Only ever compared by identity (isLocalOrigin) and used as a transaction
-	// origin, so `roomname` carries the marker purely to name it in a debugger.
+	// origin, so the `wsconnected` field only gives the empty object a member.
 	const fakeProvider = partialOf<VaultSync["provider"]>({
-		roomname: "fake-provider-for-meta-tests",
+		wsconnected: false,
 	});
 
 	// Semantic observer state — mirrors VaultSync._metaSnapshot/_metaDeepObserver

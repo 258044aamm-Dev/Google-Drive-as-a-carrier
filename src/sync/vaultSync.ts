@@ -27,6 +27,7 @@ import { randomId } from "../utils/randomId";
 import { formatUnknown } from "../utils/format";
 import { UpdateTracker } from "./updateTracker";
 import { ServerAckTracker } from "./serverAckTracker";
+import type { SyncTransport, SyncTransportFactory } from "./transport";
 import { IndexedDbCandidateStore, getOrCreateLocalDeviceId, sha256Hex } from "./indexedDbCandidateStore";
 import {
 	createSvEchoCounters,
@@ -138,7 +139,16 @@ type ServerReceiptStartupValidation =
  */
 export class VaultSync {
 	readonly ydoc: Y.Doc;
-	readonly provider: YSyncProvider;
+	/**
+	 * The sync carrier. Everything outside this class talks to it only through
+	 * the `SyncTransport` surface (see transport.ts).
+	 */
+	readonly provider: SyncTransport;
+	/**
+	 * The Cloudflare provider when the default carrier is in use, else null.
+	 * Holds the Cloudflare-only concerns (socket termination, ticketed URL).
+	 */
+	private readonly cloudflareProvider: YSyncProvider | null;
 	readonly persistence: IndexeddbPersistence;
 	readonly updateTracker: UpdateTracker;
 	readonly serverAckTracker: ServerAckTracker;
@@ -323,6 +333,11 @@ export class VaultSync {
 			 * state-vector truth and persistence authority.
 			 */
 			onServerReceiptStatusChanged?: () => void;
+			/**
+			 * Build a different sync carrier instead of the default Cloudflare
+			 * provider. When set, no Worker connection, ticket or token is used.
+			 */
+			transportFactory?: SyncTransportFactory;
 		},
 	) {
 		this.debug = settings.debug;
@@ -384,7 +399,10 @@ export class VaultSync {
 		const longLivedToken = settings.token;
 		const syncPrefix = `/vault/sync/${encodeURIComponent(roomId)}`;
 
-		this.provider = new YSyncProvider(settings.host, roomId, this.ydoc, {
+		const transportFactory = options?.transportFactory;
+		const cloudflare = transportFactory
+			? null
+			: new YSyncProvider(settings.host, roomId, this.ydoc, {
 			prefix: syncPrefix,
 			params: async () => {
 				// Build base params (schema version + optional trace context).
@@ -419,6 +437,10 @@ export class VaultSync {
 			connect: false,
 			maxBackoffTime: MAX_BACKOFF_TIME_MS,
 		});
+		const provider = cloudflare ?? transportFactory?.({ doc: this.ydoc, vaultId: roomId });
+		if (!provider) throw new Error("No sync transport could be created");
+		this.cloudflareProvider = cloudflare;
+		this.provider = provider;
 
 		// Wire update tracker before any Y.Doc events so timestamps are captured.
 		this.updateTracker = new UpdateTracker();
@@ -2007,7 +2029,9 @@ export class VaultSync {
 	 */
 	private patchProviderTicket(value: string): void {
 		try {
-			this.provider.url = patchTicketInUrl(this.provider.url, value);
+			const cloudflare = this.cloudflareProvider;
+			if (!cloudflare) return;
+			cloudflare.url = patchTicketInUrl(cloudflare.url, value);
 			this.log("socket ticket refreshed in provider URL");
 		} catch (err) {
 			this.log(`patchProviderTicket: failed to update provider URL: ${formatUnknown(err)}`);
@@ -2050,7 +2074,7 @@ export class VaultSync {
 		this.clearPendingRenames();
 		await this.flushReceiptPersistence();
 
-		const ws = this.provider.ws;
+		const ws = this.cloudflareProvider?.ws ?? null;
 
 		// Force terminate the WebSocket to skip the 30s close handshake timeout in "ws" library (Node/Electron).
 		// Safe because it's a targeted call on our own instance.

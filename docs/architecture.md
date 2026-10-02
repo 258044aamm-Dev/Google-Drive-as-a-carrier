@@ -33,6 +33,10 @@ Tombstoned Markdown bodies are reaped after their grace period while tombstone m
 
 `VaultSync` owns the local Yjs document, IndexedDB provider, remote provider, file identity, and reconciliation inputs. `ReconciliationController` coordinates authority decisions. `DiskMirror` materializes CRDT state and observes ordinary local files. `EditorBindingManager` connects open Markdown editors to their `Y.Text`. `BlobSyncManager` handles non-Markdown files through R2.
 
+### Sync carrier
+
+`VaultSync` reaches its carrier only through the `SyncTransport` interface in `src/sync/transport.ts`: connect, disconnect, destroy, status and sync events, awareness, and remote updates applied with the transport object as the Yjs origin. The Cloudflare Worker provider (`y-partyserver`) is the default and is unchanged. A different carrier can be supplied with the `transportFactory` option; on that path no Worker connection, ticket or token is used. Cloudflare-only details (ticketed URL, socket termination) stay inside `VaultSync`'s Cloudflare branch.
+
 ### Disk to CRDT
 
 Obsidian file events are noisy, duplicated, and non-causal. YAOS coalesces dirty paths and drains them at the pace of disk I/O instead of treating each watcher event as an independent operation.
