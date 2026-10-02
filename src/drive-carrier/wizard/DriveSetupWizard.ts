@@ -128,6 +128,7 @@ export class DriveSetupWizard extends Modal {
 			case "retry": await c.retry(); return;
 			case "choose-new": c.choosePath("new"); return;
 			case "choose-join": c.choosePath("join"); return;
+			case "client-hosted": c.chooseClient("hosted"); return;
 			case "client-bundled": c.chooseClient("bundled"); return;
 			case "client-own": c.chooseClient("own"); return;
 			case "copy-code": await c.copySetupCode(); return;

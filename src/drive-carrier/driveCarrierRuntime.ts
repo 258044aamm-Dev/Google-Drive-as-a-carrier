@@ -10,7 +10,8 @@ import { MeteredDriveApi, type RequestStats } from "./requestMeter";
 import { browserActivity, type ActivitySource } from "./activity";
 import { GoogleDriveRest, type DriveHttp } from "./googleDriveRest";
 import { GoogleTokenManager } from "./googleAuth";
-import type { DriveCarrierSettings } from "./carrierSettings";
+import { HOSTED_TOKEN_URL, HostedTokenManager } from "./hostedAuth";
+import { isHostedSignIn, type DriveCarrierSettings } from "./carrierSettings";
 
 export interface DriveCarrierRuntimeDeps {
 	getSettings: () => DriveCarrierSettings;
@@ -59,13 +60,15 @@ export function createDriveCarrier(deps: DriveCarrierRuntimeDeps): DriveCarrier 
 	const getApi = (): MeteredDriveApi => {
 		if (api) return api;
 		const settings = deps.getSettings();
-		const tokens = new GoogleTokenManager(
-			deps.http,
-			{ clientId: settings.driveClientId ?? "", clientSecret: settings.driveClientSecret ?? "" },
-			settings.driveRefreshToken ?? "",
-			undefined,
-			deps.onSignInLost,
-		);
+		const tokens = isHostedSignIn(settings)
+			? new HostedTokenManager(deps.http, settings.driveHostedUrl?.trim() || HOSTED_TOKEN_URL, settings.driveRefreshToken ?? "", undefined, deps.onSignInLost)
+			: new GoogleTokenManager(
+				deps.http,
+				{ clientId: settings.driveClientId ?? "", clientSecret: settings.driveClientSecret ?? "" },
+				settings.driveRefreshToken ?? "",
+				undefined,
+				deps.onSignInLost,
+			);
 		api = new MeteredDriveApi(new GoogleDriveRest(deps.http, tokens.provider));
 		return api;
 	};

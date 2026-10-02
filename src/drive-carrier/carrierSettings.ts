@@ -14,6 +14,15 @@ export interface DriveCarrierSettings {
 	driveRefreshToken?: string;
 	driveDeviceId?: string;
 	/**
+	 * How this device signs in. Absent = Google's own device sign-in with the
+	 * user's client ID and secret (the default). "hosted" = the easy sign-in:
+	 * the refresh token comes from a sign-in page and the token service holds
+	 * the Google client secret, so no client details are saved.
+	 */
+	driveAuthMode?: "hosted";
+	/** Overrides the token service address when `driveAuthMode` is "hosted". Rarely used. */
+	driveHostedUrl?: string;
+	/**
 	 * Encrypts everything stored on Drive when the vault is first created there.
 	 * Kept in the plugin's data like the Google sign-in; it is the same on every device.
 	 */
@@ -32,8 +41,14 @@ export function isCarrierKind(value: string): value is CarrierKind {
 	return value === "cloudflare" || value === "drive";
 }
 
+/** True when this device uses the easy sign-in (see `driveAuthMode`). */
+export function isHostedSignIn(settings: DriveCarrierSettings): boolean {
+	return settings.driveAuthMode === "hosted";
+}
+
 /** True when everything needed to talk to Drive has been entered and the user has signed in. */
 export function isDriveSignedIn(settings: DriveCarrierSettings): boolean {
+	if (isHostedSignIn(settings)) return !!settings.driveRefreshToken;
 	return !!(settings.driveClientId?.trim() && settings.driveClientSecret?.trim() && settings.driveRefreshToken);
 }
 

@@ -43,7 +43,13 @@ interface Rig {
 	failSignIn: GoogleAuthError | null;
 	gate: { release: () => void; promise: Promise<void> } | null;
 	finishResult: FinishResult;
+	/** Requests the wizard sent through `http` (only the easy sign-in service is answered). */
+	httpCalls: { url: string; body: string }[];
+	hostedReply: { status: number; json: Record<string, unknown> } | "offline";
 }
+
+const HOSTED_URL = "https://hosted.test/api/access";
+const GOOD_TOKEN = "1//0gHostedRefreshTokenForTests-0123456789";
 
 function makeRig(options: { bundled?: boolean; settings?: Partial<WizardSettings>; drive?: FakeDrive; vaultIds?: string[] } = {}): Rig {
 	const drive = options.drive ?? new FakeDrive();
@@ -51,10 +57,19 @@ function makeRig(options: { bundled?: boolean; settings?: Partial<WizardSettings
 	const vaultIds = [...(options.vaultIds ?? [FIRST_VAULT])];
 	const rig: Rig = {
 		drive, settings, applied: [], copied: [], opened: [], signInCalls: [], finishCalls: 0, closed: 0,
-		failSignIn: null, gate: null, finishResult: "started", c: undefined as unknown as WizardController,
+		failSignIn: null, gate: null, finishResult: "started", c: null as never, // assigned right below, once the controller exists
+		httpCalls: [], hostedReply: { status: 200, json: { access_token: "hosted-access", expires_in: 3600 } },
 	};
 	const deps: WizardDeps = {
-		http: async () => { throw new Error("the wizard test must not touch real HTTP"); },
+		http: async (req) => {
+			rig.httpCalls.push({ url: req.url, body: typeof req.body === "string" ? req.body : "" });
+			if (req.url === HOSTED_URL) {
+				if (rig.hostedReply === "offline") throw new Error("offline");
+				return { status: rig.hostedReply.status, body: new TextEncoder().encode(JSON.stringify(rig.hostedReply.json)) };
+			}
+			throw new Error("the wizard test must not touch real HTTP");
+		},
+		hostedUrl: HOSTED_URL,
 		sleep: async () => undefined,
 		getSettings: () => rig.settings,
 		applySettings: async (patch) => {
@@ -100,6 +115,8 @@ async function toPaste(rig: Rig): Promise<void> {
 	await rig.c.next();
 	rig.c.choosePath("new");
 	await tick();
+	rig.c.chooseClient("own");
+	await tick();
 	for (let i = 0; i < 5; i++) await rig.c.next();
 }
 
@@ -125,16 +142,22 @@ function allScreens(rig: Rig): Screen[] {
 
 s.section("Test 1: the steps for each choice");
 {
-	const own = stepsFor({ ...makeRig().c.state.draft, path: "new", clientMode: "own" }, { bundledAvailable: false, alreadySetUp: false });
-	s.check(own.join() === "welcome,choose,guide-project,guide-api,guide-consent,guide-client,guide-publish,paste,signin,encryption,create,code,done", `new vault, own client (${own.join()})`);
-	const built = stepsFor({ ...makeRig().c.state.draft, path: "new", clientMode: "bundled" }, { bundledAvailable: true, alreadySetUp: false });
+	const base = makeRig().c.state.draft;
+	const own = stepsFor({ ...base, path: "new", clientMode: "own" }, { alreadySetUp: false });
+	s.check(own.join() === "welcome,choose,client,guide-project,guide-api,guide-consent,guide-client,guide-publish,paste,signin,encryption,create,code,done", `new vault, own client (${own.join()})`);
+	const built = stepsFor({ ...base, path: "new", clientMode: "bundled" }, { alreadySetUp: false });
 	s.check(built.join() === "welcome,choose,client,signin,encryption,create,code,done", `new vault, built-in client (${built.join()})`);
-	const ownWithChoice = stepsFor({ ...makeRig().c.state.draft, path: "new", clientMode: "own" }, { bundledAvailable: true, alreadySetUp: false });
-	s.check(ownWithChoice.includes("client") && ownWithChoice.includes("guide-project"), "own client chosen where a built-in one exists: the choice screen and the guides");
-	const join = stepsFor({ ...makeRig().c.state.draft, path: "join" }, { bundledAvailable: false, alreadySetUp: false });
+	const easy = stepsFor({ ...base, path: "new", clientMode: "hosted" }, { alreadySetUp: false });
+	s.check(easy.join() === "welcome,choose,client,hosted-token,signin,encryption,create,code,done", `new vault, easy sign-in (${easy.join()})`);
+	const join = stepsFor({ ...base, path: "join", clientMode: "own" }, { alreadySetUp: false });
 	s.check(join.join() === "welcome,choose,join-code,signin,join-check,done", `join (${join.join()})`);
-	const again = stepsFor({ ...makeRig().c.state.draft, path: "new", clientMode: "bundled" }, { bundledAvailable: true, alreadySetUp: true });
+	const joinEasy = stepsFor({ ...base, path: "join", clientMode: "hosted" }, { alreadySetUp: false });
+	s.check(joinEasy.join() === "welcome,choose,join-code,hosted-token,signin,join-check,done", `join, easy sign-in (${joinEasy.join()})`);
+	const again = stepsFor({ ...base, path: "new", clientMode: "bundled" }, { alreadySetUp: true });
 	s.check(again.join() === "welcome,choose,client,existing,signin,encryption,create,code,done", "a device that is already set up gets a warning step");
+	const againEasy = stepsFor({ ...base, path: "new", clientMode: "hosted" }, { alreadySetUp: true });
+	s.check(againEasy.join() === "welcome,choose,client,existing,hosted-token,signin,encryption,create,code,done", "the warning comes before the sign-in code is asked for");
+	s.check(base.clientMode === "hosted", "the easy sign-in is the default choice");
 	s.check(BUNDLED_GOOGLE_CLIENT === null || (BUNDLED_GOOGLE_CLIENT.clientId.endsWith(".apps.googleusercontent.com") && BUNDLED_GOOGLE_CLIENT.clientSecret.length > 10), "the built-in client is either not set or looks valid");
 }
 
@@ -147,8 +170,11 @@ s.section("Test 2: a new vault with the user's own client, encrypted");
 	s.check(rig.c.state.step === "choose", "then the choice");
 	rig.c.choosePath("new");
 	await tick();
+	s.check(rig.c.state.step === "client", "then how to sign in");
+	rig.c.chooseClient("own");
+	await tick();
 	s.check(rig.c.state.step === "guide-project", "own client: the guide starts");
-	s.check(buildScreen(rig.c).progress === "Step 3 of 13", `progress counts all steps (${String(buildScreen(rig.c).progress)})`);
+	s.check(buildScreen(rig.c).progress === "Step 4 of 14", `progress counts all steps (${String(buildScreen(rig.c).progress)})`);
 	s.check(rig.drive.calls.createFolder === 0 && rig.drive.calls.findFolders === 0 && rig.applied.length === 0, "nothing on Drive and nothing saved while reading the guide");
 	for (let i = 0; i < 5; i++) await rig.c.next();
 	s.check(rig.c.state.step === "paste", "five guide screens, then the paste screen");
@@ -457,6 +483,8 @@ s.section("Test 10: a device that is already set up");
 	await rig.c.next();
 	rig.c.choosePath("new");
 	await tick();
+	rig.c.chooseClient("own");
+	await tick();
 	for (let i = 0; i < 5; i++) await rig.c.next();
 	rig.c.setFieldByKey("clientId", OWN_ID);
 	rig.c.setFieldByKey("clientSecret", OWN_SECRET);
@@ -547,6 +575,213 @@ s.section("Test 13: createVault on its own");
 	let failed = false;
 	try { await createVault(bad.client(), { vaultId: "plainVaultYYYYYYYYYY", passphrase: "" }); } catch (e) { failed = e instanceof DriveError; }
 	s.check(failed, "a failing read stops it with the Drive error");
+}
+
+async function toHostedToken(rig: Rig): Promise<void> {
+	await rig.c.next();
+	rig.c.choosePath("new");
+	await tick();
+	rig.c.chooseClient("hosted");
+	await tick();
+}
+
+s.section("Test 14: the easy sign-in, new vault");
+{
+	const rig = makeRig();
+	await rig.c.next();
+	rig.c.choosePath("new");
+	await tick();
+	const screen = buildScreen(rig.c);
+	s.check(rig.c.state.step === "client", "the way to sign in is asked first");
+	const primaries = screen.buttons.filter((b) => b.kind === "primary");
+	s.check(primaries.length === 1 && primaries[0]?.action === "client-hosted", "the easy sign-in is the one highlighted choice");
+	const priv = screen.buttons.find((b) => b.action === "client-bundled");
+	s.check(!!priv && priv.disabled === true && /coming soon/i.test(priv.label), "without a built-in client, 'Private' is shown as coming soon and cannot be pressed");
+	s.check(screen.buttons.some((b) => b.action === "client-own" && b.disabled !== true), "the own-client path is still there");
+	s.check(/someone else|run by/i.test(JSON.stringify(screen.body)) && /never receives your notes/.test(JSON.stringify(screen.body)), "the screen says a third party is involved and that it never gets the notes");
+	rig.c.chooseClient("hosted");
+	await tick();
+	s.check(rig.c.state.step === "hosted-token", "easy sign-in goes to the page for the code");
+	s.check(buildScreen(rig.c).progress === "Step 4 of 9", `only nine steps (${String(buildScreen(rig.c).progress)})`);
+	const page = buildScreen(rig.c);
+	s.check(page.body.some((b) => b.kind === "link" && b.url === "https://ogd.richardxiong.com"), "a button opens the sign-in page");
+	s.check(/run by the author of the Obsidian Google Drive plugin, not by YAOS/.test(JSON.stringify(page.body)) && /turn encryption on/.test(JSON.stringify(page.body)), "it says who runs the page and recommends encryption");
+	s.check(page.fields.length === 1 && page.fields[0]?.type === "password", "the code goes into a hidden field");
+	s.check(!rig.c.canNext(), "Next waits for a code");
+	for (const [bad, part] of [["http://example.com", "web address"], ["short", "too short"], ["has space inside the code that is long enough", "no spaces"], ["YAOS-DRIVE1:abcdefghijklmnopqrstuvwxyz", "setup code"]] as const) {
+		rig.c.setFieldByKey("hostedToken", bad);
+		s.check(!rig.c.canNext() && String(rig.c.blocker()).includes(part), `refused: ${part}`);
+	}
+	rig.c.setFieldByKey("hostedToken", `  "${GOOD_TOKEN}"\n`);
+	s.check(rig.c.canNext(), "quotes and spaces around a good code are tolerated");
+	s.check(rig.httpCalls.length === 0 && rig.applied.length === 0 && rig.drive.calls.findFolders === 0, "nothing was sent anywhere yet");
+	await rig.c.next();
+	const sent = rig.httpCalls.filter((c) => c.url === HOSTED_URL);
+	s.check(sent.length === 1, "the code is checked once with the sign-in service");
+	const body = JSON.parse(sent[0]?.body ?? "{}") as Record<string, unknown>;
+	s.check(body.refresh_token === GOOD_TOKEN && body.clientId === "" && body.clientSecret === "", "the request has the cleaned code and no client details");
+	s.check(rig.httpCalls.every((c) => c.url === HOSTED_URL), "nothing was sent to anyone else");
+	s.check(rig.signInCalls.length === 0, "Google's code sign-in is not used");
+	s.check(rig.c.state.step === "encryption" && rig.drive.calls.findFolders === 0 && rig.applied.length === 0, "then encryption; still nothing saved or created");
+	rig.c.setFieldByKey("passphrase", "a long passphrase");
+	rig.c.setFieldByKey("passphraseConfirm", "a long passphrase");
+	rig.c.setFieldByKey("riskAccepted", true);
+	await rig.c.next();
+	const patch = rig.applied[0];
+	s.check(rig.applied.length === 1 && patch?.driveAuthMode === "hosted" && patch.driveRefreshToken === GOOD_TOKEN && patch.carrier === "drive", "saved with the easy sign-in marker and the cleaned code");
+	s.check(patch?.driveClientId === "" && patch.driveClientSecret === "", "no client details are saved");
+	s.check(rig.drive.namesIn(`YAOS ${FIRST_VAULT}`).join() === "meta.json", "the vault was created as usual");
+	const code = rig.c.state.setupCode ?? "";
+	s.check(code.startsWith("YAOS-DRIVE2:"), "the setup code is the easy-sign-in kind");
+	const decoded = decodeSetupCode(code);
+	s.check(decoded.ok && decoded.content.hosted === true && decoded.content.vaultId === FIRST_VAULT && decoded.content.passphrase === "a long passphrase" && decoded.content.clientId === "", "it carries the vault and passphrase but no client");
+	s.check(!code.includes(GOOD_TOKEN) && !JSON.stringify(decoded).includes(GOOD_TOKEN), "and never the sign-in code");
+	await rig.c.next();
+	const codeScreen = buildScreen(rig.c);
+	s.check(/sign in again on the same sign-in page/.test(JSON.stringify(codeScreen.body)) && /Keep this code private: it holds your vault ID and your passphrase/.test(JSON.stringify(codeScreen.body)), "the code screen explains the second device and does not talk about client details");
+	await rig.c.next();
+	s.check(rig.c.state.result === "started", "finished");
+}
+
+s.section("Test 15: the easy sign-in, problems and going back");
+{
+	const rig = makeRig();
+	await toHostedToken(rig);
+	rig.c.setFieldByKey("hostedToken", GOOD_TOKEN);
+	rig.hostedReply = { status: 400, json: { error: "invalid_grant", error_description: "Bad Request" } };
+	await rig.c.next();
+	s.check(rig.c.state.step === "signin" && /did not accept that code/.test(String(rig.c.state.error)), "a rejected code is explained");
+	s.check(rig.applied.length === 0 && rig.c.state.draft.refreshToken === "", "nothing saved");
+	s.check(buildScreen(rig.c).buttons.some((b) => b.action === "retry") && rig.c.canBack(), "Try again and Back are offered");
+	rig.hostedReply = { status: 200, json: { access_token: "a", expires_in: 3600 } };
+	await rig.c.retry();
+	s.check(rig.c.state.step === "encryption" && rig.c.state.error === null, "Try again works once the service accepts it");
+	const before = rig.httpCalls.length;
+	await rig.c.back();
+	s.check(rig.c.state.step === "hosted-token", "back from encryption lands on the code page, not the automatic step");
+	await rig.c.next();
+	s.check(rig.httpCalls.length === before && rig.c.state.step === "encryption", "going forward again does not ask the service a second time");
+	await rig.c.back();
+	rig.c.setFieldByKey("hostedToken", `${GOOD_TOKEN}-new`);
+	await rig.c.next();
+	s.check(rig.httpCalls.length === before + 1, "a changed code is checked again");
+
+	const off = makeRig();
+	await toHostedToken(off);
+	off.c.setFieldByKey("hostedToken", GOOD_TOKEN);
+	off.hostedReply = "offline";
+	await off.c.next();
+	s.check(/No connection to the sign-in service/.test(String(off.c.state.error)) && off.applied.length === 0, "offline: a clear message, nothing saved");
+
+	const down = makeRig();
+	await toHostedToken(down);
+	down.c.setFieldByKey("hostedToken", GOOD_TOKEN);
+	down.hostedReply = { status: 503, json: {} };
+	await down.c.next();
+	s.check(/temporary problem/.test(String(down.c.state.error)), "the service being down is called temporary");
+
+	const cancelled = makeRig();
+	await toHostedToken(cancelled);
+	cancelled.c.setFieldByKey("hostedToken", GOOD_TOKEN);
+	cancelled.c.cancel();
+	s.check(cancelled.closed === 1 && cancelled.applied.length === 0 && cancelled.drive.folders.size === 0 && cancelled.httpCalls.length === 0, "cancelling before pressing Next touches nothing");
+}
+
+s.section("Test 16: the setup code and joining with the easy sign-in");
+{
+	const first = makeRig();
+	await toHostedToken(first);
+	first.c.setFieldByKey("hostedToken", GOOD_TOKEN);
+	await first.c.next();
+	first.c.setFieldByKey("passphrase", "a long passphrase");
+	first.c.setFieldByKey("passphraseConfirm", "a long passphrase");
+	first.c.setFieldByKey("riskAccepted", true);
+	await first.c.next();
+	const code = first.c.state.setupCode ?? "";
+
+	const rig = makeRig({ drive: first.drive, settings: { vaultId: "someOtherVaultIdXXXXXXX" } });
+	await rig.c.next();
+	rig.c.choosePath("join");
+	await tick();
+	rig.c.setFieldByKey("setupCodeText", code);
+	s.check(rig.c.previewJoinCode()?.hosted === true, "the preview knows it is an easy-sign-in code");
+	s.check(/easy sign-in/.test(JSON.stringify(buildScreen(rig.c).body)), "and says so");
+	await rig.c.next();
+	s.check(rig.c.state.step === "hosted-token", "the second device is asked for its own sign-in code");
+	s.check(rig.applied.length === 0 && rig.drive.calls.createFile === first.drive.calls.createFile, "nothing is saved yet");
+	rig.c.setFieldByKey("hostedToken", `${GOOD_TOKEN}-device2`);
+	await rig.c.next();
+	s.check(rig.c.state.step === "join-check" && rig.c.state.joinCheck?.status === "ok", "the vault is found and the passphrase fits");
+	s.check(rig.applied.length === 1 && rig.applied[0]?.driveAuthMode === "hosted" && rig.applied[0]?.driveRefreshToken === `${GOOD_TOKEN}-device2` && rig.applied[0]?.vaultId === FIRST_VAULT, "this device's own code and the vault are saved");
+	s.check(rig.drive.namesIn(`YAOS ${FIRST_VAULT}`).join() === "meta.json", "joining wrote nothing to Drive");
+
+	// a classic code still takes the classic route, even though 'easy' is the default
+	const classic = makeRig();
+	await createOwnVault(classic);
+	const joinClassic = makeRig({ drive: classic.drive });
+	await joinClassic.c.next();
+	joinClassic.c.choosePath("join");
+	await tick();
+	joinClassic.c.setFieldByKey("setupCodeText", classic.c.state.setupCode ?? "");
+	await joinClassic.c.next();
+	s.check(joinClassic.c.state.step === "join-check" && joinClassic.signInCalls.length === 1 && joinClassic.httpCalls.length === 0 && joinClassic.applied[0]?.driveAuthMode === undefined, "an older-style code signs in with Google's code, never asks for a sign-in code, and saves no easy marker");
+
+	// by hand
+	const hand = makeRig({ drive: first.drive });
+	await hand.c.next();
+	hand.c.choosePath("join");
+	await tick();
+	hand.c.setFieldByKey("manualJoin", true);
+	hand.c.setFieldByKey("vaultId", FIRST_VAULT);
+	hand.c.setFieldByKey("passphrase", "a long passphrase");
+	s.check(!hand.c.canNext(), "by hand without a client or the easy box: Google details are required");
+	hand.c.setFieldByKey("joinHosted", true);
+	s.check(hand.c.canNext() && !buildScreen(hand.c).fields.some((f) => f.key === "clientId"), "with the easy box ticked the Google fields disappear");
+	await hand.c.next();
+	s.check(hand.c.state.step === "hosted-token", "then it asks for the sign-in code");
+	hand.c.setFieldByKey("hostedToken", GOOD_TOKEN);
+	await hand.c.next();
+	s.check(hand.c.state.joinCheck?.status === "ok" && hand.applied[0]?.driveAuthMode === "hosted", "joined by hand");
+}
+
+s.section("Test 17: a device that is already set up, then the easy sign-in");
+{
+	const rig = makeRig({
+		settings: { carrier: "drive", vaultId: "existingVaultIdXXXXXXXX", driveClientId: OWN_ID, driveClientSecret: OWN_SECRET, driveRefreshToken: "old" },
+		vaultIds: ["brandNewVaultIdYYYYYYYY"],
+	});
+	await toHostedToken(rig);
+	s.check(rig.c.state.step === "existing", "the warning comes first");
+	rig.c.setFieldByKey("existingAccepted", true);
+	await rig.c.next();
+	s.check(rig.c.state.step === "hosted-token", "then the sign-in code");
+	rig.c.setFieldByKey("hostedToken", GOOD_TOKEN);
+	await rig.c.next();
+	rig.c.setFieldByKey("encrypt", false);
+	await rig.c.next();
+	s.check(rig.applied[0]?.driveClientId === OWN_ID && rig.applied[0]?.driveClientSecret === OWN_SECRET, "the earlier client details are kept, not erased");
+	s.check(rig.applied[0]?.driveAuthMode === "hosted" && rig.applied[0]?.vaultId === "brandNewVaultIdYYYYYYYY", "new vault, easy sign-in");
+
+	// private path stays available when a built-in client exists
+	const withBuiltin = makeRig({ bundled: true });
+	await withBuiltin.c.next();
+	withBuiltin.c.choosePath("new");
+	await tick();
+	const choice = buildScreen(withBuiltin.c).buttons.find((b) => b.action === "client-bundled");
+	s.check(!!choice && choice.disabled !== true && !/coming soon/i.test(choice.label), "with a built-in client the private choice is available");
+	withBuiltin.c.chooseClient("bundled");
+	await tick();
+	s.check(withBuiltin.signInCalls.length === 1 && withBuiltin.httpCalls.length === 0 && withBuiltin.c.state.step === "encryption", "and it uses Google's code sign-in only");
+	s.check(withBuiltin.applied.length === 0, "(nothing saved yet)");
+	withBuiltin.c.setFieldByKey("encrypt", false);
+	await withBuiltin.c.next();
+	s.check(withBuiltin.applied[0]?.driveAuthMode === undefined && !("driveAuthMode" in (withBuiltin.applied[0] ?? {})), "the private path never sets the easy marker");
+
+	// no wording about Cloudflare anywhere on the new screens
+	const words = makeRig();
+	await toHostedToken(words);
+	const all = JSON.stringify([buildScreen(words.c)]);
+	s.check(!/cloudflare|worker|wrangler/i.test(all), "the new screens have no Cloudflare wording");
 }
 
 await s.done();

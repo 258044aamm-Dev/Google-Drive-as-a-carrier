@@ -1,7 +1,8 @@
-import { checkClientId, checkClientSecret, checkNewPassphrase, checkVaultId } from "./validate";
+import { checkClientId, checkClientSecret, checkHostedToken, checkNewPassphrase, checkVaultId } from "./validate";
 import { SETUP_CODE_PREFIX } from "./setupCode";
 import type { WizardController, StepId } from "./wizardController";
 import { driveFolderLabel } from "../carrierSettings";
+import { HOSTED_SIGNIN_URL } from "../hostedAuth";
 
 /**
  * What each wizard screen says and offers, as plain data. The Obsidian window
@@ -11,7 +12,7 @@ import { driveFolderLabel } from "../carrierSettings";
 
 export type ActionId =
 	| "next" | "back" | "cancel" | "retry"
-	| "choose-new" | "choose-join" | "client-bundled" | "client-own"
+	| "choose-new" | "choose-join" | "client-hosted" | "client-bundled" | "client-own"
 	| "copy-code" | "copy-signin-code" | "reload" | "close"
 	| "clear-join-passphrase";
 
@@ -115,17 +116,43 @@ export function buildScreen(c: WizardController): Screen {
 			];
 			break;
 		case "client":
-			screen.title = "Connect to Google";
+			screen.title = "How do you want to sign in to Google?";
 			screen.body = [
-				{ kind: "p", text: "YAOS needs a Google connection to reach your Drive." },
-				{ kind: "note", tone: "warn", text: "Choose one and keep it. A vault made with one connection cannot be opened with the other, because Google lets each connection see only the files it made." },
+				{ kind: "p", text: "YAOS needs to sign in to your Google account to reach your Drive. Pick the way that suits you." },
+				{ kind: "steps", items: [
+					"Easy sign-in (recommended): a short sign-in on a web page, then paste one code. No Google Cloud setup. A sign-in service run by someone else (the author of the Obsidian Google Drive plugin) exchanges your sign-in for access. It never receives your notes.",
+					c.bundledAvailable
+						? "Private sign-in: the built-in connection. Nothing goes through anyone else's service."
+						: "Private sign-in: nothing goes through anyone else's service. Coming soon, it is not in this version yet.",
+					"Your own Google client (advanced): you create a free Google Cloud project once. Nothing goes through anyone else's service. About ten minutes on a computer.",
+				] },
+				{ kind: "note", tone: "warn", text: "Choose one and keep it. A vault made with one way of signing in cannot be opened with another, because Google lets each connection see only the files it made." },
 			];
 			screen.buttons = [
-				{ label: "Use the built-in connection (recommended)", action: "client-bundled", kind: "primary" },
+				{ label: "Easy sign-in (recommended)", action: "client-hosted", kind: "primary" },
+				{ label: c.bundledAvailable ? "Private sign-in (built-in connection)" : "Private sign-in (coming soon)", action: "client-bundled", kind: "secondary", disabled: !c.bundledAvailable },
 				{ label: "Use my own Google client (advanced)", action: "client-own", kind: "secondary" },
 				cancel,
 				back,
 			];
+			break;
+		case "hosted-token":
+			screen.title = "Sign in on the sign-in page";
+			screen.body = [
+				{ kind: "steps", items: [
+					"Press the button below. The sign-in page opens in your browser.",
+					"Press Sign in at the top right and choose your Google account.",
+					"Approve access. Google asks only for the files this app creates.",
+					"The page shows a long sign-in code. Copy all of it.",
+					"Come back here and paste it below.",
+				] },
+				link("Open the sign-in page", HOSTED_SIGNIN_URL),
+				{ kind: "note", tone: "info", text: "That page is run by the author of the Obsidian Google Drive plugin, not by YAOS. It only trades your sign-in for short-lived access, and its own page says your notes never pass through it. Because it takes part in signing in, turn encryption on in the next steps: then even your files in Google Drive stay unreadable to anyone else." },
+			];
+			screen.fields = [
+				{ key: "hostedToken", label: "Sign-in code", type: "password", value: draft.hostedToken, placeholder: "Paste the long code here", problem: typed(draft.hostedToken, checkHostedToken) },
+			];
+			screen.buttons = standard();
 			break;
 		case "guide-project":
 			screen.title = "Make a Google project";
@@ -222,7 +249,7 @@ export function buildScreen(c: WizardController): Screen {
 					problem: draft.setupCodeText.trim() ? c.blocker() : null,
 				});
 				if (preview) {
-					screen.body.push({ kind: "note", tone: "info", text: `Code accepted. Vault ${preview.vaultId}${preview.encrypted ? ", encrypted" : ""}.` });
+					screen.body.push({ kind: "note", tone: "info", text: `Code accepted. Vault ${preview.vaultId}${preview.encrypted ? ", encrypted" : ""}${preview.hosted ? ", easy sign-in" : ""}.` });
 				}
 			}
 			screen.fields.push({ key: "manualJoin", label: "I have no code: enter the details by hand", type: "checkbox", value: draft.manualJoin });
@@ -230,6 +257,11 @@ export function buildScreen(c: WizardController): Screen {
 				screen.fields.push(
 					{ key: "vaultId", label: "Vault ID", type: "text", value: draft.vaultId, problem: typed(draft.vaultId, checkVaultId) },
 					{ key: "passphrase", label: "Encryption passphrase (only if the vault is encrypted)", type: "password", value: draft.passphrase },
+					{ key: "joinHosted", label: "This vault was made with the easy sign-in", type: "checkbox", value: draft.joinHosted },
+				);
+			}
+			if (draft.manualJoin && !draft.joinHosted) {
+				screen.fields.push(
 					{
 						key: "clientId",
 						label: c.bundledAvailable ? "Google client ID (leave empty to use the built-in connection)" : "Google client ID",
@@ -255,7 +287,7 @@ export function buildScreen(c: WizardController): Screen {
 			break;
 		}
 		case "signin": {
-			screen.title = "Sign in with Google";
+			screen.title = draft.clientMode === "hosted" ? "Checking your sign-in" : "Sign in with Google";
 			if (draft.refreshToken && !state.busy) {
 				screen.body = [{ kind: "note", tone: "info", text: "You are signed in. Press Next." }];
 			} else if (state.signIn) {
@@ -268,7 +300,7 @@ export function buildScreen(c: WizardController): Screen {
 					screen.body.push({ kind: "note", tone: "info", text: "If Google says it has not verified the app, that is normal for an app you made yourself. Choose Continue." });
 				}
 			} else if (!state.error) {
-				screen.body = [{ kind: "p", text: "Asking Google for a sign-in code..." }];
+				screen.body = [{ kind: "p", text: draft.clientMode === "hosted" ? "Checking your sign-in code..." : "Asking Google for a sign-in code..." }];
 			}
 			screen.buttons = [cancel, back, ...(state.signIn ? [{ label: "Copy code", action: "copy-signin-code" as const, kind: "secondary" as const }] : []), ...(state.error ? [{ label: "Try again", action: "retry" as const, kind: "primary" as const }] : [next()])];
 			break;
@@ -335,8 +367,11 @@ export function buildScreen(c: WizardController): Screen {
 			screen.body = [
 				{ kind: "p", text: "To connect another device, install the plugin there, choose Google Drive, pick \"Join my existing vault\" and paste this code." },
 				{ kind: "code", text: state.setupCode ?? "" },
-				{ kind: "note", tone: "warn", text: "Keep this code private: it holds your Google client details" + (encrypted && draft.includePassphrase ? " and your passphrase" : "") + ". Do not paste it into a note inside this vault, because notes are synced. You can reopen this wizard later to see it again." },
+				{ kind: "note", tone: "warn", text: "Keep this code private: it holds " + (draft.clientMode === "hosted" ? "your vault ID" : "your Google client details") + (encrypted && draft.includePassphrase ? " and your passphrase" : "") + ". Do not paste it into a note inside this vault, because notes are synced. You can reopen this wizard later to see it again." },
 			];
+			if (draft.clientMode === "hosted") {
+				screen.body.push({ kind: "note", tone: "info", text: "On the other device you sign in again on the same sign-in page, with the same Google account. The code does not contain your sign-in." });
+			}
 			if (encrypted) {
 				screen.fields = [{ key: "includePassphrase", label: "Include the passphrase in the code", type: "checkbox", value: draft.includePassphrase, help: "If you leave it out, you will type the passphrase on the other device." }];
 			}

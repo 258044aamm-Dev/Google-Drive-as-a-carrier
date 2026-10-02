@@ -79,7 +79,7 @@ s.section("Test 3: damaged and wrong codes are refused with a reason");
 	s.check(!e.ok && e.reason === "empty", "empty input");
 	const n = decodeSetupCode("hello world");
 	s.check(!n.ok && n.reason === "not-a-code", "random text is 'not-a-code'");
-	const v = decodeSetupCode("YAOS-DRIVE2:abc.00000000");
+	const v = decodeSetupCode("YAOS-DRIVE9:abc.00000000");
 	s.check(!v.ok && v.reason === "newer-version", "a newer code version is named as such");
 	const noDot = decodeSetupCode(`${SETUP_CODE_PREFIX}abcdef`);
 	s.check(!noDot.ok && noDot.reason === "damaged", "no checksum is 'damaged'");

@@ -8,6 +8,32 @@ Version numbers like `2.1.1-drive.3` exist only in each release's `manifest.json
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
+## 2.1.1-drive.5 - 2026-10-02
+
+### Added
+- **Easy sign-in for Google Drive**, the new recommended first choice in the setup wizard. No Google Cloud project: you open a sign-in page, sign in with Google, copy the code it shows and paste it into the wizard. The wizard goes from 14 steps to 9.
+  - The page and the token service are the ones used by the Obsidian Google Drive plugin (`ogd.richardxiong.com`, run by that plugin's author, not by YAOS). Your device sends the pasted code to the service to get short-lived access tokens; the Drive requests, and your notes, go straight to Google. The wizard says this on the screens, and recommends encryption.
+  - The "How do you want to sign in?" screen offers Easy sign-in (recommended), Private sign-in (shown as "coming soon" until a built-in Google client is added) and Use my own Google client (the earlier guided path, unchanged).
+  - A vault made with the easy sign-in gets a `YAOS-DRIVE2:` setup code (vault ID and optional passphrase, no client details, never the sign-in code). The second device is asked for its own sign-in code. `YAOS-DRIVE1:` codes still work as before.
+  - Joining by hand has an "easy sign-in" box.
+  - New settings keys, written only by the easy path: `driveAuthMode: "hosted"` (and an optional `driveHostedUrl` for self-hosters). They do not exist in anyone's settings until the easy path is used.
+  - Settings: with the easy sign-in the client ID/secret and "Sign in with Google" rows are hidden, and a "Sign-in code (easy sign-in)" row lets you paste a new code if access is lost. Signing out returns the screen to the normal rows.
+  - If the service says the code is no longer accepted (HTTP 400, 401 or 403, as the Obsidian Google Drive plugin also treats them), a notice asks you to sign in again; temporary errors and being offline just retry.
+- New suite `drive-carrier-hosted` (56 checks): the token service client, which token source the carrier uses, both setup code kinds, pasted-code checks. More checks in `drive-carrier-wizard-flow` (now 197) and `drive-carrier-settings` (107).
+
+### Changed
+- The wizard's new-vault path now always shows the sign-in choice screen (before, it appeared only when a built-in client existed).
+- Going back from the encryption screen skips the automatic sign-in step.
+
+### Fixed
+- Reading a setup code on the join path now happens before the next steps are worked out, so a code can switch the sign-in method correctly.
+- The `no-any` guard failed on two lines from `2.1.1-drive.4` (a double cast in `main.ts` for the optional reload command, and one in the wizard test); both are rewritten without the cast.
+
+### Notes
+- Cloudflare users and existing Drive users are unaffected. The original upstream test suites still pass against this code (95 passed; the same one environment failure as before).
+- Not tested against a real Google account: the live sign-in page and the service were only probed read-only (a made-up token gets HTTP 400 `invalid_grant`, as the code expects). What the page shows after sign-in needs a check on a real device.
+- The sign-in service is run by someone else. If it stops, easy-sign-in vaults pause until you switch sign-in method.
+
 ## 2.1.1-drive.4 - 2026-10-02
 
 ### Added

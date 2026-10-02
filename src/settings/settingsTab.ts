@@ -14,8 +14,10 @@ import {
 	isCarrierKind,
 	isDriveCarrier,
 	isDriveSignedIn,
+	isHostedSignIn,
 	type CarrierKind,
 } from "../drive-carrier/carrierSettings";
+import { checkHostedToken, normalizeHostedToken } from "../drive-carrier/wizard/validate";
 import { PairDeviceModal } from "./PairDeviceModal";
 import { RecoveryKitModal } from "./RecoveryKitModal";
 import {
@@ -46,6 +48,7 @@ type DeclarativeSettingKey =
 	| "carrier"
 	| "driveClientId"
 	| "driveClientSecret"
+	| "driveHostedToken"
 	| "driveEncryptionPassphrase";
 
 interface SettingsUpdateState {
@@ -508,7 +511,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 				items: [
 					{
 						name: "Status",
-						desc: signedIn ? status.label : "Not signed in. Press \"Set up Google Drive\" below for a step-by-step guide, or enter your Google client details by hand.",
+						desc: signedIn ? status.label + (isHostedSignIn(settings) ? " Signed in with the easy sign-in." : "") : "Not signed in. Press \"Set up Google Drive\" below for a step-by-step guide, or enter your Google client details by hand.",
 					},
 					carrierRow,
 					{
@@ -527,11 +530,19 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 						name: "Google client ID",
 						desc: "From your own Google Cloud project: an OAuth client of type \"TVs and limited-input devices\".",
 						control: { type: "text", key: "driveClientId", placeholder: "Paste the client ID" },
+						visible: () => !isHostedSignIn(this.host.settings),
 					},
 					{
 						name: "Google client secret",
 						desc: "From the same OAuth client. Stored only in this vault's plugin data.",
 						control: { type: "text", key: "driveClientSecret", placeholder: "Paste the client secret" },
+						visible: () => !isHostedSignIn(this.host.settings),
+					},
+					{
+						name: "Sign-in code (easy sign-in)",
+						desc: "Only shown for the easy sign-in. If sync says access was lost, sign in again at https://ogd.richardxiong.com and paste the new code here, then reload the plugin.",
+						visible: () => isHostedSignIn(this.host.settings),
+						control: { type: "text", key: "driveHostedToken", placeholder: "Paste the sign-in code" },
 					},
 					{
 						name: "Encryption passphrase",
@@ -543,6 +554,8 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 						desc: signedIn
 							? "Sign in again if sync reports that access was lost."
 							: "Shows a short code to enter at google.com/device. Only files created by YAOS are accessible.",
+						// The easy sign-in is renewed through the wizard; this button only does Google's own sign-in.
+						visible: () => !isHostedSignIn(this.host.settings),
 						action: () => { void this.runDriveAction(() => this.host.signInToDrive?.()); },
 					},
 					{
@@ -576,6 +589,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			case "carrier": return currentCarrier(this.host.settings);
 			case "driveClientId": return this.host.settings.driveClientId ?? "";
 			case "driveClientSecret": return this.host.settings.driveClientSecret ?? "";
+			case "driveHostedToken": return this.host.settings.driveRefreshToken ?? "";
 			case "driveEncryptionPassphrase": return this.host.settings.driveEncryptionPassphrase ?? "";
 			default: throw new Error(`Unknown Yaos setting: ${key}`);
 		}
@@ -683,6 +697,16 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 				await this.host.updateSettings((settings) => { settings.driveClientSecret = expectStringValue(key, value).trim(); }, "settings:drive-client-secret");
 				this.update();
 				return;
+			case "driveHostedToken": {
+				const pasted = normalizeHostedToken(expectStringValue(key, value));
+				if (pasted && checkHostedToken(pasted)) {
+					new Notice("That does not look like a sign-in code. Copy all of it from the sign-in page.", 8000);
+					return;
+				}
+				await this.host.updateSettings((settings) => { settings.driveRefreshToken = pasted; }, "settings:drive-hosted-token");
+				this.update();
+				return;
+			}
 			case "driveEncryptionPassphrase":
 				await this.host.updateSettings((settings) => { settings.driveEncryptionPassphrase = expectStringValue(key, value); }, "settings:drive-encryption-passphrase");
 				this.update();

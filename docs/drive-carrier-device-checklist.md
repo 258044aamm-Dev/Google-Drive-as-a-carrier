@@ -91,3 +91,16 @@ device and plugin build.
 
 Latency from edit to arrival (median, worst), any error text shown, Drive request
 counts, device model and OS version, plugin build.
+
+## 11. Easy sign-in (scratch vault)
+
+- [ ] Wizard > Start a new vault > "Easy sign-in (recommended)": the page for the code opens from the button.
+- [ ] Sign in on the page (note anything confusing: warnings, the shape of the code). Copy the code, paste it: the wizard moves on by itself. A wrong or cut-off code gives a clear message.
+- [ ] Encryption, create, setup code (`YAOS-DRIVE2:`). The folder `YAOS <vault id>` appears in Drive.
+- [ ] Notes sync both ways with a second device that joined with the code and signed in on the page itself.
+- [ ] Settings shows no client ID/secret rows; "Sign-in code (easy sign-in)" shows the code. Pasting nonsense is refused.
+- [ ] Leave Obsidian open for over an hour: sync continues (the access token renews through the service).
+- [ ] Revoke access at myaccount.google.com/permissions: within a minute a notice says the sign-in was lost; paste a new code in settings and reload: sync resumes.
+- [ ] Turn the network off during sign-in-code check: "No connection to the sign-in service" and Try again works.
+- [ ] A vault made with your own client still opens with the old way only; nothing about it changed.
+

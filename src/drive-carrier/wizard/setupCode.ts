@@ -4,10 +4,13 @@
  *
  * It never contains a Google sign-in token: every device signs in itself.
  * Format: `YAOS-DRIVE1:<base64url of JSON>.<8 hex characters of CRC-32>`.
+ * A vault that uses the easy sign-in has no client details to carry, so its
+ * code starts with `YAOS-DRIVE2:` instead. Both kinds are read.
  * The checksum only catches typing and copy mistakes; it is not a secret.
  */
 
 export const SETUP_CODE_PREFIX = "YAOS-DRIVE1:";
+export const HOSTED_SETUP_CODE_PREFIX = "YAOS-DRIVE2:";
 
 export interface SetupCodeContent {
 	vaultId: string;
@@ -19,6 +22,8 @@ export interface SetupCodeContent {
 	passphrase: string;
 	/** True when the vault is encrypted (so the other device knows to ask for the passphrase). */
 	encrypted: boolean;
+	/** True when the vault uses the easy sign-in (no client details in the code). */
+	hosted?: boolean;
 }
 
 export type SetupCodeResult =
@@ -68,6 +73,16 @@ function checksumText(payload: Uint8Array): string {
 }
 
 export function encodeSetupCode(content: SetupCodeContent): string {
+	if (content.hosted) {
+		const payload = encoder.encode(JSON.stringify({
+			v: 2,
+			vault: content.vaultId,
+			signin: "hosted",
+			enc: content.encrypted,
+			...(content.passphrase ? { pass: content.passphrase } : {}),
+		}));
+		return `${HOSTED_SETUP_CODE_PREFIX}${toBase64Url(payload)}.${checksumText(payload)}`;
+	}
 	const json = JSON.stringify({
 		v: 1,
 		vault: content.vaultId,
@@ -87,7 +102,8 @@ export function decodeSetupCode(raw: string): SetupCodeResult {
 	// Copying from a chat or a note often adds spaces and line breaks.
 	const text = raw.replace(/\s+/g, "");
 	if (!text) return { ok: false, reason: "empty" };
-	if (!text.startsWith(SETUP_CODE_PREFIX)) {
+	const hostedCode = text.startsWith(HOSTED_SETUP_CODE_PREFIX);
+	if (!hostedCode && !text.startsWith(SETUP_CODE_PREFIX)) {
 		return { ok: false, reason: /^YAOS-DRIVE\d+:/.test(text) ? "newer-version" : "not-a-code" };
 	}
 	const body = text.slice(SETUP_CODE_PREFIX.length);
@@ -102,7 +118,16 @@ export function decodeSetupCode(raw: string): SetupCodeResult {
 		return { ok: false, reason: "damaged" };
 	}
 	if (!isRecord(parsed)) return { ok: false, reason: "damaged" };
-	if (parsed.v !== 1) return { ok: false, reason: "newer-version" };
+	if (parsed.v !== (hostedCode ? 2 : 1)) return { ok: false, reason: "newer-version" };
+	if (hostedCode) {
+		const hostedVault = typeof parsed.vault === "string" ? parsed.vault : "";
+		if (!hostedVault || parsed.signin !== "hosted") return { ok: false, reason: "incomplete" };
+		const hostedPass = typeof parsed.pass === "string" ? parsed.pass : "";
+		return {
+			ok: true,
+			content: { vaultId: hostedVault, clientId: "", clientSecret: "", bundledClient: false, hosted: true, passphrase: hostedPass, encrypted: parsed.enc === true || hostedPass !== "" },
+		};
+	}
 	const client = isRecord(parsed.client) ? parsed.client : null;
 	const vaultId = typeof parsed.vault === "string" ? parsed.vault : "";
 	const clientId = client && typeof client.id === "string" ? client.id : "";
@@ -125,7 +150,7 @@ export function decodeSetupCode(raw: string): SetupCodeResult {
 export function describeSetupCodeProblem(reason: Extract<SetupCodeResult, { ok: false }>["reason"]): string {
 	switch (reason) {
 		case "empty": return "Paste the setup code from your other device.";
-		case "not-a-code": return "That does not look like a YAOS setup code. It starts with YAOS-DRIVE1:";
+		case "not-a-code": return "That does not look like a YAOS setup code. It starts with YAOS-DRIVE.";
 		case "damaged": return "The setup code is damaged, probably cut off when it was copied. Copy it again from the other device.";
 		case "newer-version": return "This setup code was made by a newer version of the plugin. Update the plugin on this device.";
 		case "incomplete": return "The setup code is missing some details. Make a new one on the other device.";

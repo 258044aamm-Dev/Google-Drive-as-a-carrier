@@ -1,21 +1,24 @@
 import type { DriveApi } from "../driveApi";
 import { GoogleAuthError, GoogleTokenManager, type DeviceCodeInfo, type DeviceSignInResult, type GoogleClient } from "../googleAuth";
 import { GoogleDriveRest, type DriveHttp } from "../googleDriveRest";
+import { HOSTED_TOKEN_URL, HostedTokenManager } from "../hostedAuth";
 import { isDriveCarrier, isDriveSignedIn, type DriveCarrierSettings } from "../carrierSettings";
 import { signInWithGoogle, type SignInUi } from "../signIn";
 import { checkVaultForJoin, createVault, type CheckStep, type JoinCheck } from "./driveSetup";
-import { explainSetupError } from "./explainError";
+import { explainHostedSignInError, explainSetupError } from "./explainError";
 import { decodeSetupCode, describeSetupCodeProblem, encodeSetupCode } from "./setupCode";
-import { checkClientId, checkClientSecret, checkNewPassphrase, checkVaultId } from "./validate";
+import { checkClientId, checkClientSecret, checkHostedToken, checkNewPassphrase, checkVaultId, normalizeHostedToken } from "./validate";
 
 export type StepId =
 	| "welcome" | "choose" | "client"
+	| "hosted-token"
 	| "guide-project" | "guide-api" | "guide-consent" | "guide-client" | "guide-publish" | "paste"
 	| "join-code" | "existing" | "signin"
 	| "encryption" | "create" | "join-check" | "code" | "done";
 
 export type WizardPath = "new" | "join";
-export type ClientMode = "bundled" | "own";
+/** hosted = the easy sign-in page, bundled = the client built into the plugin, own = the user's own Google client. */
+export type ClientMode = "hosted" | "bundled" | "own";
 
 export interface WizardDraft {
 	path: WizardPath | null;
@@ -32,6 +35,10 @@ export interface WizardDraft {
 	manualJoin: boolean;
 	includePassphrase: boolean;
 	refreshToken: string;
+	/** What the user pasted from the easy sign-in page. */
+	hostedToken: string;
+	/** Joining by hand: the vault uses the easy sign-in. */
+	joinHosted: boolean;
 }
 
 export type WizardSettings = DriveCarrierSettings & { vaultId: string };
@@ -44,6 +51,8 @@ export interface WizardSettingsPatch {
 	driveClientSecret: string;
 	driveRefreshToken: string;
 	driveEncryptionPassphrase: string;
+	/** "hosted" for the easy sign-in; absent for the other two (and it must then be cleared). */
+	driveAuthMode?: "hosted";
 }
 
 export type FinishResult = "started" | "reload";
@@ -66,6 +75,8 @@ export interface WizardDeps {
 	makeApi?: (client: GoogleClient, refreshToken: string) => DriveApi;
 	/** Called after every change, so the screen can redraw. */
 	onChange?: () => void;
+	/** The easy sign-in token service (tests point this at a fake). */
+	hostedUrl?: string;
 	/** Called when the wizard wants to close. */
 	onClose?: () => void;
 }
@@ -89,7 +100,7 @@ export const GUIDE_STEPS: StepId[] = ["guide-project", "guide-api", "guide-conse
 export function newDraft(): WizardDraft {
 	return {
 		path: null,
-		clientMode: "own",
+		clientMode: "hosted",
 		clientId: "",
 		clientSecret: "",
 		vaultId: "",
@@ -102,27 +113,32 @@ export function newDraft(): WizardDraft {
 		manualJoin: false,
 		includePassphrase: true,
 		refreshToken: "",
+		hostedToken: "",
+		joinHosted: false,
 	};
 }
 
 /** The steps for the current choices, in order. */
-export function stepsFor(draft: WizardDraft, ctx: { bundledAvailable: boolean; alreadySetUp: boolean }): StepId[] {
+export function stepsFor(draft: WizardDraft, ctx: { alreadySetUp: boolean }): StepId[] {
 	const steps: StepId[] = ["welcome", "choose"];
 	if (draft.path === "join") {
 		steps.push("join-code");
 		if (ctx.alreadySetUp) steps.push("existing");
+		if (draft.clientMode === "hosted") steps.push("hosted-token");
 		steps.push("signin", "join-check", "done");
 		return steps;
 	}
-	if (ctx.bundledAvailable) steps.push("client");
-	if (!ctx.bundledAvailable || draft.clientMode === "own") steps.push(...GUIDE_STEPS);
+	steps.push("client");
+	if (draft.clientMode === "own") steps.push(...GUIDE_STEPS);
 	if (ctx.alreadySetUp) steps.push("existing");
+	if (draft.clientMode === "hosted") steps.push("hosted-token");
 	steps.push("signin", "encryption", "create", "code", "done");
 	return steps;
 }
 
 /** The client this run will use: the built-in one, or the one the user typed in. */
 export function chosenClient(draft: WizardDraft, bundled: GoogleClient | null): GoogleClient {
+	if (draft.clientMode === "hosted") return { clientId: "", clientSecret: "" };
 	if (draft.clientMode === "bundled" && bundled) return { clientId: bundled.clientId, clientSecret: bundled.clientSecret };
 	return { clientId: draft.clientId.trim(), clientSecret: draft.clientSecret.trim() };
 }
@@ -138,7 +154,6 @@ export class WizardController {
 
 	constructor(private readonly deps: WizardDeps) {
 		const draft = newDraft();
-		draft.clientMode = deps.bundledClient ? "bundled" : "own";
 		this.state = {
 			step: "welcome",
 			draft,
@@ -163,7 +178,7 @@ export class WizardController {
 	}
 
 	get steps(): StepId[] {
-		return stepsFor(this.state.draft, { bundledAvailable: this.bundledAvailable, alreadySetUp: this.alreadySetUp });
+		return stepsFor(this.state.draft, { alreadySetUp: this.alreadySetUp });
 	}
 
 	/** True once the vault exists on this device: going back would not undo it. */
@@ -188,6 +203,7 @@ export class WizardController {
 	blocker(): string | null {
 		const { draft, step } = this.state;
 		switch (step) {
+			case "hosted-token": return checkHostedToken(draft.hostedToken);
 			case "paste": return checkClientId(draft.clientId) ?? checkClientSecret(draft.clientSecret);
 			case "join-code": return this.joinInputProblem();
 			case "existing": return draft.existingAccepted ? null : "Tick the box to continue.";
@@ -209,6 +225,7 @@ export class WizardController {
 		}
 		const vault = checkVaultId(draft.vaultId);
 		if (vault) return vault;
+		if (draft.joinHosted) return null;
 		if (!this.bundledAvailable || draft.clientId.trim() || draft.clientSecret.trim()) {
 			return checkClientId(draft.clientId) ?? checkClientSecret(draft.clientSecret);
 		}
@@ -227,11 +244,12 @@ export class WizardController {
 
 	async next(): Promise<void> {
 		if (!this.canNext()) return;
+		// Reading the code can change which way of signing in applies, and so the steps ahead.
+		if (this.state.step === "join-code") this.absorbJoinInput();
 		const steps = this.steps;
 		const at = steps.indexOf(this.state.step);
 		const target = steps[at + 1];
 		if (!target) return;
-		if (this.state.step === "join-code") this.absorbJoinInput();
 		await this.go(target);
 	}
 
@@ -267,7 +285,7 @@ export class WizardController {
 	}
 
 	chooseClient(mode: ClientMode): void {
-		this.state.draft.clientMode = mode === "bundled" && this.deps.bundledClient ? "bundled" : "own";
+		this.state.draft.clientMode = mode === "bundled" && !this.deps.bundledClient ? "own" : mode;
 		void this.go(this.steps[this.steps.indexOf("client") + 1] ?? "signin");
 	}
 
@@ -276,8 +294,7 @@ export class WizardController {
 		this.state.step = step;
 		this.changed();
 		if (step === "signin") {
-			const client = chosenClient(this.state.draft, this.deps.bundledClient);
-			if (this.state.draft.refreshToken && this.signedInClient === client.clientId) await this.next();
+			if (this.state.draft.refreshToken && this.signedInClient === this.signInKey()) await this.next();
 			else await this.runSignIn();
 		} else if (step === "create") await this.runCreate();
 		else if (step === "join-check") await this.runJoinCheck();
@@ -298,20 +315,22 @@ export class WizardController {
 			draft.passphrase = content.passphrase;
 			draft.encrypt = content.encrypted;
 			const bundled = this.deps.bundledClient;
-			draft.clientMode = bundled && bundled.clientId === content.clientId ? "bundled" : "own";
+			if (content.hosted) draft.clientMode = "hosted";
+			else draft.clientMode = bundled && bundled.clientId === content.clientId ? "bundled" : "own";
 		} else {
 			draft.vaultId = draft.vaultId.trim();
 			const typedClient = draft.clientId.trim() || draft.clientSecret.trim();
-			draft.clientMode = !typedClient && this.deps.bundledClient ? "bundled" : "own";
+			if (draft.joinHosted) draft.clientMode = "hosted";
+			else draft.clientMode = !typedClient && this.deps.bundledClient ? "bundled" : "own";
 			draft.encrypt = draft.passphrase !== "";
 		}
 	}
 
 	/** What the code from step "join-code" says, for showing a summary. */
-	previewJoinCode(): { vaultId: string; encrypted: boolean; ownClient: boolean } | null {
+	previewJoinCode(): { vaultId: string; encrypted: boolean; ownClient: boolean; hosted: boolean } | null {
 		const result = decodeSetupCode(this.state.draft.setupCodeText);
 		if (!result.ok) return null;
-		return { vaultId: result.content.vaultId, encrypted: result.content.encrypted, ownClient: !result.content.bundledClient };
+		return { vaultId: result.content.vaultId, encrypted: result.content.encrypted, ownClient: !result.content.bundledClient && !result.content.hosted, hosted: result.content.hosted === true };
 	}
 
 	// -- sign in ------------------------------------------------------------
@@ -323,7 +342,46 @@ export class WizardController {
 		else if (step === "join-check") await this.runJoinCheck();
 	}
 
+	/** Identifies the sign-in the current choices need, so going back and forward does not repeat it. */
+	private signInKey(): string {
+		const { draft } = this.state;
+		if (draft.clientMode === "hosted") return `hosted:${normalizeHostedToken(draft.hostedToken)}`;
+		return chosenClient(draft, this.deps.bundledClient).clientId;
+	}
+
+	/** The easy sign-in: check that the service accepts the pasted token. */
+	private async runHostedSignIn(): Promise<void> {
+		const token = ++this.running;
+		this.cancelled = false;
+		const { draft } = this.state;
+		draft.refreshToken = "";
+		this.state.signIn = null;
+		this.state.error = null;
+		this.state.busy = "Checking your sign-in code...";
+		this.changed();
+		const pasted = normalizeHostedToken(draft.hostedToken);
+		try {
+			const manager = new HostedTokenManager(this.deps.http, this.deps.hostedUrl ?? HOSTED_TOKEN_URL, pasted);
+			await manager.provider(true);
+			if (token !== this.running) return;
+			draft.refreshToken = pasted;
+			this.signedInClient = this.signInKey();
+			this.state.busy = null;
+			this.changed();
+			await this.next();
+		} catch (err) {
+			if (token !== this.running) return;
+			this.state.busy = null;
+			this.state.error = explainHostedSignInError(err);
+			this.changed();
+		}
+	}
+
 	async runSignIn(): Promise<void> {
+		if (this.state.draft.clientMode === "hosted") {
+			await this.runHostedSignIn();
+			return;
+		}
 		const token = ++this.running;
 		this.cancelled = false;
 		const { draft } = this.state;
@@ -347,7 +405,7 @@ export class WizardController {
 			const result = await run(client, ui);
 			if (token !== this.running) return;
 			draft.refreshToken = result.refreshToken;
-			this.signedInClient = client.clientId;
+			this.signedInClient = this.signInKey();
 			this.state.busy = null;
 			this.state.signIn = null;
 			this.changed();
@@ -363,6 +421,10 @@ export class WizardController {
 
 	private apiFor(client: GoogleClient, refreshToken: string): DriveApi {
 		if (this.deps.makeApi) return this.deps.makeApi(client, refreshToken);
+		if (this.state.draft.clientMode === "hosted") {
+			const hosted = new HostedTokenManager(this.deps.http, this.deps.hostedUrl ?? HOSTED_TOKEN_URL, refreshToken);
+			return new GoogleDriveRest(this.deps.http, hosted.provider);
+		}
 		const tokens = new GoogleTokenManager(this.deps.http, client, refreshToken);
 		return new GoogleDriveRest(this.deps.http, tokens.provider);
 	}
@@ -375,10 +437,12 @@ export class WizardController {
 		return {
 			carrier: "drive",
 			vaultId: draft.vaultId.trim(),
-			driveClientId: client.clientId,
-			driveClientSecret: client.clientSecret,
+			// The easy sign-in has no client details; keep any that were saved earlier instead of erasing them.
+			driveClientId: draft.clientMode === "hosted" ? this.deps.getSettings().driveClientId ?? "" : client.clientId,
+			driveClientSecret: draft.clientMode === "hosted" ? this.deps.getSettings().driveClientSecret ?? "" : client.clientSecret,
 			driveRefreshToken: draft.refreshToken,
 			driveEncryptionPassphrase: draft.encrypt ? draft.passphrase : "",
+			...(draft.clientMode === "hosted" ? { driveAuthMode: "hosted" as const } : {}),
 		};
 	}
 
@@ -462,6 +526,7 @@ export class WizardController {
 			clientId: client.clientId,
 			clientSecret: client.clientSecret,
 			bundledClient: draft.clientMode === "bundled",
+			hosted: draft.clientMode === "hosted",
 			passphrase: encrypted && draft.includePassphrase ? draft.passphrase : "",
 			encrypted,
 		});
@@ -487,10 +552,10 @@ export class WizardController {
 		switch (key) {
 			case "joinPassphrase": this.setJoinPassphrase(String(value)); return;
 			case "clientId": case "clientSecret": case "vaultId": case "passphrase":
-			case "passphraseConfirm": case "setupCodeText":
+			case "passphraseConfirm": case "setupCodeText": case "hostedToken":
 				this.setField(key, String(value));
 				return;
-			case "encrypt": case "riskAccepted": case "existingAccepted": case "manualJoin": case "includePassphrase":
+			case "encrypt": case "riskAccepted": case "existingAccepted": case "manualJoin": case "includePassphrase": case "joinHosted":
 				this.setField(key, value === true);
 				return;
 			default:

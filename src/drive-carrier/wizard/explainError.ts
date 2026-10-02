@@ -47,3 +47,15 @@ export function explainSetupError(err: unknown): string {
 	}
 	return err instanceof Error ? err.message : String(err);
 }
+
+/** Problems from the easy sign-in service, in plain words. */
+export function explainHostedSignInError(err: unknown): string {
+	if (err instanceof GoogleAuthError) {
+		if (err.code === "invalid_grant") {
+			return "The sign-in service did not accept that code. Copy the whole code again from the sign-in page, or sign in there once more to get a new one.";
+		}
+		if (err.code === "network") return "No connection to the sign-in service. Check your internet and try again.";
+		if (err.code.startsWith("http_")) return "The sign-in service had a temporary problem. Wait a minute and try again.";
+	}
+	return explainSetupError(err);
+}

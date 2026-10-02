@@ -338,6 +338,48 @@ s.section("Test 8: the setup wizard hooks");
 	s.check(/Not signed in/.test(String(status?.desc ?? "")) && /Set up Google Drive/.test(String(status?.desc ?? "")), "the Status row points to the wizard");
 }
 
+s.section("Test 9: the easy sign-in on the settings screen");
+{
+	const TOKEN = "1//0gHostedRefreshTokenForTests-0123456789";
+	const isVisible = (d: SettingDefinition | undefined): boolean => {
+		if (!d) return false;
+		const v = "visible" in d ? d.visible : undefined;
+		return typeof v === "function" ? v() : v !== false;
+	};
+	const names = (f: Fixture): string[] => flatten(f.tab.getSettingDefinitions()).filter(isVisible).map((d) => d.name ?? "");
+
+	const classic = names(makeFixture({ carrier: "drive", driveClientId: "i", driveClientSecret: "x", driveRefreshToken: "r" }));
+	for (const row of ["Google client ID", "Google client secret", "Signed in to Google", "Sign out", "Encryption passphrase"]) {
+		s.check(classic.includes(row), `normal sign-in: "${row}" is still shown`);
+	}
+	s.check(!classic.includes("Sign-in code (easy sign-in)"), "normal sign-in: no easy sign-in row");
+	const classicOut = names(makeFixture({ carrier: "drive" }));
+	s.check(classicOut.includes("Sign in with Google") && classicOut.includes("Google client ID"), "signed out, normal: the old rows are all there");
+
+	const easy = names(makeFixture({ carrier: "drive", driveAuthMode: "hosted", driveRefreshToken: TOKEN }, true, []));
+	s.check(!easy.includes("Google client ID") && !easy.includes("Google client secret"), "easy sign-in: no client rows");
+	s.check(!easy.includes("Sign in with Google") && !easy.includes("Signed in to Google"), "easy sign-in: no Google code sign-in button");
+	s.check(easy.includes("Sign-in code (easy sign-in)") && easy.includes("Sign out") && easy.includes("Encryption passphrase") && easy.includes("Set up Google Drive"), "easy sign-in: its own code row, Sign out, passphrase and the wizard stay");
+	const stat = flatten(makeFixture({ carrier: "drive", driveAuthMode: "hosted", driveRefreshToken: TOKEN }, true, []).tab.getSettingDefinitions()).find((d) => d.name === "Status");
+	s.check(/Signed in with the easy sign-in/.test(String(stat?.desc ?? "")), "the status says which sign-in is used");
+
+	const f = makeFixture({ carrier: "drive", driveAuthMode: "hosted", driveRefreshToken: TOKEN });
+	s.check(f.tab.getControlValue("driveHostedToken") === TOKEN, "the code row shows the saved code");
+	await f.tab.setControlValue("driveHostedToken", `  "${TOKEN}-2" `);
+	s.check(f.settings.driveRefreshToken === `${TOKEN}-2` && f.reasons.at(-1) === "settings:drive-hosted-token", "a new code is cleaned and saved");
+	const reasonsBefore = f.reasons.length;
+	await f.tab.setControlValue("driveHostedToken", "nope");
+	s.check(f.settings.driveRefreshToken === `${TOKEN}-2` && f.reasons.length === reasonsBefore, "something that is not a code is refused and nothing is saved");
+	await f.tab.setControlValue("driveHostedToken", "");
+	s.check(f.settings.driveRefreshToken === "", "clearing it signs out");
+	let wrong = false;
+	try { await f.tab.setControlValue("driveHostedToken", 5); } catch { wrong = true; }
+	s.check(wrong, "a non-string is rejected");
+
+	const cloudflare = names(makeFixture({ host: "https://sync.example", token: "tok", vaultId: "vid" }));
+	s.check(!cloudflare.includes("Sign-in code (easy sign-in)"), "Cloudflare users never see the easy sign-in row");
+}
+
 /** Click a setting row that has an action. */
 function press(def: SettingDefinition | undefined): void {
 	if (def && "action" in def && typeof def.action === "function") def.action({} as HTMLElement, 0);

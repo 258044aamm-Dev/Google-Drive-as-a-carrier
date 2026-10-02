@@ -102,21 +102,35 @@ carrier, or press **Set up Google Drive** in the Google Drive section, or run
 the command **YAOS: Set up Google Drive**. A short wizard walks you through:
 
 1. **Start a new vault** or **Join my existing vault** (a second device).
-2. **Google client.** If this build contains a built-in client you just choose
-   it; otherwise (or if you choose "use my own") the wizard shows each Google
-   Cloud page with a button, tells you what to click, and asks you to paste the
-   client ID and secret. Those pages are the same five steps listed under
-   "Setup" below.
-3. **Sign in with Google.** A code appears; open google.com/device on any
-   device and enter it.
+2. **How to sign in.** Three choices:
+   - **Easy sign-in (recommended).** You open a sign-in page, sign in with
+     Google, copy the code it shows and paste it into the wizard. No Google
+     Cloud project is needed. The page and a small token service are run by the
+     author of the Obsidian Google Drive plugin (`https://ogd.richardxiong.com`,
+     source: github.com/RichardX366/Obsidian-Google-Drive-website), not by YAOS.
+     This device sends the code to that service each time it needs a short-lived
+     access token, because only the service holds the Google client secret.
+     Your notes never pass through it: Drive requests go from your device
+     straight to Google. Because the service takes part in signing in,
+     **turn encryption on**.
+   - **Private sign-in.** The Google client built into the plugin; nothing goes
+     through anyone else's service. Shown as "coming soon" until a built-in
+     client is added to this build.
+   - **My own Google client (advanced).** The wizard shows each Google Cloud
+     page with a button and asks for the client ID and secret (the same five
+     steps as "Setup" below).
+3. **Sign in with Google** (private and own-client paths): a code appears;
+   open google.com/device on any device and enter it. On the easy path this
+   step only checks the pasted code with the service.
 4. **Encryption** (new vault only; on by default). The passphrase cannot be
    recovered; without it nobody, including you, can read the notes on Drive.
 5. **Create.** The wizard checks that it can create, read and delete a file in
    a new `YAOS <vault id>` folder, writes `meta.json`, and only then saves your
    settings. Nothing is saved or written to Drive if you cancel earlier.
 6. **Setup code.** A `YAOS-DRIVE1:...` code holds the vault ID, the client
-   details and (if you tick the box) the passphrase. It never contains your
-   sign-in token. Paste it on the second device under **Join my existing
+   details and (if you tick the box) the passphrase. An easy-sign-in vault gives
+   a `YAOS-DRIVE2:` code with only the vault ID and passphrase. No code ever
+   contains your sign-in token. Paste it on the second device under **Join my existing
    vault**. Treat it like a password and never put it in a note inside the vault.
 
 On a device that is already set up, the wizard first warns that a new vault
@@ -125,6 +139,19 @@ leaves the old Drive folder untouched, and asks you to confirm.
 The wizard starts syncing straight away when nothing was running; if sync was
 already running in the session it offers a Reload button instead. The manual
 steps below still work and are unchanged.
+
+### Easy sign-in notes
+
+- A vault is visible only to the Google client that made it (a `drive.file`
+  rule). A vault made with the easy sign-in cannot be opened with your own
+  client, and the other way round. Choose one and keep it.
+- If the service is down, sync pauses and retries; your notes stay in Drive and
+  on your devices. If it is shut down for good, make a new vault with another
+  sign-in method and copy your notes across.
+- If sync says your sign-in was lost, sign in again on the page and paste the new
+  code in Settings > YAOS > Google Drive > "Sign-in code (easy sign-in)", then
+  reload. Self-hosters can set `driveHostedUrl` in the plugin's `data.json`.
+- Signing out of an easy sign-in returns the screen to the normal Drive rows.
 
 ## Setup (once per Google account)
 

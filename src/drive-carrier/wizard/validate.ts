@@ -37,3 +37,18 @@ export function checkNewPassphrase(passphrase: string, confirmation: string): st
 	if (passphrase !== confirmation) return "The two passphrases are different.";
 	return null;
 }
+
+/** What the sign-in page gives you can arrive with spaces, line breaks or quotes around it. */
+export function normalizeHostedToken(value: string): string {
+	return value.trim().replace(/^["'`]+|["'`]+$/g, "").trim();
+}
+
+export function checkHostedToken(value: string): string | null {
+	const text = normalizeHostedToken(value);
+	if (!text) return "Paste the sign-in code from the sign-in page.";
+	if (/^YAOS-DRIVE\d+:/i.test(text)) return "That is a YAOS setup code. Use it under \"Join my existing vault\" instead.";
+	if (/^https?:\/\//i.test(text)) return "That is a web address. Paste the long code the sign-in page shows after you sign in.";
+	if (/\s/.test(text)) return "The sign-in code has no spaces or line breaks. Copy it again from the page.";
+	if (text.length < 20) return "That is too short for a sign-in code. Copy all of it from the page.";
+	return null;
+}

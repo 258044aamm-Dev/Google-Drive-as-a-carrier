@@ -90,6 +90,7 @@ import { randomId } from "./utils/randomId";
 import {
 	isDriveCarrier,
 	isDriveSignedIn,
+	isHostedSignIn,
 	newDriveDeviceId,
 } from "./drive-carrier/carrierSettings";
 import { createDriveCarrier, type DriveCarrier } from "./drive-carrier/driveCarrierRuntime";
@@ -2192,8 +2193,11 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			openUrl: (url) => { window.open(url, "_blank", "noopener"); },
 			finishSetup: () => this.finishDriveSetup(),
 			reloadApp: () => {
-				const commands = (this.app as unknown as { commands?: { executeCommandById?: (id: string) => boolean } }).commands;
-				commands?.executeCommandById?.("app:reload");
+				// Not in Obsidian's public typings, so check what is there before using it.
+				const commands: unknown = Reflect.get(this.app, "commands");
+				if (typeof commands === "object" && commands !== null && "executeCommandById" in commands && typeof commands.executeCommandById === "function") {
+					Reflect.apply(commands.executeCommandById, commands, ["app:reload"]);
+				}
 			},
 		}).open();
 	}
@@ -2206,6 +2210,9 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			settings.driveClientSecret = patch.driveClientSecret;
 			settings.driveRefreshToken = patch.driveRefreshToken;
 			settings.driveEncryptionPassphrase = patch.driveEncryptionPassphrase;
+			// Only the easy sign-in sets this key; the other two paths clear it, so it never lingers.
+			if (patch.driveAuthMode) settings.driveAuthMode = patch.driveAuthMode;
+			else delete settings.driveAuthMode;
 		}, "settings:drive-wizard");
 	}
 
@@ -2233,6 +2240,8 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	async signOutOfDrive(): Promise<void> {
 		await this.updateSettings((settings) => {
 			settings.driveRefreshToken = "";
+			// After signing out of the easy sign-in, the screen returns to the normal Drive rows.
+			if (settings.driveAuthMode === "hosted") delete settings.driveAuthMode;
 		}, "settings:drive-sign-out");
 		new Notice("Signed out of Google on this device. Reload the plugin to stop syncing.", 8000);
 	}
@@ -2266,7 +2275,12 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			http: obsidianDriveHttp,
 			log: (message) => this.log(message),
 			onSignInLost: () => {
-				new Notice("YAOS: Google access was lost. Sign in again in the YAOS settings.", 12000);
+				new Notice(
+					isHostedSignIn(this.settings)
+						? "YAOS: Your sign-in was lost. Sign in again at the sign-in page and paste the new code in the YAOS settings."
+						: "YAOS: Google access was lost. Sign in again in the YAOS settings.",
+					12000,
+				);
 			},
 			onFatal: (message) => {
 				new Notice(`YAOS: Google Drive sync stopped. ${message}`, 15000);
