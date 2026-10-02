@@ -69,6 +69,7 @@ import {
 import {
 	ReconciliationController,
 } from "./runtime/reconciliationController";
+import { waitForLayoutReady } from "./runtime/waitForLayoutReady";
 import { AttachmentOrchestrator } from "./runtime/attachmentOrchestrator";
 import {
 	RuntimeTeardownCoordinator,
@@ -1101,6 +1102,15 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				this.updateStatusBar(this.vaultSync.fatalAuthCode === "update_required" ? "error" : "unauthorized");
 				this.showFatalSyncNotice();
 				return;
+			}
+
+			// Open notes are placeholder tabs until the layout is restored, and the
+			// first reconcile must see them as open (upstream issue #77).
+			const layoutOutcome = await waitForLayoutReady(this.app.workspace);
+			if (abortIfStale("workspace layout")) return;
+			if (layoutOutcome !== "already-ready") {
+				this.log(`Startup reconcile waited for workspace layout: ${layoutOutcome}`);
+				this.trace("trace", "startup-layout-wait", { outcome: layoutOutcome });
 			}
 
 			const mode = this.vaultSync.getSafeReconcileMode();

@@ -23,8 +23,12 @@ This file is specific to this fork. It is not part of upstream YAOS.
 ### Changed (server)
 - **A load now clears more than 500 old deleted bodies.** The reaper still caps one pass at 500 bodies (so no single update grows), but after a pass that left some behind, the server runs further passes within a 50 ms budget instead of waiting for the next cold load. Vaults with 500 or fewer eligible bodies run exactly one pass, as before. New function `reapTombstonedBodiesUntilDone` in `server/src/tombstoneReaper.ts`; `server.ts` calls it in place of the single pass. Durable Object behaviour itself could not be run here; the function is tested on documents.
 
+### Fixed (startup)
+- **The first reconcile after startup now waits for Obsidian to restore its workspace layout** (upstream issue #77). Until the layout is restored, the notes you had open are placeholder tabs, so the first reconcile treated them as closed. For a note typed in just before the last shutdown, with no stored baseline, that kept your text as a "(YAOS conflict - disk …)" copy next to the note. New `src/runtime/waitForLayoutReady.ts`; `initSync` in `main.ts` waits once, right before the startup reconcile, for at most 20 seconds, then carries on exactly as before. Reconnect reconciles and the Drive carrier's own sync are not gated; the Drive carrier shares `initSync`, so it gets the same wait.
+- **Second rule from the plan not built.** A note that is open with identical text is already a no-op in the planner (`disk-equals-crdt`), and a loaded editor view is already skipped, so a second content rule would only stack on the first.
+
 ### Tests
-- `tombstone-reaper` gains Test 17 for the two new fields and Test 18 for the multi-pass loop (1154 tombstones, budget 0, expiring clock, clean document). New `engine-tombstone-age` (6 checks). New `active-files-count` (6 checks, one fails without the change); `drive-carrier-snapshots` gains a current-model check (fails without the change).
+- `tombstone-reaper` gains Test 17 for the two new fields and Test 18 for the multi-pass loop (1154 tombstones, budget 0, expiring clock, clean document). New `engine-tombstone-age` (6 checks). New `engine-startup-layout` (9 checks): the wait helper, the reconcile with an open versus a not-yet-open note (shows the copy appearing only in the second case), and the position of the wait in `initSync`. New `active-files-count` (6 checks, one fails without the change); `drive-carrier-snapshots` gains a current-model check (fails without the change).
 
 ## Unreleased - 2.1.1-drive.10 (committed locally, not published)
 
