@@ -144,7 +144,7 @@ What the trace shows for a note `X`:
 
 - [ ] **Open note at startup (#77).** Create `Startup test`, type a few lines, leave it open in a tab, close Obsidian fully within a second of the last keystroke, reopen. No `Startup test (YAOS conflict - disk ...)` note appears. With debug mode on, the trace may show `startup-layout-wait` (normal).
 - [ ] **Big attachment (#75).** Set Attachments > maximum size to 1 MB (or lower). Put a 2 MB image in the vault. On the other device make the synced list point at a smaller version of the same name (or edit the image there to be small and sync). The big local file stays as it is, and one notice names the file and the limit. Raise the limit: the next sync updates it.
-- [ ] **Status bar (#68).** With Cloudflare, type continuously for 30 s. The receipt text does not say "local state not yet received by server"; at worst it says "latest edit awaiting server confirmation", and it goes back to "server saved latest local state" a moment after you stop.
+- [ ] **Status bar (#68).** Turn on Advanced > "Detailed status text" first (the default is now a few simple words; see section 17). With Cloudflare, type continuously for 30 s. The receipt text does not say "local state not yet received by server"; at worst it says "latest edit awaiting server confirmation", and it goes back to "server saved latest local state" a moment after you stop.
 - [ ] **Snapshot list (#78).** Take a snapshot of a vault with notes. The list shows the real note count, not 0.
 - [ ] Nothing else looks different: sync, delete, rename, attachments, conflict notes behave as in sections 1-14.
 
@@ -154,3 +154,12 @@ What the trace shows for a note `X`:
 - [ ] Delete another conflict note while Obsidian is closed on that device, then reopen: it is not re-created there.
 - [ ] If a deleted conflict note returns with a NEW timestamp in its name, send the debug trace (Export debug trace): that is a different cause (a fresh conflict copy each start).
 - [ ] An ordinary note you delete is still gone on both devices, and a note deleted while YAOS was off still follows the section 14 rules.
+
+## 17. Status icon, simple status text, sync speed, private sign-in (any device, phone too)
+
+- [ ] **Header icon.** Open a note: a small icon (a check mark when everything is fine) sits with the other buttons at the top of the note, on a phone as well. Open a second note in a split: it has one too, and closing it leaves no stray icon. Click the icon: a menu shows the status in words and "Retry syncing...". Turn it off in Settings > YAOS > Advanced > "Status icon in the note header": every icon disappears at once; turn it on: they return.
+- [ ] **Colour and shape.** Turn on airplane mode (or disconnect): the icon becomes a crossed cloud and the bottom bar says "YAOS: Offline"; reconnect: back to a check mark. With a kept conflict copy the icon and bar say "Check 1 file" in a warning colour.
+- [ ] **Bottom bar (desktop).** It reads "YAOS: Synced" (a few words, not the long receipt text). Hover over it: the tooltip explains in one sentence and ends with "Details: ..." holding the old long text. Advanced > "Detailed status text" on: the bar shows the old long text again.
+- [ ] **Sync speed, Google Drive.** Settings > YAOS > "Sync speed (Google Drive)": the default is Normal and the line below shows 3 s / 30 s idle / 120 s hidden. Pick Gentle: edits made on device 1 now show on device 2 after roughly 10 to 20 s instead of 3 to 6 s, and the setting line changes at once without a restart. Pick Custom: the number fields appear; a value below the default (for example 1 second) is refused. Pick Normal: speed returns to 3 to 6 s.
+- [ ] **Sync speed, Cloudflare.** Settings > YAOS > Advanced > "Sync speed (Cloudflare)": Normal is the default. Pick Minimal: type on device 1, other devices see the text about 5 s later, in one piece. Hide the window or close Obsidian right after typing: the text still arrives. Pick Normal: instant again.
+- [ ] **Private sign-in.** Settings > YAOS > "Set up Google Drive" > the sign-in choice offers "Easy sign-in" and "Private sign-in (your own Google client)". There is no "coming soon" button. Private sign-in leads to the screens asking for your own client ID and secret.

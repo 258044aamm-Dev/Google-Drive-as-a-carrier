@@ -198,3 +198,22 @@ textarea.yaos-wizard-input { min-height: 5em; font-family: var(--font-monospace)
 .yaos-wizard-link-button { display: block; margin: 0.8em 0; }
 .yaos-wizard-buttons { flex-wrap: wrap; gap: 0.5em; }
 .yaos-wizard-plain { background: transparent; box-shadow: none; }
+
+/*
+ * Status icon in the note header and short status text in the bottom bar.
+ * Only warnings and errors get a colour; the rest keep the theme's normal look.
+ */
+.yaos-header-status.yaos-status-attention,
+.yaos-status-attention {
+	color: var(--text-warning);
+}
+
+.yaos-header-status.yaos-status-error,
+.yaos-status-error {
+	color: var(--text-error);
+}
+
+.yaos-header-status.yaos-status-offline,
+.yaos-status-offline {
+	color: var(--text-faint);
+}

@@ -18,6 +18,7 @@ import {
 	type CarrierKind,
 } from "../drive-carrier/carrierSettings";
 import { checkHostedToken, normalizeHostedToken } from "../drive-carrier/wizard/validate";
+import { isDetailedStatusShown, isStatusIconShown } from "../status/simpleStatus";
 import { CUSTOM_LIMITS, currentSyncPace, isSyncPaceProfile, resolveCloudflareBatchMs, resolveDrivePace, type SyncPaceCustom, type SyncPaceProfile } from "./syncPace";
 import { PairDeviceModal } from "./PairDeviceModal";
 import { RecoveryKitModal } from "./RecoveryKitModal";
@@ -54,6 +55,8 @@ type DeclarativeSettingKey =
 	| "drivePaceBatch"
 	| "drivePaceFullCheck"
 	| "cloudflarePaceBatch"
+	| "showStatusIcon"
+	| "detailedStatus"
 	| "driveClientId"
 	| "driveClientSecret"
 	| "driveHostedToken"
@@ -94,6 +97,8 @@ export interface VaultSyncSettingsHost {
 	openDriveWizard?(): void;
 	/** Tells the running carrier to use the new "sync speed" setting right away. */
 	applySyncPace?(): void;
+	/** Redraws the status bar and adds or removes the header icons after a status display setting changed. */
+	applyStatusDisplay?(): void;
 }
 
 const CLOUDFLARE_DEPLOY_URL = "https://deploy.workers.cloudflare.com/?url=https://github.com/kavinsood/yaos/tree/main/server";
@@ -460,6 +465,33 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 	 * With the Drive carrier the server-only screens are replaced by the Drive one.
 	 */
 	private applyCarrierChoice(definitions: SettingDefinitionItem[]): SettingDefinitionItem[] {
+		return this.withStatusRows(this.applyCarrierChoiceRows(definitions));
+	}
+
+	/** Two switches for the status display, in Advanced for every carrier, just above the "Reload required" note. */
+	private withStatusRows(definitions: SettingDefinitionItem[]): SettingDefinitionItem[] {
+		const rows: SettingDefinition[] = [
+			{
+				name: "Status icon in the note header",
+				desc: "A small icon at the top of each note that shows whether syncing is working. Also available on phones. Click it for details.",
+				control: { type: "toggle", key: "showStatusIcon" },
+			},
+			{
+				name: "Detailed status text",
+				desc: "Show the long technical text in the bottom bar instead of a few simple words. The details are always available when you hover over the status.",
+				control: { type: "toggle", key: "detailedStatus" },
+			},
+		];
+		return definitions.map((item) => {
+			if (!isPageDefinition(item) || item.name !== "Advanced" || !item.items) return item;
+			const items = [...item.items];
+			const note = items.findIndex((entry) => "name" in entry && entry.name === "Reload required");
+			items.splice(note >= 0 ? note : items.length, 0, ...rows);
+			return { ...item, items };
+		});
+	}
+
+	private applyCarrierChoiceRows(definitions: SettingDefinitionItem[]): SettingDefinitionItem[] {
 		const carrierRow: SettingDefinition = {
 			name: "Sync carrier (experimental)",
 			desc: "Where your notes are exchanged between devices. Changing it needs a reload of the plugin. Google Drive needs no server, but changes arrive in a few seconds instead of instantly.",
@@ -731,6 +763,8 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			case "carrier": return currentCarrier(this.host.settings);
 			case "syncPace": return currentSyncPace(this.host.settings);
 			case "cloudflarePaceBatch": return this.host.settings.syncPaceCustom?.cloudflareBatchSec ?? 0;
+			case "showStatusIcon": return isStatusIconShown(this.host.settings);
+			case "detailedStatus": return isDetailedStatusShown(this.host.settings);
 			case "drivePaceActive":
 			case "drivePaceIdle":
 			case "drivePaceHidden":
@@ -859,6 +893,25 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 				}, "settings:sync-pace");
 				this.host.applySyncPace?.();
 				this.update();
+				return;
+			}
+			case "showStatusIcon": {
+				const on = expectBooleanValue(key, value);
+				// On is the default, so it is stored as "nothing set".
+				await this.host.updateSettings((settings) => {
+					if (on) delete settings.showStatusIcon;
+					else settings.showStatusIcon = false;
+				}, "settings:status-icon");
+				this.host.applyStatusDisplay?.();
+				return;
+			}
+			case "detailedStatus": {
+				const on = expectBooleanValue(key, value);
+				await this.host.updateSettings((settings) => {
+					if (on) settings.detailedStatus = true;
+					else delete settings.detailedStatus;
+				}, "settings:detailed-status");
+				this.host.applyStatusDisplay?.();
 				return;
 			}
 			case "cloudflarePaceBatch": {

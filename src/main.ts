@@ -1,4 +1,4 @@
-import { MarkdownView, Notice, Platform, Plugin, TFile, arrayBufferToHex } from "obsidian";
+import { MarkdownView, Menu, Notice, Platform, Plugin, TFile, arrayBufferToHex, setIcon } from "obsidian";
 import {
 	DEFAULT_SETTINGS,
 	VaultSyncSettingTab,
@@ -7,6 +7,8 @@ import {
 } from "./settings";
 import { SettingsStore } from "./settings/settingsStore";
 import { resolveCloudflareBatchMs } from "./settings/syncPace";
+import { HeaderStatusIcons } from "./status/headerStatusIcons";
+import { clearSimpleStatusClasses, isDetailedStatusShown, isStatusIconShown, renderSimpleStatusBar, toSimpleStatus, type SimpleStatus } from "./status/simpleStatus";
 import { VaultSync, type ReconcileMode } from "./sync/vaultSync";
 import { SCHEMA_VERSION } from "./sync/vaultSync";
 import { EditorBindingManager } from "./sync/editorBinding";
@@ -82,6 +84,7 @@ import { SetupLinkController } from "./runtime/setupLinkController";
 import { TraceRuntimeController } from "./runtime/traceRuntimeController";
 import { registerCommands } from "./commands";
 import {
+	getLabelFromConnectionState,
 	getSyncStatusLabel,
 	renderConnectionState,
 	renderSyncStatus,
@@ -200,6 +203,8 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	/** Domain-level trace sink. Routes to the debug runtime when active, noop otherwise. */
 	private traceSink: TraceSink = new NoopTraceSink();
 	private statusBarEl: HTMLElement | null = null;
+	private headerStatusIcons: HeaderStatusIcons | null = null;
+	private lastSimpleStatus: SimpleStatus | null = null;
 	private statusInterval: number | null = null;
 	private readonly receiptStatusRefresh = new CoalescedStatusRefresh(() => {
 		if (!this.teardownLifecycle.isClosing) this.refreshStatusBar();
@@ -611,6 +616,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		});
 
 		this.statusBarEl = this.addStatusBarItem();
+		this.setupHeaderStatusIcons();
 		this.updateStatusBar("disconnected");
 
 		const finishOnload = (outcome: string): void => {
@@ -1866,11 +1872,79 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			serverPersistenceDegraded: vaultSync.serverPersistenceDegraded,
 		} : null;
 		this.noticeServerPersistenceHealth(vaultSync?.serverPersistenceDegraded ?? false);
-		if (connectionState) {
-			renderConnectionState(this.statusBarEl, connectionState, transferStatus, serverReceipt, attentionCount);
-		} else {
-			renderSyncStatus(this.statusBarEl, _coarseState, transferStatus, attentionCount);
+		const simple = toSimpleStatus({
+			state: connectionState,
+			coarse: _coarseState,
+			attentionCount,
+			transferStatus,
+			receipt: serverReceipt,
+		});
+		this.lastSimpleStatus = simple;
+		this.headerStatusIcons?.update(simple);
+		if (isDetailedStatusShown(this.settings)) {
+			// The long technical text, unchanged, for people who want it.
+			clearSimpleStatusClasses(this.statusBarEl);
+			if (connectionState) {
+				renderConnectionState(this.statusBarEl, connectionState, transferStatus, serverReceipt, attentionCount);
+			} else {
+				renderSyncStatus(this.statusBarEl, _coarseState, transferStatus, attentionCount);
+			}
+			return;
 		}
+		// The short text. The long one is still in the tooltip.
+		const detailed = connectionState
+			? getLabelFromConnectionState(connectionState, transferStatus, serverReceipt, attentionCount)
+			: getSyncStatusLabel(_coarseState);
+		renderSimpleStatusBar(this.statusBarEl, simple, detailed);
+	}
+
+	/** The header icon: one small button per open note, plus a menu with the status and a retry. */
+	private setupHeaderStatusIcons(): void {
+		const icons = new HeaderStatusIcons({
+			setIcon: (el, icon) => { setIcon(el as HTMLElement, icon); },
+			onClick: (evt) => this.showStatusMenu(evt),
+		});
+		this.headerStatusIcons = icons;
+		icons.setEnabled(isStatusIconShown(this.settings));
+		const refresh = () => this.syncHeaderStatusIcons();
+		this.registerEvent(this.app.workspace.on("layout-change", refresh));
+		this.registerEvent(this.app.workspace.on("active-leaf-change", refresh));
+		this.registerEvent(this.app.workspace.on("file-open", refresh));
+		this.app.workspace.onLayoutReady(refresh);
+		this.register(() => { icons.dispose(); });
+	}
+
+	private syncHeaderStatusIcons(): void {
+		const icons = this.headerStatusIcons;
+		if (!icons) return;
+		const views: MarkdownView[] = [];
+		this.app.workspace.iterateAllLeaves((leaf) => {
+			if (leaf.view instanceof MarkdownView) views.push(leaf.view);
+		});
+		icons.sync(views);
+	}
+
+	private showStatusMenu(evt: MouseEvent): void {
+		const status = this.lastSimpleStatus;
+		const menu = new Menu();
+		if (status) {
+			menu.addItem((item) => item.setTitle(`YAOS: ${status.text}`).setIcon("info").setDisabled(true));
+			menu.addItem((item) => item.setTitle(status.detail).setDisabled(true));
+			menu.addSeparator();
+		}
+		const retry = isDriveCarrier(this.settings) ? "Retry syncing with Google Drive" : "Retry syncing now";
+		menu.addItem((item) => item
+			.setTitle(retry)
+			.setIcon("refresh-cw")
+			.onClick(() => { this.connectionController?.reconnect("manual-command"); }));
+		menu.showAtMouseEvent(evt);
+	}
+
+	/** The status display settings changed: redraw the bottom bar and add or remove the header icons. */
+	applyStatusDisplay(): void {
+		this.headerStatusIcons?.setEnabled(isStatusIconShown(this.settings));
+		this.syncHeaderStatusIcons();
+		if (this.lastSimpleStatus) this.updateStatusBar(this.computeSyncStatus());
 	}
 
 	/**

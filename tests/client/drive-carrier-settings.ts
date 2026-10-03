@@ -161,14 +161,14 @@ s.section("Test 3: default (Cloudflare) screens are the same as before, plus one
 	s.check(pageNames(items).join() === "Manual connection,Advanced", "pages unchanged");
 	const adv = advancedItems(items);
 	const advNames = adv.map((i) => "name" in i ? i.name : "");
-	s.check(advNames.join("|") === ["Vault ID", "Deployment repository URL", "Deployment default branch", "Edits from other apps", "Frontmatter safety guard", "Debug mode", "Reload required"].join("|"), `Advanced is exactly as before when no server is set up yet (${advNames.join("|")})`);
+	s.check(advNames.join("|") === ["Vault ID", "Deployment repository URL", "Deployment default branch", "Edits from other apps", "Frontmatter safety guard", "Debug mode", "Status icon in the note header", "Detailed status text", "Reload required"].join("|"), `Advanced is as before when no server is set up yet, plus the two status display switches (${advNames.join("|")})`);
 	s.check(groupItems(items, "Setup").join("|") === "Setup required|Sync carrier (experimental)|Deploy your server", `Setup: the carrier choice comes right above "Deploy your server" (${groupItems(items, "Setup").join("|")})`);
 	const setupRow = flatten(items).find((d) => d.name === "Sync carrier (experimental)");
 	s.check(setupRow?.control?.key === "carrier" && flatten(items).filter((d) => d.name === "Sync carrier (experimental)").length === 1, "one carrier dropdown, bound to the carrier setting");
 	const configured = makeFixture({ host: "https://sync.example", token: "tok", vaultId: "vid" });
 	const cItems = configured.tab.getSettingDefinitions();
 	s.check(groupHeadings(cItems).join() === "Sync status,Updates,This device,What syncs,Attachments,Collaboration", `configured groups (${groupHeadings(cItems).join()})`);
-	s.check(advancedItems(cItems).map((i) => ("name" in i ? i.name : "")).join("|") === ["Sync carrier (experimental)", "Vault ID", "Deployment repository URL", "Deployment default branch", "Edits from other apps", "Frontmatter safety guard", "Debug mode", "Sync speed (Cloudflare)", "Group edits for (seconds)", "Reload required"].join("|"), "a configured Cloudflare user finds the carrier row first in Advanced, and the two sync-speed rows just above the reload note");
+	s.check(advancedItems(cItems).map((i) => ("name" in i ? i.name : "")).join("|") === ["Sync carrier (experimental)", "Vault ID", "Deployment repository URL", "Deployment default branch", "Edits from other apps", "Frontmatter safety guard", "Debug mode", "Sync speed (Cloudflare)", "Group edits for (seconds)", "Status icon in the note header", "Detailed status text", "Reload required"].join("|"), "a configured Cloudflare user finds the carrier row first in Advanced, then the two sync-speed rows and the two status display switches just above the reload note");
 	s.check(!groupItems(cItems, "Sync status").includes("Sync carrier (experimental)"), "and the Sync status group is untouched");
 	const defs = flatten(cItems);
 	s.check(!defs.some((d) => d.name === "Sign in with Google" || d.name === "Google client ID" || d.name === "Encryption passphrase"), "no Drive rows for Cloudflare users");
@@ -428,7 +428,7 @@ s.section("Test 10: the beginner view of the Drive screen");
 	s.check(keys.filter((k) => k === "vaultId").length === 1, "and the vault ID control exists exactly once");
 	const adv = advancedItems(signedOut.tab.getSettingDefinitions());
 	const advPage = signedOut.tab.getSettingDefinitions().find((i) => "type" in i && i.type === "page" && i.name === "Advanced");
-	s.check(adv.length === 4 && !!advPage && "desc" in advPage && !/deployment/i.test(String(advPage.desc)), "Advanced keeps its four rows and no longer talks about deployment");
+	s.check(adv.length === 6 && !!advPage && "desc" in advPage && !/deployment/i.test(String(advPage.desc)), "Advanced keeps its four rows (plus the two status display switches) and no longer talks about deployment");
 
 	// Cloudflare screens are exactly as before.
 	for (const settings of [{}, { host: "https://sync.example", token: "tok", vaultId: "vid" }] as Partial<VaultSyncSettings>[]) {
