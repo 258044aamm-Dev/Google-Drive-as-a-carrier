@@ -15,6 +15,7 @@ import {
 	isDriveCarrier,
 	isDriveSignedIn,
 	isHostedSignIn,
+	isP2pCarrier,
 	type CarrierKind,
 } from "../drive-carrier/carrierSettings";
 import { checkHostedToken, normalizeHostedToken } from "../drive-carrier/wizard/validate";
@@ -120,6 +121,7 @@ const ATTACHMENT_SETUP_VIDEO_URL = "https://youtu.be/Z7xCMEYfdFM";
 const CARRIER_OPTIONS: Record<CarrierKind, string> = {
 	cloudflare: "Cloudflare Worker (default)",
 	drive: "Google Drive (experimental)",
+	p2p: "P2P (experimental)",
 };
 const SYNC_PACE_OPTIONS: Record<SyncPaceProfile, string> = {
 	normal: "Normal (default)",
@@ -479,20 +481,38 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 	 * With the Drive carrier the server-only screens are replaced by the Drive one.
 	 */
 	private applyCarrierChoice(definitions: SettingDefinitionItem[]): SettingDefinitionItem[] {
-		return this.withP2pSection(this.withStatusRows(this.applyCarrierChoiceRows(definitions)));
+		if (isP2pCarrier(this.host.settings)) {
+			// P2P carrier mode (Phase 0 spike, plan §8): the tab IS the P2P
+			// group — the carrier row comes first so switching back to
+			// another carrier is one tap away (a reload is needed, like every
+			// carrier change). The Drive/CF-specific pages do not apply here:
+			// the P2P link carries no notes yet.
+			return [this.p2pGroup(this.carrierRow())];
+		}
+		return this.withStatusRows(this.applyCarrierChoiceRows(definitions));
+	}
+
+	/** The "Sync carrier (experimental)" row, wherever the user decides how to sync. */
+	private carrierRow(): SettingDefinition {
+		return {
+			name: "Sync carrier (experimental)",
+			desc: "Where your notes are exchanged between devices. Changing it needs a reload of the plugin. Google Drive needs no server, but changes arrive in a few seconds instead of instantly.",
+			control: { type: "dropdown", key: "carrier", options: CARRIER_OPTIONS },
+		};
 	}
 
 	/**
-	 * Phase 0 P2P spike — the "P2P (experimental)" group. Appended AFTER the
-	 * existing pages/groups so no current layout (server Setup, configured
-	 * Advanced, Drive screen) is touched. The group is always visible in
-	 * this test build; the dev-only command-palette entry stays debug-gated.
+	 * Phase 0 P2P spike — the "P2P (experimental)" group. Shown ONLY when
+	 * the P2P carrier is selected; for every other carrier the whole P2P
+	 * surface is dormant. The dev-only command-palette entry stays
+	 * debug-gated as well.
 	 */
-	private withP2pSection(definitions: SettingDefinitionItem[]): SettingDefinitionItem[] {
-		const group: SettingDefinitionItem = {
+	private p2pGroup(carrierRow: SettingDefinition): SettingDefinitionItem {
+		return {
 			type: "group",
 			heading: "P2P (experimental)",
 			items: [
+				carrierRow,
 				{
 					name: "Direct P2P link",
 					desc: "Devices find each other with a pairing code or QR — nothing to deploy, nothing to sign up for. Test build for the feasibility check; pair from the panel below.",
@@ -528,9 +548,16 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 					desc: "Reports the last gathered candidate types and the current link state.",
 					action: () => { this.host.runP2pNetworkCheck?.(); },
 				},
+				{
+					// The P2P layout has no Advanced page, so the dev toggle
+					// lives here — otherwise debug mode would be unreachable
+					// while the P2P carrier is selected.
+					name: "Debug mode",
+					desc: "Record detailed sync events for an exportable diagnostics trace. Leave off for everyday use.",
+					control: { type: "toggle", key: "debug" },
+				},
 			],
 		};
-		return [...definitions, group];
 	}
 
 	/** Two switches for the status display, in Advanced for every carrier, just above the "Reload required" note. */
@@ -557,11 +584,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 	}
 
 	private applyCarrierChoiceRows(definitions: SettingDefinitionItem[]): SettingDefinitionItem[] {
-		const carrierRow: SettingDefinition = {
-			name: "Sync carrier (experimental)",
-			desc: "Where your notes are exchanged between devices. Changing it needs a reload of the plugin. Google Drive needs no server, but changes arrive in a few seconds instead of instantly.",
-			control: { type: "dropdown", key: "carrier", options: CARRIER_OPTIONS },
-		};
+		const carrierRow = this.carrierRow();
 		const drive = isDriveCarrier(this.host.settings);
 		const isSetupGroup = (item: SettingDefinitionItem): item is SettingDefinitionGroup =>
 			isGroupDefinition(item) && item.heading === "Setup";

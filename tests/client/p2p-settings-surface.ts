@@ -1,10 +1,11 @@
 /**
  * Phase 0 P2P spike — settings surface ("P2P (experimental)" group).
  *
- * Verifies the pulled-forward Phase 1 settings UI (plan §8, T1.3 surface):
- * the group is present in every layout, the TURN fields persist and push to
- * the spike host, the peer summary and action rows are wired, and the new
- * settings keys have safe defaults.
+ * Verifies the plan §8 settings shape: the group is visible ONLY while the
+ * P2P carrier is selected (dormant for every other carrier), the carrier
+ * row leads the group, the TURN fields persist and push to the spike host,
+ * the peer summary and action rows are wired, and the settings keys have
+ * safe defaults.
  */
 import { App, Plugin, type SettingDefinition, type SettingDefinitionItem } from "obsidian";
 import {
@@ -43,7 +44,9 @@ interface Fixture {
 }
 
 function createFixture(settings: Partial<VaultSyncSettings> = {}): Fixture {
-	const base: VaultSyncSettings = { ...DEFAULT_SETTINGS, ...settings };
+	// The P2P surface exists only while the P2P carrier is selected, so the
+	// default fixture selects it; dormancy checks pass another carrier.
+	const base: VaultSyncSettings = { carrier: "p2p", ...DEFAULT_SETTINGS, ...settings };
 	const updateReasons: string[] = [];
 	const p2pCalls: string[] = [];
 	const turnApplied: TurnOverride[][] = [];
@@ -115,15 +118,21 @@ function p2pGroup(tab: VaultSyncSettingTab): P2pRow[] | null {
 	return null;
 }
 
-s.section("1: group present and visible in every layout");
+s.section("1: group visible only while the P2P carrier is selected");
 {
-	// Server configured (Advanced layout)
-	const configured = createFixture({ host: "https://x.example", token: "t" });
-	const group = p2pGroup(configured.tab);
-	s.check(group !== null, "P2P group present with a configured server");
+	// P2P carrier: the tab is exactly the P2P group, carrier row first.
+	const p2p = createFixture({ host: "https://x.example", token: "t" });
+	const group = p2pGroup(p2p.tab);
+	s.check(group !== null, "P2P group present with the P2P carrier selected");
+	s.check(
+		p2p.tab.getSettingDefinitions().length === 1
+			&& p2p.tab.getSettingDefinitions()[0]!.heading === "P2P (experimental)",
+		"the P2P tab contains nothing but the P2P group",
+	);
 	if (group) {
 		const names = group.map((g) => g.name);
-		s.check(names.includes("Direct P2P link"), "carrier row present");
+		s.check(names[0] === "Sync carrier (experimental)", "carrier row leads the group, so switching back is one tap away");
+		s.check(names.includes("Direct P2P link"), "direct link row present");
 		s.check(names.includes("This vault"), "peer row present");
 		s.check(names.includes("Backbone (optional)"), "backbone row present");
 		s.check(
@@ -134,13 +143,9 @@ s.section("1: group present and visible in every layout");
 		s.check(names.includes("P2P network check"), "network check present");
 	}
 
-	// Setup layout (no server configured)
-	const setup = createFixture();
-	s.check(p2pGroup(setup.tab) !== null, "P2P group present in the Setup layout");
-
-	// Drive carrier layout
-	const drive = createFixture({ host: "", token: "", carrier: "drive", driveClientId: "c" });
-	s.check(p2pGroup(drive.tab) !== null, "P2P group present in the Drive layout");
+	// Every other carrier: the whole P2P surface is dormant.
+	s.check(p2pGroup(createFixture({ carrier: "cloudflare" }).tab) === null, "no P2P group on the Cloudflare (default) layout");
+	s.check(p2pGroup(createFixture({ host: "", token: "", carrier: "drive", driveClientId: "c" }).tab) === null, "no P2P group on the Drive layout");
 }
 
 s.section("2: TURN fields persist and push to the spike");
@@ -190,8 +195,9 @@ s.section("4: defaults and hosts without the spike");
 	const { settings: persisted } = readVaultSyncSettings({ p2pTurnUrl: "turn:h:3478" });
 	s.check(persisted.p2pTurnUrl === "turn:h:3478", "persisted TURN value survives the merge");
 
-	// A host without the P2P methods (e.g. future/other hosts) still renders.
-	const base: VaultSyncSettings = { ...DEFAULT_SETTINGS };
+	// A host without the P2P methods (e.g. future/other hosts) still renders
+	// the group (P2P carrier selected).
+	const base: VaultSyncSettings = { carrier: "p2p", ...DEFAULT_SETTINGS };
 	const host: VaultSyncSettingsHost = {
 		settings: base,
 		serverAuthMode: "unclaimed",

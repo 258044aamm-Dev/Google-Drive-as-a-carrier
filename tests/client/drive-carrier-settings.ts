@@ -15,6 +15,7 @@ import {
 	isCarrierKind,
 	isDriveCarrier,
 	isDriveSignedIn,
+	isP2pCarrier,
 	newDriveDeviceId,
 } from "../../src/drive-carrier/carrierSettings";
 import { createDriveTransportFactory } from "../../src/drive-carrier/driveCarrierRuntime";
@@ -126,7 +127,9 @@ s.section("Test 1: helpers");
 	s.check(currentCarrier({}) === "cloudflare" && currentCarrier({ carrier: "cloudflare" }) === "cloudflare", "no setting means Cloudflare");
 	s.check(currentCarrier({ carrier: "drive" }) === "drive" && isDriveCarrier({ carrier: "drive" }), "drive when chosen");
 	s.check(currentCarrier({ carrier: "bogus" as never }) === "cloudflare", "an unknown value falls back to Cloudflare");
-	s.check(isCarrierKind("drive") && isCarrierKind("cloudflare") && !isCarrierKind("s3"), "carrier names validated");
+	s.check(isCarrierKind("drive") && isCarrierKind("cloudflare") && isCarrierKind("p2p") && !isCarrierKind("s3"), "carrier names validated");
+	s.check(currentCarrier({ carrier: "p2p" }) === "p2p" && isP2pCarrier({ carrier: "p2p" }), "p2p when chosen");
+	s.check(!isP2pCarrier({}) && !isP2pCarrier({ carrier: "drive" }) && !isP2pCarrier({ carrier: "cloudflare" }) && !isP2pCarrier({ carrier: "bogus" as never }), "p2p never means anything else (absent, drive, cloudflare, unknown)");
 	s.check(!isDriveSignedIn({}) && !isDriveSignedIn({ driveClientId: "a", driveClientSecret: "b" }) && !isDriveSignedIn({ driveClientId: " ", driveClientSecret: "b", driveRefreshToken: "r" }), "signed in needs client id, secret and refresh token");
 	s.check(isDriveSignedIn({ driveClientId: "a", driveClientSecret: "b", driveRefreshToken: "r" }), "complete settings count as signed in");
 	s.check(driveFolderLabel("abc") === "YAOS abc", "folder label");
@@ -157,9 +160,9 @@ s.section("Test 3: default (Cloudflare) screens are the same as before, plus one
 {
 	const unconfigured = makeFixture();
 	const items = unconfigured.tab.getSettingDefinitions();
-	// The P2P (experimental) group (Phase 0 spike, plan §8) is appended last
-	// in every layout; the rest of the inventory is unchanged.
-	s.check(groupHeadings(items).join() === "Setup,This device,What syncs,Attachments,Collaboration,P2P (experimental)", `unconfigured groups (${groupHeadings(items).join()})`);
+	// The P2P (experimental) group is NOT part of the Cloudflare layouts: it
+	// is shown only while the P2P carrier is selected (plan §8 shape).
+	s.check(groupHeadings(items).join() === "Setup,This device,What syncs,Attachments,Collaboration", `unconfigured groups (${groupHeadings(items).join()})`);
 	s.check(pageNames(items).join() === "Manual connection,Advanced", "pages unchanged");
 	const adv = advancedItems(items);
 	const advNames = adv.map((i) => "name" in i ? i.name : "");
@@ -169,7 +172,7 @@ s.section("Test 3: default (Cloudflare) screens are the same as before, plus one
 	s.check(setupRow?.control?.key === "carrier" && flatten(items).filter((d) => d.name === "Sync carrier (experimental)").length === 1, "one carrier dropdown, bound to the carrier setting");
 	const configured = makeFixture({ host: "https://sync.example", token: "tok", vaultId: "vid" });
 	const cItems = configured.tab.getSettingDefinitions();
-	s.check(groupHeadings(cItems).join() === "Sync status,Updates,This device,What syncs,Attachments,Collaboration,P2P (experimental)", `configured groups (${groupHeadings(cItems).join()})`);
+	s.check(groupHeadings(cItems).join() === "Sync status,Updates,This device,What syncs,Attachments,Collaboration", `configured groups (${groupHeadings(cItems).join()})`);
 	s.check(advancedItems(cItems).map((i) => ("name" in i ? i.name : "")).join("|") === ["Sync carrier (experimental)", "Vault ID", "Deployment repository URL", "Deployment default branch", "Edits from other apps", "Frontmatter safety guard", "Debug mode", "Sync speed (Cloudflare)", "Group edits for (seconds)", "Status icon in the note header", "Detailed status text", "Reload required"].join("|"), "a configured Cloudflare user finds the carrier row first in Advanced, then the two sync-speed rows and the two status display switches just above the reload note");
 	s.check(!groupItems(cItems, "Sync status").includes("Sync carrier (experimental)"), "and the Sync status group is untouched");
 	const defs = flatten(cItems);
@@ -192,6 +195,8 @@ s.section("Test 4: choosing the carrier");
 	let wrongType = false;
 	try { await f.tab.setControlValue("carrier", 3); } catch { wrongType = true; }
 	s.check(wrongType, "a non-string is rejected");
+	await f.tab.setControlValue("carrier", "p2p");
+	s.check(f.settings.carrier === "p2p" && f.reasons.at(-1) === "settings:carrier", "p2p can be chosen");
 	await f.tab.setControlValue("driveClientId", "  id-1 ");
 	await f.tab.setControlValue("driveClientSecret", " sec ");
 	s.check(f.settings.driveClientId === "id-1" && f.settings.driveClientSecret === "sec", "client details are trimmed and saved");
@@ -204,6 +209,30 @@ s.section("Test 4: choosing the carrier");
 	let badPass = false;
 	try { await f.tab.setControlValue("driveEncryptionPassphrase", 5); } catch { badPass = true; }
 	s.check(badPass, "a non-string passphrase is rejected");
+}
+
+s.section("Test 4b: the P2P carrier layout (plan §8 shape)");
+{
+	const p = makeFixture({ carrier: "p2p" });
+	const items = p.tab.getSettingDefinitions();
+	// The tab IS the P2P group: nothing from the other carriers leaks in.
+	s.check(groupHeadings(items).join() === "P2P (experimental)", `p2p layout is the single P2P group (${groupHeadings(items).join()})`);
+	s.check(pageNames(items).join() === "", "no Drive/CF pages in the P2P layout");
+	const names = groupItems(items, "P2P (experimental)");
+	s.check(names[0] === "Sync carrier (experimental)", "the carrier row comes first, so switching back is one tap away");
+	for (const expected of ["Direct P2P link", "This vault", "Backbone (optional)", "TURN URL (advanced)", "TURN username (optional)", "TURN credential (optional)", "Pair another device (QR + code)", "P2P network check", "Debug mode"]) {
+		s.check(names.includes(expected), `P2P row present: ${expected}`);
+	}
+	const control = flatten(items).find((d) => d.name === "Sync carrier (experimental)")?.control as { type?: string; options?: Record<string, string> } | undefined;
+	const opts = control && control.type === "dropdown" ? Object.values(control.options ?? {}) : [];
+	s.check(opts.length === 3 && opts.includes("P2P (experimental)"), `dropdown offers all three carriers (${opts.join(" / ")})`);
+	// Every other carrier: the P2P surface is fully dormant.
+	for (const other of [makeFixture(), makeFixture({ carrier: "drive" })]) {
+		const otherItems = other.tab.getSettingDefinitions();
+		const p2pLeak = groupHeadings(otherItems).includes("P2P (experimental)")
+			|| flatten(otherItems).some((d) => String(d.name).includes("P2P") || /^TURN /u.test(String(d.name)));
+		s.check(!p2pLeak, `no P2P surface on the ${other.settings.carrier ?? "cloudflare"} layout`);
+	}
 }
 
 s.section("Test 5: Drive screens");

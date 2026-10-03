@@ -13,13 +13,19 @@ feasibility doc's documented gaps).
 3. Android: same plugin build, installed in the phone's test vault
    (copy `main.js` + `manifest.json` over the existing install, restart
    Obsidian).
-4. **Both devices**: open **Settings → YAOS** and scroll to the
-   **"P2P (experimental)"** group (bottom of the tab). It is always visible
-   in this test build — the *"Pair another device (QR + code)"* row opens the
-   spike panel, and the *TURN* fields here are the primary way to set a relay
-   (T0.5).
+4. **Both devices**: **Settings → YAOS → "Sync carrier (experimental)"** →
+   select **P2P (experimental)** → **reload the plugin** (or restart
+   Obsidian). The whole settings tab becomes the **"P2P (experimental)"**
+   group (the carrier row stays at the top, so switching back is one tap
+   away). With the P2P carrier selected, the *"Pair another device
+   (QR + code)"* row opens the spike panel, and the *TURN* fields here are
+   the primary way to set a relay (T0.5). With any other carrier selected
+   the P2P surface is fully dormant (no group, no P2P status-bar item,
+   pairing links are not accepted).
 5. **Optional, for the command palette + DevTools**: turn **Debug mode** on
-   (same settings tab, above the P2P group) and restart Obsidian. Then the
+   (Settings → YAOS — the last row of the P2P group when the P2P carrier is
+   selected, the Advanced page otherwise) and restart Obsidian. With the P2P
+   carrier + debug mode, the
    command palette offers **"P2P spike panel (dev)"** (command id
    `p2p-spike-panel`) and the desktop DevTools console exposes
    `window.__YAOS_P2P_DEBUG__` (`generate()`, `join(code)`, `state()`,

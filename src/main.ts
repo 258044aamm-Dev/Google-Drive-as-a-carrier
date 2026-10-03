@@ -100,6 +100,7 @@ import {
 	isDriveCarrier,
 	isDriveSignedIn,
 	isHostedSignIn,
+	isP2pCarrier,
 	newDriveDeviceId,
 } from "./drive-carrier/carrierSettings";
 import { createDriveCarrier, type DriveCarrier } from "./drive-carrier/driveCarrierRuntime";
@@ -467,17 +468,24 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				void this.initSync();
 			},
 		});
-		// Phase 0 P2P spike host. Constructed eagerly (cheap, UI-free) so the
-		// pairing deep link can hand a code straight to the join view.
-		this.p2pSpikeHost = new P2pSpikeHost(() => this.settings.vaultId ?? "");
-		// Persisted TURN relay fields (Settings > YAOS > P2P) take effect now
-		// and on every later settings change; empty URL = STUN only.
-		this.applyP2pTurnOverrides();
-		// Separate status-bar item (the existing sync one is untouched):
-		// honest §4.10 wording for the direct link, hidden when idle.
-		this.p2pStatusBarEl = this.addStatusBarItem();
-		this.refreshP2pStatusBar();
-		this.p2pStatusTimer = window.setInterval(() => this.refreshP2pStatusBar(), 1000);
+		// Phase 0 P2P spike. Only alive while the P2P carrier is selected —
+		// for every other carrier the P2P surface is fully dormant (no host,
+		// no status-bar item, no timer), so nothing about the other carriers
+		// changes. Carrier switches need a plugin reload, so this decision is
+		// made once here and never re-evaluated.
+		if (isP2pCarrier(this.settings)) {
+			// Constructed eagerly (cheap, UI-free) so the pairing deep link
+			// can hand a code straight to the join view.
+			this.p2pSpikeHost = new P2pSpikeHost(() => this.settings.vaultId ?? "");
+			// Persisted TURN relay fields (Settings > YAOS > P2P) take effect
+			// now and on every later settings change; empty URL = STUN only.
+			this.applyP2pTurnOverrides();
+			// Separate status-bar item (the existing sync one is untouched):
+			// honest §4.10 wording for the direct link, hidden when idle.
+			this.p2pStatusBarEl = this.addStatusBarItem();
+			this.refreshP2pStatusBar();
+			this.p2pStatusTimer = window.setInterval(() => this.refreshP2pStatusBar(), 1000);
+		}
 
 		this.registerObsidianProtocolHandler("yaos", (params) => {
 			const action = typeof params.action === "string" ? params.action : "";
@@ -486,16 +494,18 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				// by another device's spike panel. Route to the join view.
 				const code = typeof params.code === "string" ? params.code.trim() : "";
 				if (!code) {
-					new Notice("P2P pairing link is missing a code.", 8000);
-					return;
-				}
-				if (!this.p2pSpikeHost) {
-						new Notice("P2P spike not ready — open the spike panel and paste the code.", 8000);
+							new Notice("P2P pairing link is missing a code.", 8000);
+							return;
+						}
+						if (!this.p2pSpikeHost) {
+							// Dormant: the P2P carrier is not selected on this
+							// device, so no link can be accepted.
+							new Notice("Select the P2P (experimental) carrier in Settings → YAOS to accept a pairing link.", 8000);
+							return;
+						}
+						this.openP2pSpikePanel(code);
 						return;
 					}
-					this.openP2pSpikePanel(code);
-					return;
-			}
 			void this.setupLinkController?.handleSetupLink(params);
 		});
 
@@ -521,9 +531,12 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		if (this.settings.debug || this.settings.qaDebugMode) {
 			// CDP/DevTools surface for the Phase 0 P2P spike (mirrors the host
 			// API; desktop leg of the runbook drives this, the phone leg uses
-			// the spike panel). Removed in onunload.
-			(window as unknown as Record<string, unknown>).__YAOS_P2P_DEBUG__ =
-				this.createP2pSpikeDebugApi();
+			// the spike panel). Removed in onunload. Only exists while the
+			// P2P carrier is selected — dormant otherwise.
+			if (isP2pCarrier(this.settings)) {
+				(window as unknown as Record<string, unknown>).__YAOS_P2P_DEBUG__ =
+					this.createP2pSpikeDebugApi();
+			}
 
 			const host: TelemetryRuntimeHost = {
 					app: this.app,
@@ -657,12 +670,14 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			},
 		});
 		// P2P spike panel (Phase 0 feasibility). A development tool: hidden
-		// unless the debug setting is on, so it never appears for end users.
+		// unless the debug setting is on, so it never appears for end users —
+		// and only while the P2P carrier is selected (dormant otherwise).
 		this.addCommand({
 			id: "p2p-spike-panel",
 			name: "P2P spike panel (dev)",
 			checkCallback: (checking: boolean) => {
 				if (!(this.settings.debug || this.settings.qaDebugMode)) return false;
+				if (!isP2pCarrier(this.settings)) return false;
 				if (!checking) this.openP2pSpikePanel(null);
 				return true;
 			},
