@@ -1,5 +1,6 @@
 import { randomId } from "../utils/randomId";
 import type { DriveCarrierSettings } from "../drive-carrier/carrierSettings";
+import type { SyncPaceSettings } from "./syncPace";
 
 /** Controls how external disk edits (git, other editors) are imported into CRDT. */
 export type ExternalEditPolicy = "always" | "closed-only" | "never";
@@ -16,7 +17,7 @@ export function attachmentSizeCapKB(serverMaxBlobUploadBytes?: number | null): n
 	return Math.max(1, Math.min(MAX_ATTACHMENT_SIZE_KB, Math.floor(serverMaxBlobUploadBytes / 1024)));
 }
 
-export interface VaultSyncSettings extends DriveCarrierSettings {
+export interface VaultSyncSettings extends DriveCarrierSettings, SyncPaceSettings {
 	/** Cloudflare Worker host, e.g. "https://sync.yourdomain.com" */
 	host: string;
 	/** Shared secret token for auth. */

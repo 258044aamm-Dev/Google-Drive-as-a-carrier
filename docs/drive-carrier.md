@@ -95,6 +95,26 @@ the tests assert these budgets.
 Because phones suspend apps, changes made on another device while the phone app
 is in the background arrive when you open it again.
 
+### Sync speed (if Google reports too many requests)
+
+The table above is the **Normal** speed, and it is what you get unless you
+change it. In the settings, under "Sync speed (Google Drive)", you can choose a
+slower speed. Nothing else changes: the same data is synced, it just arrives a
+little later.
+
+| Speed | While working | Idle | Hidden (desktop) | Edits grouped for | Full check |
+|---|---|---|---|---|---|
+| Normal (default) | 3 s | 30 s | 2 min | 2 s | 5 min |
+| Gentle | 10 s | 60 s | 5 min | 5 s | 10 min |
+| Minimal | 30 s | 2 min | 15 min | 10 s | 30 min |
+| Custom | you choose | you choose | you choose, or 0 = pause | you choose | you choose |
+
+Phones still pause while the app is in the background, whatever the speed.
+Custom values are never allowed to be faster than Normal (each field shows its
+allowed range). The change applies immediately, without a restart. Nothing is
+stored until you pick a different speed, so vaults that never touch it behave
+exactly as before.
+
 ## Setup wizard (recommended)
 
 Choose **Google Drive (experimental)** under Settings > YAOS > Setup > Sync

@@ -18,6 +18,7 @@ import {
 	type CarrierKind,
 } from "../drive-carrier/carrierSettings";
 import { checkHostedToken, normalizeHostedToken } from "../drive-carrier/wizard/validate";
+import { CUSTOM_LIMITS, currentSyncPace, isSyncPaceProfile, resolveDrivePace, type SyncPaceCustom, type SyncPaceProfile } from "./syncPace";
 import { PairDeviceModal } from "./PairDeviceModal";
 import { RecoveryKitModal } from "./RecoveryKitModal";
 import {
@@ -46,6 +47,12 @@ type DeclarativeSettingKey =
 	| "frontmatterGuardEnabled"
 	| "debug"
 	| "carrier"
+	| "syncPace"
+	| "drivePaceActive"
+	| "drivePaceIdle"
+	| "drivePaceHidden"
+	| "drivePaceBatch"
+	| "drivePaceFullCheck"
 	| "driveClientId"
 	| "driveClientSecret"
 	| "driveHostedToken"
@@ -84,6 +91,8 @@ export interface VaultSyncSettingsHost {
 	signOutOfDrive?(): Promise<void>;
 	/** Opens the step-by-step Google Drive setup wizard. */
 	openDriveWizard?(): void;
+	/** Tells the running carrier to use the new "sync speed" setting right away. */
+	applySyncPace?(): void;
 }
 
 const CLOUDFLARE_DEPLOY_URL = "https://deploy.workers.cloudflare.com/?url=https://github.com/kavinsood/yaos/tree/main/server";
@@ -92,6 +101,19 @@ const CARRIER_OPTIONS: Record<CarrierKind, string> = {
 	cloudflare: "Cloudflare Worker (default)",
 	drive: "Google Drive (experimental)",
 };
+const SYNC_PACE_OPTIONS: Record<SyncPaceProfile, string> = {
+	normal: "Normal (default)",
+	gentle: "Gentle (fewer requests)",
+	minimal: "Minimal (fewest requests)",
+	custom: "Custom",
+};
+const DRIVE_PACE_KEYS = {
+	drivePaceActive: "driveActiveSec",
+	drivePaceIdle: "driveIdleSec",
+	drivePaceHidden: "driveHiddenSec",
+	drivePaceBatch: "driveBatchSec",
+	drivePaceFullCheck: "driveFullCheckMin",
+} as const satisfies Record<string, keyof SyncPaceCustom>;
 const EXTERNAL_EDIT_OPTIONS: Record<ExternalEditPolicy, string> = {
 	always: "Always import",
 	"closed-only": "Only when file is closed",
@@ -540,6 +562,65 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 					},
 				],
 			},
+			{
+				type: "group",
+				heading: "Sync speed (Google Drive)",
+				items: [
+					{
+						name: "Sync speed",
+						desc: "How often YAOS asks Google Drive for changes. Normal is the default. If Google reports too many requests, choose Gentle or Minimal: changes then arrive a little later, and nothing else changes.",
+						control: { type: "dropdown", key: "syncPace", options: SYNC_PACE_OPTIONS },
+					},
+					{
+						name: "Current speed",
+						desc: this.describeDrivePace(),
+						visible: () => currentSyncPace(this.host.settings) !== "custom",
+					},
+					...this.drivePaceCustomRows(),
+				],
+			},
+		];
+	}
+
+	/** One plain sentence about the speed that is in effect now. */
+	private describeDrivePace(): string {
+		const pace = resolveDrivePace(this.host.settings, false);
+		const s = (ms: number) => `${Math.round(ms / 1000)} s`;
+		const hidden = pace.backgroundPollIntervalMs === 0 ? "paused while hidden" : `every ${s(pace.backgroundPollIntervalMs)} while hidden`;
+		return `Checks Drive every ${s(pace.pollIntervalMs)} while you work, every ${s(pace.idlePollIntervalMs)} when idle, ${hidden}. Edits are uploaded in groups every ${s(pace.batchMs)}. On a phone, checks pause while the app is in the background.`;
+	}
+
+	private drivePaceCustomRows(): SettingDefinition[] {
+		const custom = () => currentSyncPace(this.host.settings) === "custom";
+		const row = (
+			name: string,
+			desc: string,
+			key: keyof typeof DRIVE_PACE_KEYS,
+			limit: { min: number; max: number },
+			allowZero = false,
+		): SettingDefinition => ({
+			name,
+			desc: `${desc} Allowed: ${allowZero ? "0 or " : ""}${limit.min} to ${limit.max}. Smaller values are not allowed, because that would be faster than the default.`,
+			visible: custom,
+			control: {
+				type: "number",
+				key,
+				min: allowZero ? 0 : limit.min,
+				step: 1,
+				validate: (value) => {
+					if (!Number.isInteger(value)) return "Enter a whole number.";
+					if (allowZero && value === 0) return undefined;
+					if (value < limit.min || value > limit.max) return `Enter ${allowZero ? "0 or " : ""}a number from ${limit.min} to ${limit.max}.`;
+					return undefined;
+				},
+			},
+		});
+		return [
+			row("Check while working (seconds)", "How often to ask Drive for changes while you are using Obsidian. Default 3.", "drivePaceActive", CUSTOM_LIMITS.driveActiveSec),
+			row("Check when idle (seconds)", "How often to ask after a minute without activity. Default 30.", "drivePaceIdle", CUSTOM_LIMITS.driveIdleSec),
+			row("Check while hidden (seconds)", "How often to ask while the window is hidden. 0 pauses until you come back. Default 120 on a computer; phones always pause.", "drivePaceHidden", CUSTOM_LIMITS.driveHiddenSec, true),
+			row("Group edits for (seconds)", "Your edits are gathered for this long and uploaded together. Default 2.", "drivePaceBatch", CUSTOM_LIMITS.driveBatchSec),
+			row("Full check every (minutes)", "How often to compare everything with Drive, as a safety net. Default 5.", "drivePaceFullCheck", CUSTOM_LIMITS.driveFullCheckMin),
 		];
 	}
 
@@ -613,6 +694,23 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			case "frontmatterGuardEnabled": return this.host.settings.frontmatterGuardEnabled;
 			case "debug": return this.host.settings.debug;
 			case "carrier": return currentCarrier(this.host.settings);
+			case "syncPace": return currentSyncPace(this.host.settings);
+			case "drivePaceActive":
+			case "drivePaceIdle":
+			case "drivePaceHidden":
+			case "drivePaceBatch":
+			case "drivePaceFullCheck": {
+				// Show the number that is in effect, so switching to Custom starts from the current speed.
+				const pace = resolveDrivePace({ syncPace: "custom", syncPaceCustom: this.host.settings.syncPaceCustom }, false);
+				const shown = {
+					drivePaceActive: pace.pollIntervalMs / 1000,
+					drivePaceIdle: pace.idlePollIntervalMs / 1000,
+					drivePaceHidden: pace.backgroundPollIntervalMs / 1000,
+					drivePaceBatch: pace.batchMs / 1000,
+					drivePaceFullCheck: pace.reconcileIntervalMs / 60_000,
+				};
+				return shown[key as keyof typeof shown];
+			}
 			case "driveClientId": return this.host.settings.driveClientId ?? "";
 			case "driveClientSecret": return this.host.settings.driveClientSecret ?? "";
 			case "driveHostedToken": return this.host.settings.driveRefreshToken ?? "";
@@ -713,6 +811,36 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 				this.update();
 				// Choosing Drive for the first time: walk the user through the rest.
 				if (nextValue === "drive" && !isDriveSignedIn(this.host.settings)) this.host.openDriveWizard?.();
+				return;
+			}
+			case "syncPace": {
+				const nextValue = expectStringValue(key, value);
+				if (!isSyncPaceProfile(nextValue)) throw new RangeError(`Unsupported sync speed: ${nextValue}`);
+				await this.host.updateSettings((settings) => {
+					// "normal" is stored as "nothing set", exactly like a vault that never touched this.
+					if (nextValue === "normal") delete settings.syncPace;
+					else settings.syncPace = nextValue;
+				}, "settings:sync-pace");
+				this.host.applySyncPace?.();
+				this.update();
+				return;
+			}
+			case "drivePaceActive":
+			case "drivePaceIdle":
+			case "drivePaceHidden":
+			case "drivePaceBatch":
+			case "drivePaceFullCheck": {
+				const nextValue = expectFiniteNumber(key, value);
+				const field = DRIVE_PACE_KEYS[key as keyof typeof DRIVE_PACE_KEYS];
+				const limit = CUSTOM_LIMITS[field];
+				const zeroOk = field === "driveHiddenSec";
+				if (!Number.isInteger(nextValue) || !((zeroOk && nextValue === 0) || (nextValue >= limit.min && nextValue <= limit.max))) {
+					throw new RangeError(`${field} must be ${zeroOk ? "0 or " : ""}a whole number from ${limit.min} to ${limit.max}`);
+				}
+				await this.host.updateSettings((settings) => {
+					settings.syncPaceCustom = { ...settings.syncPaceCustom, [field]: nextValue };
+				}, "settings:sync-pace-custom");
+				this.host.applySyncPace?.();
 				return;
 			}
 			case "driveClientId":

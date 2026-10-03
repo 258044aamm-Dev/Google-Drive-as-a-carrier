@@ -427,6 +427,28 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	}
 
 	/**
+	 * Change how often this transport talks to Drive while it runs (the settings
+	 * screen calls this, so a rate-limited user does not have to restart).
+	 * Only the timing values can change; nothing else is touched.
+	 */
+	applyPace(pace: {
+		pollIntervalMs: number;
+		idleAfterMs: number;
+		idlePollIntervalMs: number;
+		backgroundPollIntervalMs: number;
+		batchMs: number;
+		reconcileIntervalMs: number;
+	}): void {
+		this.opts.pollIntervalMs = pace.pollIntervalMs;
+		this.opts.idleAfterMs = pace.idleAfterMs;
+		this.opts.idlePollIntervalMs = pace.idlePollIntervalMs;
+		this.opts.backgroundPollIntervalMs = pace.backgroundPollIntervalMs;
+		this.opts.batchMs = pace.batchMs;
+		this.opts.reconcileIntervalMs = pace.reconcileIntervalMs;
+		if (this.started && !this.destroyed) this.scheduleTick();
+	}
+
+	/**
 	 * How long to wait before the next poll, or null when polling is paused
 	 * (window hidden and background polling switched off). This is the
 	 * request budget: failures back off, an idle device slows down, a hidden

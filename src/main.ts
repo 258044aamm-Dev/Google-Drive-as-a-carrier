@@ -2204,6 +2204,11 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		}
 	}
 
+	/** The "sync speed" setting changed: let the running carrier pick it up without a restart. */
+	applySyncPace(): void {
+		this.driveCarrier?.applyPace();
+	}
+
 	/** Google Drive carrier: the step-by-step setup wizard. */
 	openDriveWizard(): void {
 		new DriveSetupWizard(this.app, {

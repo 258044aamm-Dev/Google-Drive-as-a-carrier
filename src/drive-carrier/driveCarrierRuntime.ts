@@ -12,9 +12,10 @@ import { GoogleDriveRest, type DriveHttp } from "./googleDriveRest";
 import { GoogleTokenManager } from "./googleAuth";
 import { HOSTED_TOKEN_URL, HostedTokenManager } from "./hostedAuth";
 import { isHostedSignIn, type DriveCarrierSettings } from "./carrierSettings";
+import { NORMAL_DRIVE_PACE, resolveDrivePace, type SyncPaceSettings } from "../settings/syncPace";
 
 export interface DriveCarrierRuntimeDeps {
-	getSettings: () => DriveCarrierSettings;
+	getSettings: () => DriveCarrierSettings & SyncPaceSettings;
 	http: DriveHttp;
 	log: (message: string) => void;
 	/** Called once when Google says the sign-in no longer works. */
@@ -34,10 +35,10 @@ export interface DriveCarrierRuntimeDeps {
 }
 
 /** After a minute of nothing happening, look every 30 seconds instead of every 3. */
-export const DEFAULT_IDLE_AFTER_MS = 60_000;
-export const DEFAULT_IDLE_POLL_MS = 30_000;
+export const DEFAULT_IDLE_AFTER_MS = NORMAL_DRIVE_PACE.idleAfterMs;
+export const DEFAULT_IDLE_POLL_MS = NORMAL_DRIVE_PACE.idlePollIntervalMs;
 /** Desktop windows that are hidden (minimised, covered) still check every two minutes. */
-export const DEFAULT_BACKGROUND_POLL_MS = 120_000;
+export const DEFAULT_BACKGROUND_POLL_MS = NORMAL_DRIVE_PACE.backgroundPollIntervalMsDesktop;
 
 /** Everything the Drive carrier provides to the rest of the plugin, sharing one sign-in. */
 export interface DriveCarrier {
@@ -49,6 +50,8 @@ export interface DriveCarrier {
 	snapshotBackend(vaultId: string, getDoc: () => Y.Doc | null): SnapshotBackend;
 	/** How many requests the carrier has sent to Drive (null before the first one). */
 	requestStats(): RequestStats | null;
+	/** Re-read the "sync speed" setting and apply it to the running transports. */
+	applyPace(): void;
 }
 
 /**
@@ -85,25 +88,33 @@ export function createDriveCarrier(deps: DriveCarrierRuntimeDeps): DriveCarrier 
 		return keyring;
 	};
 	let activity: ActivitySource | null = null;
+	// One live transport per vault (a reload replaces the old one), so a settings change reaches the running one.
+	const transports = new Map<string, DriveTransport>();
+	const currentPace = () => resolveDrivePace(deps.getSettings(), deps.isMobile?.() ?? false);
 	const blobStores = new Map<string, BlobStoreClient>();
 	const snapshotBackends = new Map<string, SnapshotBackend>();
 
 	return {
 		transportFactory: ({ doc, vaultId, isLocalStoreOrigin }) => {
 			activity ??= deps.activity ?? browserActivity();
-			return new DriveTransport(doc, getApi(), {
+			const pace = currentPace();
+			const transport = new DriveTransport(doc, getApi(), {
 				vaultId,
 				deviceId: deps.getSettings().driveDeviceId ?? "device",
-				pollIntervalMs: deps.pollIntervalMs,
-				idleAfterMs: deps.idleAfterMs ?? DEFAULT_IDLE_AFTER_MS,
-				idlePollIntervalMs: deps.idlePollIntervalMs ?? DEFAULT_IDLE_POLL_MS,
-				backgroundPollIntervalMs: deps.backgroundPollIntervalMs ?? (deps.isMobile?.() ? 0 : DEFAULT_BACKGROUND_POLL_MS),
+				pollIntervalMs: deps.pollIntervalMs ?? pace.pollIntervalMs,
+				idleAfterMs: deps.idleAfterMs ?? pace.idleAfterMs,
+				idlePollIntervalMs: deps.idlePollIntervalMs ?? pace.idlePollIntervalMs,
+				backgroundPollIntervalMs: deps.backgroundPollIntervalMs ?? pace.backgroundPollIntervalMs,
+				batchMs: pace.batchMs,
+				reconcileIntervalMs: pace.reconcileIntervalMs,
 				activity,
 				keyring: keyringFor(vaultId),
 				onFatal: deps.onFatal,
 				ignoreOrigin: isLocalStoreOrigin,
 				log: deps.log,
 			});
+			transports.set(vaultId, transport);
+			return transport;
 		},
 		blobStore(vaultId) {
 			let store = blobStores.get(vaultId);
@@ -122,6 +133,19 @@ export function createDriveCarrier(deps: DriveCarrierRuntimeDeps): DriveCarrier 
 			return backend;
 		},
 		requestStats: () => api?.stats() ?? null,
+		applyPace() {
+			const pace = currentPace();
+			for (const transport of transports.values()) {
+				transport.applyPace({
+					pollIntervalMs: deps.pollIntervalMs ?? pace.pollIntervalMs,
+					idleAfterMs: deps.idleAfterMs ?? pace.idleAfterMs,
+					idlePollIntervalMs: deps.idlePollIntervalMs ?? pace.idlePollIntervalMs,
+					backgroundPollIntervalMs: deps.backgroundPollIntervalMs ?? pace.backgroundPollIntervalMs,
+					batchMs: pace.batchMs,
+					reconcileIntervalMs: pace.reconcileIntervalMs,
+				});
+			}
+		},
 	};
 }
 

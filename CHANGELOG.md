@@ -15,6 +15,12 @@ This file is specific to this fork. It is not part of upstream YAOS.
 - Code: `src/drive-carrier/wizard/screens.ts` only (plus `docs/drive-carrier.md`).
 - Existing test changed on purpose: the one `drive-carrier-wizard-flow` check that asserted the "coming soon" placeholder now asserts its absence and the new wording. Nothing else in the wizard flow tests changed (200 checks pass).
 
+### Added (Google Drive: sync speed, to avoid rate limits)
+- **New setting "Sync speed (Google Drive)"** with four choices: **Normal (default)**, **Gentle**, **Minimal** and **Custom**. Normal is exactly today's behaviour (3 s while working, 30 s idle, 2 min hidden on a computer, paused hidden on a phone, edits grouped for 2 s, full check every 5 min), and a vault that never touches the setting stores nothing and syncs as before. Gentle and Minimal slow the checks, the edit grouping and the full check (numbers in `docs/drive-carrier.md`). Custom has five number fields; each is clamped so it can never be faster than Normal, and capped at a sensible maximum. The change applies immediately to the running sync, no restart.
+- Code: new pure module `src/settings/syncPace.ts` (`resolveDrivePace`); `DriveTransport.applyPace()` (timing fields only); `DriveCarrier.applyPace()`; the setting rows in `src/settings/settingsTab.ts` (Drive mode only); `applySyncPace()` in `src/main.ts`. Two optional settings fields (`syncPace`, `syncPaceCustom`). The Drive `DEFAULT_*` constants now read from the same module, with the same values.
+- Explicit test overrides still take priority over the setting. The Cloudflare carrier is untouched by this entry (its send-side control is a separate entry).
+- New test: `tests/client/drive-carrier-sync-pace.ts` (45 checks: default equals today's numbers, profiles, clamping and a property check over 196 combinations, live change on a running transport, the settings screen, Cloudflare mode shows no Drive group). No existing test changed; all other Drive suites pass unchanged.
+
 ## 2.1.1-drive.8 - 2026-10-03
 
 ### Fixed (engine, every carrier including Cloudflare)
