@@ -41,6 +41,7 @@ import { planClosedFileReconcile } from "./reconcile/closedFilePlanner";
 import { planBaselineAdvancement, type BaselineActionKind } from "./reconcile/baselineAdvancementPolicy";
 import { evaluateSafetyBrake } from "./reconcile/safetyBrakePolicy";
 import { classifyMissingOnDisk, evaluateOfflineDeleteBatch } from "./reconcile/offlineDeletePolicy";
+import { withoutConflictNotes } from "./reconcile/conflictNotePolicy";
 import { bothSidesChangedFromBaseline } from "./reconcile/boundDivergencePolicy";
 import {
 	computeRecoveryFingerprint,
@@ -689,7 +690,8 @@ export class ReconciliationController {
 				// This preserves the action kind so planBaselineAdvancement gets the
 				// correct input, not a flattened "defer-to-crdt-flush" for everything.
 				const updatesToFlush: Array<{ path: string; baselineActionKind: BaselineActionKind }> = [];
-				const createdToWrite = await this.applyOfflineDeletes(result.createdOnDisk, mode, diskPresentPaths.size);
+				// Conflict notes are local-only: never write one from the shared document.
+				const createdToWrite = await this.applyOfflineDeletes(withoutConflictNotes(result.createdOnDisk), mode, diskPresentPaths.size);
 				for (const path of createdToWrite) {
 					this.deps.recordFlightPathEvent?.({
 						priority: "important",

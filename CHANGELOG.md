@@ -8,6 +8,16 @@ Version numbers like `2.1.1-drive.3` exist only in each release's `manifest.json
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
+## Unreleased - 2.1.1-drive.8 (committed locally, not published)
+
+### Fixed (engine, every carrier including Cloudflare)
+- **A deleted "(YAOS conflict ...)" note no longer comes back after reopening, on both devices.** Conflict notes are meant to stay on one device, but a vault can still hold some as active shared entries (they synced in 2.1.0 and an older device can still send them; upstream issue #78's log shows the same notes being written back). Two things made the delete fail: the delete event ignored them because they are not syncable paths, so nothing was recorded and the other device never heard of it; and the full reconcile wrote every active shared entry that was not found on disk back to disk, which for these notes was always. Now (1) deleting a conflict note that is an active shared entry is recorded like any note's delete, so both devices drop it and it stays gone; (2) the full reconcile never writes a conflict note from the shared document to disk. A conflict note that is not a shared entry (the normal case) is still ignored, and every other note is handled exactly as before.
+  - Code: new `src/runtime/reconcile/conflictNotePolicy.ts` (`shouldRecordMarkdownDelete`, `withoutConflictNotes`); the delete handler in `src/main.ts` and the "missing on disk" list in `ReconciliationController`.
+  - Not changed: existing synced conflict notes are not deleted automatically (they can hold the only copy of some text). If a conflict note returns with a NEW timestamp, it is a fresh copy and a different cause; that was not reproduced and is not covered here.
+
+### Tests
+- New `engine-conflict-note-delete` (15 checks): the policy, the reconcile with a shared conflict-note entry missing from or present on disk, the delete reaching a second document and staying after a reconcile, and the delete handler using the policy. Four fail without the change. Controls: an ordinary shared note missing on disk is still written; a conflict note that is not shared and an ignored note are still ignored.
+
 ## 2.1.1-drive.7 - 2026-10-03
 
 One test build that gathers everything done since `2.1.1-drive.6`. **Some of it changes behaviour for every carrier, Cloudflare included** (the engine fixes and the upstream issue fixes below); each change is narrow, has its own tests that fail without it, and leaves the existing suites unchanged. The Drive-only items change nothing unless Google Drive is the carrier.

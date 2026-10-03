@@ -70,6 +70,7 @@ import {
 	ReconciliationController,
 } from "./runtime/reconciliationController";
 import { waitForLayoutReady } from "./runtime/waitForLayoutReady";
+import { shouldRecordMarkdownDelete } from "./runtime/reconcile/conflictNotePolicy";
 import { AttachmentOrchestrator } from "./runtime/attachmentOrchestrator";
 import {
 	RuntimeTeardownCoordinator,
@@ -1411,7 +1412,11 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				if (!this.reconciliationController.isReconciled) return;
 				if (!(file instanceof TFile)) return;
 
-				if (this.isMarkdownPathSyncable(file.path)) {
+				if (shouldRecordMarkdownDelete({
+					path: file.path,
+					syncable: this.isMarkdownPathSyncable(file.path),
+					activeInSharedDoc: this.vaultSync?.getFileId(file.path) !== undefined,
+				})) {
 					const opId = this.newOpId();
 					if (this.diskMirror?.consumeDeleteSuppression(file.path)) {
 						this.log(`Suppressed delete event for "${file.path}"`);
