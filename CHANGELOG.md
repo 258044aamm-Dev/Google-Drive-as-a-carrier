@@ -8,6 +8,20 @@ Up to `2.1.1-drive.10` the version number (like `2.1.1-drive.3`) existed only in
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
+## 2.1.1-drive.19 (manifest 2.1.19) - 2026-10-04 - test release: P2P moved to its own branch
+
+### Tests
+- New `tests/client/lan-engine.ts` (14 checks): the real `VaultSync` and `DiskMirror` on two devices joined by real secure links on loopback. A new note, an edit and a delete travel and stay deleted; a device joining late gets every live note and no deleted one; both devices typing in one note end identical with nothing lost; two devices creating the same path leave one note that one delete removes; a device that was closed catches up (including a delete made meanwhile); a stranger with another key receives nothing.
+
+### Release naming
+- From this release the git tag equals the manifest version (`2.1.19`), because BRAT compares the two and reported a mismatch for `2.1.1-drive.18` / `2.1.18` (that release was re-published as tag `2.1.18`).
+
+### Changed
+- **All P2P code now lives only on the `p2p-implementation` branch.** `google-drive-carrier` carries the Google Drive carrier and the Local network carrier, and nothing else. Removed from this branch: `src/p2p/`, the P2P settings pages and pairing flow (`src/settings/P2p*.ts`), the P2P section of `settingsTab.ts`, `settingsStore.ts`, `main.ts` and `styles.css`, the P2P tests and `fakeRtc` mock, `qa/p2p-spike/`, `docs/p2p*`, and the `guard:p2p-css-scope` script. `p2p-implementation` is this branch plus one commit that puts the P2P code back, so it can be merged later with a clean diff.
+- The carrier list is Cloudflare, Google Drive and (desktop app) Local network. A vault whose saved carrier is the retired `p2p` test carrier falls back to Cloudflare (nothing else in its settings is touched). P2P was a connection test only and never carried notes.
+- Releases `2.1.1-drive.11` to `2.1.1-drive.17` still contain the P2P test; their entries below stay as history.
+- Left as is: the `tsx` dev dependency that the P2P work added (kept so `package-lock.json` stays untouched).
+
 ## 2.1.1-drive.18 (manifest 2.1.18) - 2026-10-04 - test release: Local network carrier (desktop)
 
 ### Added
