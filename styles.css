@@ -256,3 +256,212 @@ textarea.yaos-wizard-input { min-height: 5em; font-family: var(--font-monospace)
 		animation: none;
 	}
 }
+
+/* ── P2P spike panel (Phase 0 dev tool) ─────────────────────────── */
+.yaos-p2p-spike-status {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 6px 10px;
+	margin: 8px 0 12px;
+	white-space: pre-wrap;
+	overflow-x: auto;
+}
+
+.yaos-p2p-spike-size {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	margin: 8px 0;
+}
+
+.yaos-p2p-spike-code {
+	width: 100%;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	word-break: break-all;
+	margin: 6px 0;
+}
+
+.yaos-p2p-spike-qr-wrap {
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	padding: 12px;
+	margin: 8px 0 12px;
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 12px;
+}
+
+.yaos-p2p-spike-qr-canvas {
+	display: block;
+	max-width: 100%;
+	height: auto;
+}
+
+.yaos-p2p-spike-log {
+	max-height: 180px;
+	overflow-y: auto;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 8px 10px;
+	margin: 8px 0 4px;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+/* ── P2P home page + pairing wizard (Milestones B2/B3) — scoped under
+     .yaos-p2p-*, enforced by guard:p2p-css-scope ───────────────── */
+.yaos-p2p-home {
+	display: block;
+	max-width: 640px;
+}
+
+.yaos-p2p-status-card {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 12px;
+	margin-bottom: 10px;
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 10px;
+}
+
+.yaos-p2p-dot {
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	flex: none;
+	background: var(--text-muted);
+}
+
+.yaos-p2p-dot.ok {
+	background: var(--color-green, #4caf50);
+}
+
+.yaos-p2p-dot.wait {
+	background: var(--color-yellow, #c9a227);
+}
+
+.yaos-p2p-dot.error {
+	background: var(--color-red, #d04545);
+}
+
+.yaos-p2p-status-text {
+	font-size: var(--font-ui-small);
+}
+
+.yaos-p2p-error {
+	color: var(--color-red, #d04545);
+	font-size: var(--font-ui-small);
+	margin: 8px 0;
+}
+
+/* Visibility is applied with this class (display:none !important) —
+   theme CSS can override a bare [hidden] attribute, which is what
+   left the Disconnect button visible in drive.15. */
+.yaos-p2p-hidden {
+	display: none !important;
+}
+
+.yaos-p2p-wizard {
+	margin-top: 4px;
+}
+
+.yaos-p2p-role-grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 8px;
+	margin: 10px 0;
+}
+
+.yaos-p2p-role-btn {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 2px;
+	padding: 10px 12px;
+	text-align: left;
+}
+
+.yaos-p2p-role-btn--active {
+	border-color: var(--interactive-accent);
+}
+
+.yaos-p2p-role-btn-sub {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.yaos-p2p-step {
+	margin-bottom: 4px;
+}
+
+.yaos-p2p-label {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin: 8px 0 4px;
+}
+
+.yaos-p2p-hint {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	margin: 4px 0;
+}
+
+.yaos-p2p-panel {
+	margin: 6px 0;
+}
+
+.yaos-p2p-btn {
+	white-space: nowrap;
+}
+
+.yaos-p2p-btn--full {
+	width: 100%;
+	max-width: 520px;
+	margin: 6px 0;
+}
+
+.yaos-p2p-btn--subtle {
+	margin-top: 4px;
+}
+
+.yaos-p2p-code {
+	width: 100%;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	word-break: break-all;
+	margin: 4px 0;
+	resize: none;
+}
+
+.yaos-p2p-qr-block {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 6px;
+	padding: 10px;
+	margin: 8px 0;
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 10px;
+}
+
+.yaos-p2p-qr-caption {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	text-align: center;
+}
+
+.yaos-p2p-qr-canvas {
+	display: block;
+	max-width: 200px;
+	height: auto;
+}

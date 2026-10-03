@@ -3,7 +3,7 @@
  * nothing changes for anyone who does not choose it.
  */
 import { App, Plugin, type SettingDefinition, type SettingDefinitionItem } from "obsidian";
-import { currentCarrier, isCarrierKind, isDriveCarrier, isLanCarrier } from "../../src/drive-carrier/carrierSettings";
+import { currentCarrier, isCarrierKind, isDriveCarrier, isLanCarrier, isP2pCarrier } from "../../src/drive-carrier/carrierSettings";
 import {
 	applyLanSetupCode,
 	ensureLanIdentity,
@@ -96,9 +96,8 @@ async function throws(run: () => Promise<unknown> | unknown): Promise<boolean> {
 s.section("1: the carrier names");
 {
 	s.check(currentCarrier({ carrier: "lan" }) === "lan" && isLanCarrier({ carrier: "lan" }), "lan when chosen");
-	s.check(!isLanCarrier({}) && !isLanCarrier({ carrier: "drive" }) && !isLanCarrier({ carrier: "p2p" as never }) && !isLanCarrier({ carrier: "cloudflare" }) && !isLanCarrier({ carrier: "bogus" as never }), "lan never means anything else");
-	s.check(!isDriveCarrier({ carrier: "lan" }), "and Drive never means lan");
-	s.check(currentCarrier({ carrier: "p2p" as never }) === "cloudflare" && !isCarrierKind("p2p"), "a vault saved with the retired P2P test carrier falls back to Cloudflare");
+	s.check(!isLanCarrier({}) && !isLanCarrier({ carrier: "drive" }) && !isLanCarrier({ carrier: "p2p" }) && !isLanCarrier({ carrier: "cloudflare" }) && !isLanCarrier({ carrier: "bogus" as never }), "lan never means anything else");
+	s.check(!isDriveCarrier({ carrier: "lan" }) && !isP2pCarrier({ carrier: "lan" }), "and the other carriers never mean lan");
 	s.check(isCarrierKind("lan") && !isCarrierKind("lan2"), "validated");
 	s.check(currentCarrier({}) === "cloudflare", "nothing set is still Cloudflare");
 }
@@ -188,11 +187,11 @@ s.section("7: the settings screen — nothing changes without the carrier");
 	const noLan = makeFixture({ host: "https://sync.example", token: "tok", vaultId: "vid" }, false);
 	const opts = flatten(noLan.tab.getSettingDefinitions()).find((d) => d.control?.key === "carrier");
 	const keys = opts?.control && "options" in opts.control ? Object.keys(opts.control.options as Record<string, string>) : [];
-	s.check(keys.join() === "cloudflare,drive", `a host without the carrier offers the same two options (${keys.join()})`);
+	s.check(keys.join() === "cloudflare,drive,p2p", `a host without the carrier offers the same three options (${keys.join()})`);
 	const withLan = makeFixture({ host: "https://sync.example", token: "tok", vaultId: "vid" });
 	const o2 = flatten(withLan.tab.getSettingDefinitions()).find((d) => d.control?.key === "carrier");
 	const k2 = o2?.control && "options" in o2.control ? Object.keys(o2.control.options as Record<string, string>) : [];
-	s.check(k2.join() === "cloudflare,drive,lan", `the desktop app also offers Local network (${k2.join()})`);
+	s.check(k2.join() === "cloudflare,drive,p2p,lan", `the desktop app also offers Local network (${k2.join()})`);
 	s.check(headings(withLan.tab.getSettingDefinitions()).join() === "Sync status,Updates,This device,What syncs,Attachments,Collaboration", "with another carrier chosen the Cloudflare screen has exactly the same groups");
 	const before = JSON.stringify(names(noLan.tab.getSettingDefinitions()));
 	const after = JSON.stringify(names(withLan.tab.getSettingDefinitions()));

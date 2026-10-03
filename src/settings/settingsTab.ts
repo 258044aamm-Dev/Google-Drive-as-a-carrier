@@ -16,12 +16,15 @@ import {
 	isDriveSignedIn,
 	isHostedSignIn,
 	isLanCarrier,
+	isP2pCarrier,
 	type CarrierKind,
 } from "../drive-carrier/carrierSettings";
 import { lanLayout, type LanSettingsHost } from "../lan-carrier/lanSettingsRows";
 import { applyLanSetupCode, readLanSetting, writeLanSetting, type LanSettingKey } from "../lan-carrier/lanSettings";
 import { checkHostedToken, normalizeHostedToken } from "../drive-carrier/wizard/validate";
 import { isDetailedStatusShown, isStatusIconShown } from "../status/simpleStatus";
+import type { P2pSpikeHost } from "../p2p/spikeHost";
+import { P2pHomeSettingPage } from "./P2pHomeSettingPage";
 import { CUSTOM_LIMITS, currentSyncPace, isSyncPaceProfile, resolveCloudflareBatchMs, resolveDrivePace, type SyncPaceCustom, type SyncPaceProfile } from "./syncPace";
 import { PairDeviceModal } from "./PairDeviceModal";
 import { RecoveryKitModal } from "./RecoveryKitModal";
@@ -64,6 +67,9 @@ type DeclarativeSettingKey =
 	| "driveClientSecret"
 	| "driveHostedToken"
 	| "driveEncryptionPassphrase"
+	| "p2pTurnUrl"
+	| "p2pTurnUsername"
+	| "p2pTurnCredential"
 	| LanSettingKey;
 
 interface SettingsUpdateState {
@@ -103,15 +109,41 @@ export interface VaultSyncSettingsHost {
 	applySyncPace?(): void;
 	/** Redraws the status bar and adds or removes the header icons after a status display setting changed. */
 	applyStatusDisplay?(): void;
+	/**
+	 * Phase 0 P2P spike — one-line peer summary for the "This vault" line on
+	 * the P2P home page. Absent on hosts that do not run the spike.
+	 */
+	getP2pPeerSummary?(): string;
+	/** Phase 0 P2P spike — opens the spike panel (pairing code + QR / join). */
+	openP2pPanel?(): void;
+	/** Phase 0 P2P spike — runs the network check (candidate types + link state). */
+	runP2pNetworkCheck?(): void;
+	/** Phase 0 P2P spike — push the just-saved TURN fields to the running spike host. */
+	applyP2pTurn?(): void;
+	/**
+	 * The running spike host, for the P2P settings home page. Null while the
+	 * host is not initialized (e.g. the P2P carrier is not selected).
+	 */
+	getP2pSpikeHost?(): P2pSpikeHost | null;
+	/**
+	 * A pairing code handed over by the pairing deep link — read and cleared
+	 * exactly once, by the P2P home page (which pre-fills the join field).
+	 */
+	takePendingP2pPairCode?(): string | null;
 	/** Local network carrier (desktop only). Absent on hosts that do not offer it. */
 	lan?: LanSettingsHost;
 }
 
 const CLOUDFLARE_DEPLOY_URL = "https://deploy.workers.cloudflare.com/?url=https://github.com/kavinsood/yaos/tree/main/server";
 const ATTACHMENT_SETUP_VIDEO_URL = "https://youtu.be/Z7xCMEYfdFM";
+/** Shown on the carrier row while the P2P carrier is selected (Phase 0 is a link test). */
+export const P2P_CARRIER_NOTE =
+	"P2P is a connection test for now: your notes are NOT synced over P2P yet. Switch back to Cloudflare or Google Drive to keep syncing. Changing the carrier needs a reload of the plugin.";
+
 const CARRIER_OPTIONS: Record<CarrierKind, string> = {
 	cloudflare: "Cloudflare Worker (default)",
 	drive: "Google Drive (experimental)",
+	p2p: "P2P (experimental)",
 	lan: "Local network (experimental, desktop only)",
 };
 const SYNC_PACE_OPTIONS: Record<SyncPaceProfile, string> = {
@@ -472,6 +504,23 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 	 * With the Drive carrier the server-only screens are replaced by the Drive one.
 	 */
 	private applyCarrierChoice(definitions: SettingDefinitionItem[]): SettingDefinitionItem[] {
+		if (isP2pCarrier(this.host.settings)) {
+			// P2P carrier mode (Phase 0 spike, plan §8): the carrier row on
+			// top (switching back is one tap away — a reload is needed, like
+			// every carrier change), then the designed P2P home page (status
+			// card + pairing flow + peer line — the pairing path, no overlay),
+			// then the navigable Advanced sub-page with the power controls.
+			// The Drive/CF-specific pages do not apply here: the P2P link
+			// carries no notes yet.
+			return [
+				{
+					...this.carrierRow(),
+					desc: P2P_CARRIER_NOTE,
+				},
+				this.p2pHomePage(),
+				this.p2pAdvancedPage(),
+			];
+		}
 		if (isLanCarrier(this.host.settings) && this.host.lan) {
 			// Local network carrier: its own rows come first, the Cloudflare-only rows are removed.
 			return this.withStatusRows(lanLayout(definitions, {
@@ -499,6 +548,73 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 		return Object.fromEntries(Object.entries(CARRIER_OPTIONS).filter(([kind]) => kind !== "lan"));
 	}
 
+	/**
+	 * Phase 0 P2P spike — the P2P HOME page (Milestone B2). Shown ONLY when
+	 * the P2P carrier is selected (for every other carrier the whole P2P
+	 * surface is dormant). A custom, designed sub-page (status card +
+	 * pairing flow + peer line) instead of the .14 flat row group — the
+	 * pairing flow lives here, in the settings UI, not in an overlay.
+	 * Power controls live in the Advanced sub-page.
+	 */
+	private p2pHomePage(): SettingDefinitionPage {
+		return {
+			type: "page",
+			name: "P2P (experimental)",
+			desc: "Link devices directly — pair with a code. Connection test only.",
+			page: () => new P2pHomeSettingPage(this.host),
+		};
+	}
+
+	/**
+	 * Phase 0 P2P spike — the ADVANCED sub-page: optional relays, the
+	 * (Phase 1) backbone, diagnostics, and the dev toggle. Shown ONLY with
+	 * the P2P carrier selected, as a navigable entry under the beginner
+	 * section — same page pattern the Cloudflare layout uses.
+	 */
+	private p2pAdvancedPage(): SettingDefinitionPage {
+		return {
+			type: "page",
+			name: "Advanced",
+			desc: "Optional relay (TURN), backbone, diagnostics, and development tools.",
+			items: [
+				{
+					name: "Backbone (optional)",
+					desc: "None (default) — direct link only. Optional backbone options arrive in Phase 1 and are disabled here.",
+				},
+				{
+					name: "TURN URL (advanced)",
+					desc: "Optional relay for restricted networks, e.g. turn:your-turn-host:3478. Leave empty for STUN only. Applies on the next pairing.",
+					control: { type: "text", key: "p2pTurnUrl", placeholder: "turn:host:3478" },
+				},
+				{
+					name: "TURN username (optional)",
+					control: { type: "text", key: "p2pTurnUsername" },
+				},
+				{
+					name: "TURN credential (optional)",
+					control: { type: "text", key: "p2pTurnCredential" },
+				},
+				{
+					// A visible real button (the declarative action row looks
+					// like plain text at rest — users couldn't tell it was
+					// clickable, Milestone B2 complaint #1).
+					name: "P2P network check",
+					desc: "Reports the last gathered candidate types and the current link state.",
+					render: (setting) => {
+						setting.settingEl.createEl("button", { text: "Run check", cls: "yaos-p2p-btn" }).addEventListener("click", () => {
+							this.host.runP2pNetworkCheck?.();
+						});
+					},
+				},
+				{
+					name: "Debug mode",
+					desc: "Record detailed sync events for an exportable diagnostics trace. Leave off for everyday use.",
+					control: { type: "toggle", key: "debug" },
+				},
+			],
+		};
+	}
+
 	/** Two switches for the status display, in Advanced for every carrier, just above the "Reload required" note. */
 	private withStatusRows(definitions: SettingDefinitionItem[]): SettingDefinitionItem[] {
 		const rows: SettingDefinition[] = [
@@ -523,11 +639,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 	}
 
 	private applyCarrierChoiceRows(definitions: SettingDefinitionItem[]): SettingDefinitionItem[] {
-		const carrierRow: SettingDefinition = {
-			name: "Sync carrier (experimental)",
-			desc: "Where your notes are exchanged between devices. Changing it needs a reload of the plugin. Google Drive needs no server, but changes arrive in a few seconds instead of instantly.",
-			control: { type: "dropdown", key: "carrier", options: this.carrierOptions() },
-		};
+		const carrierRow = this.carrierRow();
 		const drive = isDriveCarrier(this.host.settings);
 		const isSetupGroup = (item: SettingDefinitionItem): item is SettingDefinitionGroup =>
 			isGroupDefinition(item) && item.heading === "Setup";
@@ -816,6 +928,9 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			case "driveClientSecret": return this.host.settings.driveClientSecret ?? "";
 			case "driveHostedToken": return this.host.settings.driveRefreshToken ?? "";
 			case "driveEncryptionPassphrase": return this.host.settings.driveEncryptionPassphrase ?? "";
+			case "p2pTurnUrl": return this.host.settings.p2pTurnUrl;
+			case "p2pTurnUsername": return this.host.settings.p2pTurnUsername;
+			case "p2pTurnCredential": return this.host.settings.p2pTurnCredential;
 			case "lanJoinCode":
 			case "lanManualPeers":
 			case "lanPort":
@@ -909,6 +1024,18 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 					settings.debug = expectBooleanValue(key, value);
 				}, "settings:debug");
 				return;
+			case "p2pTurnUrl":
+			case "p2pTurnUsername":
+			case "p2pTurnCredential": {
+				await this.host.updateSettings((settings) => {
+					settings[key as "p2pTurnUrl" | "p2pTurnUsername" | "p2pTurnCredential"] =
+						expectStringValue(key, value).trim();
+				}, "settings:p2p-turn");
+				// Push the relay settings to the running spike (no-op on hosts
+				// without one); takes effect on the next pairing.
+				this.host.applyP2pTurn?.();
+				return;
+			}
 			case "lanJoinCode": {
 				const code = expectStringValue(key, value);
 				if (code.trim() === "") return;

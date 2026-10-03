@@ -8,14 +8,6 @@ Up to `2.1.1-drive.10` the version number (like `2.1.1-drive.3`) existed only in
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
-## Unreleased - P2P moved to its own branch
-
-### Changed
-- **All P2P code now lives only on the `p2p-implementation` branch.** `google-drive-carrier` carries the Google Drive carrier and the Local network carrier, and nothing else. Removed from this branch: `src/p2p/`, the P2P settings pages and pairing flow (`src/settings/P2p*.ts`), the P2P section of `settingsTab.ts`, `settingsStore.ts`, `main.ts` and `styles.css`, the P2P tests and `fakeRtc` mock, `qa/p2p-spike/`, `docs/p2p*`, and the `guard:p2p-css-scope` script. `p2p-implementation` is this branch plus one commit that puts the P2P code back, so it can be merged later with a clean diff.
-- The carrier list is Cloudflare, Google Drive and (desktop app) Local network. A vault whose saved carrier is the retired `p2p` test carrier falls back to Cloudflare (nothing else in its settings is touched). P2P was a connection test only and never carried notes.
-- Releases `2.1.1-drive.11` to `2.1.1-drive.17` still contain the P2P test; their entries below stay as history.
-- Left as is: the `tsx` dev dependency that the P2P work added (kept so `package-lock.json` stays untouched).
-
 ## 2.1.1-drive.18 (manifest 2.1.18) - 2026-10-04 - test release: Local network carrier (desktop)
 
 ### Added
