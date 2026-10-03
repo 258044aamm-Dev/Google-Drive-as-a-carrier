@@ -99,11 +99,18 @@ import { randomId } from "./utils/randomId";
 import {
 	isDriveCarrier,
 	isDriveSignedIn,
+	isLanCarrier,
 	isHostedSignIn,
 	isP2pCarrier,
 	newDriveDeviceId,
 } from "./drive-carrier/carrierSettings";
 import { createDriveCarrier, type DriveCarrier } from "./drive-carrier/driveCarrierRuntime";
+import { createLanCarrier, type LanCarrier } from "./lan-carrier/lanCarrierRuntime";
+import { AdapterFileStore } from "./lan-carrier/lanFileStore";
+import { isLanSupported } from "./lan-carrier/lanNode";
+import { ensureLanIdentity, lanSetupCodeOf } from "./lan-carrier/lanSettings";
+import type { LanSettingsHost } from "./lan-carrier/lanSettingsRows";
+import { generateLanKey } from "./lan-carrier/lanAuth";
 import { DriveSignInModal } from "./drive-carrier/DriveSignInModal";
 import { DriveSetupWizard } from "./drive-carrier/wizard/DriveSetupWizard";
 import { BUNDLED_GOOGLE_CLIENT } from "./drive-carrier/wizard/bundledClient";
@@ -159,6 +166,8 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	private diskMirror: DiskMirror | null = null;
 	private attachmentOrchestrator: AttachmentOrchestrator | null = null;
 	private driveCarrier: DriveCarrier | null = null;
+	private lanCarrier: LanCarrier | null = null;
+	private lanHost: LanSettingsHost | null = null;
 	private editorWorkspace: EditorWorkspaceOrchestrator | null = null;
 	private snapshotService: SnapshotService | null = null;
 	private reconciliationController!: ReconciliationController;
@@ -455,6 +464,9 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			getSnapshotBackend: () => this.getDriveCarrier()?.snapshotBackend(
 				this.settings.vaultId,
 				() => this.vaultSync?.ydoc ?? null,
+			) ?? this.getLanCarrier()?.snapshotBackend(
+				this.settings.vaultId,
+				() => this.vaultSync?.ydoc ?? null,
 			) ?? null,
 			log: (message) => this.log(message),
 			onEditorsNeedReconcile: (reason) => this.editorWorkspace?.onReconciled(reason),
@@ -642,7 +654,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			getVaultSync: () => this.vaultSync,
 			getRuntimeConfig: () => this.getRuntimeConfig(),
 			getServerSupportsAttachments: () => this.serverSupportsAttachments,
-			getBlobStore: () => this.getDriveCarrier()?.blobStore(this.settings.vaultId) ?? null,
+			getBlobStore: () => this.getDriveCarrier()?.blobStore(this.settings.vaultId) ?? this.getLanCarrier()?.blobStore(this.settings.vaultId) ?? null,
 			getTraceHttpContext: () => this.getTraceHttpContext(),
 			getBlobHashCache: () => this.blobHashCache,
 			getExcludePatterns: () => this.excludePatterns,
@@ -722,6 +734,26 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				console.error("[yaos] Startup sync continuation failed:", error);
 			});
 			finishOnload("drive-sync-started");
+			return;
+		}
+
+		// Local network carrier (opt-in, desktop only). Like the Drive block above, everything
+		// below it is the Cloudflare path and is not reached when this carrier is chosen.
+		if (isLanCarrier(this.settings)) {
+			if (!this.lanAvailable()) {
+				this.log("Local network carrier selected on a device that cannot run it — sync disabled");
+				new Notice("YAOS: The Local network carrier needs the desktop app. Choose another sync carrier in the YAOS settings on this device.", 12000);
+				finishOnload("lan-unsupported");
+				return;
+			}
+			await this.prepareLanIdentity();
+			this.applyRuntimeSettings("onload-pre-sync");
+			void this.initSync().then(() => {
+				if (!this.teardownLifecycle.isClosing) this.mountQaDebugApi();
+			}).catch((error: unknown) => {
+				console.error("[yaos] Startup sync continuation failed:", error);
+			});
+			finishOnload("lan-sync-started");
 			return;
 		}
 
@@ -817,9 +849,9 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				onFlightEvent: (event) => this.recordFlightEvent(event as FlightEventInput),
 				onFlightPathEvent: (event) => this.recordFlightPathEvent(event),
 				onServerReceiptStatusChanged: () => this.queueReceiptStatusRefresh(),
-				transportFactory: this.getDriveCarrier()?.transportFactory,
+				transportFactory: this.getDriveCarrier()?.transportFactory ?? this.getLanCarrier()?.transportFactory,
 				getOutgoingBatchMs: () => resolveCloudflareBatchMs(this.settings),
-				getSocketTicket: isDriveCarrier(this.settings) ? undefined : (() => {
+				getSocketTicket: isDriveCarrier(this.settings) || isLanCarrier(this.settings) ? undefined : (() => {
 				// Each VaultSync instance gets its own ticket cache.  The cache
 				// is discarded when VaultSync is torn down and recreated.
 				const ticketCache = createSocketTicketCache();
@@ -1071,6 +1103,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 					resetLocalCache: () => this.resetLocalCache(),
 					nuclearReset: () => this.nuclearReset(),
 					isDriveCarrier: () => isDriveCarrier(this.settings),
+					isLanCarrier: () => isLanCarrier(this.settings),
 				});
 				// Debug-runtime commands are registered separately by the debug runtime.
 				this.lab?.registerCommands(this);
@@ -1685,7 +1718,10 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		new ConfirmModal(
 			this.app,
 			"Reset local cache",
-			isDriveCarrier(this.settings)
+			isLanCarrier(this.settings)
+				? "This will clear the local IndexedDB cache and re-sync from your other devices on the local network. " +
+					"Your disk files are not affected. Continue?"
+				: isDriveCarrier(this.settings)
 				? "This will clear the local IndexedDB cache and re-sync from Google Drive. " +
 					"Your disk files and your notes on Drive are not affected. Continue?"
 				: "This will clear the local IndexedDB cache and re-sync from the server. " +
@@ -1726,7 +1762,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		new ConfirmModal(
 			this.app,
 			"Nuclear reset",
-			`This will wipe all CRDT state (${pathCount} files) on both this device and ${isDriveCarrier(this.settings) ? "Google Drive" : "the server"}, ` +
+			`This will wipe all CRDT state (${pathCount} files) on both this device and ${isLanCarrier(this.settings) ? "your linked devices" : isDriveCarrier(this.settings) ? "Google Drive" : "the server"}, ` +
 			`clear the local cache, then re-seed everything from your current disk files. ` +
 			`Other connected devices will also see the reset. This cannot be undone. Continue?`,
 			async () => {
@@ -2004,7 +2040,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			menu.addItem((item) => item.setTitle(status.detail).setDisabled(true));
 			menu.addSeparator();
 		}
-		const retry = isDriveCarrier(this.settings) ? "Retry syncing with Google Drive" : "Retry syncing now";
+		const retry = isDriveCarrier(this.settings) ? "Retry syncing with Google Drive" : isLanCarrier(this.settings) ? "Look for my other devices again" : "Retry syncing now";
 		menu.addItem((item) => item
 			.setTitle(retry)
 			.setIcon("refresh-cw")
@@ -2461,6 +2497,80 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		return this.capabilityUpdateService?.authMode ?? "unknown";
 	}
 
+	/** True where the Local network carrier can run: the desktop app, with Node's network modules. */
+	private lanAvailable(): boolean {
+		return Platform.isDesktopApp && isLanSupported();
+	}
+
+	/** Makes this device's id, pairing key and certificate the first time the carrier is used. */
+	private async prepareLanIdentity(): Promise<void> {
+		// Looked at on a copy first: nothing is saved when the identity already exists.
+		if (!ensureLanIdentity({ ...this.settings }, this.settings.deviceName, randomId)) return;
+		await this.updateSettings((settings) => {
+			ensureLanIdentity(settings, settings.deviceName, randomId);
+		}, "settings:lan-identity");
+		this.log("Local network carrier: created this device's identity");
+	}
+
+	/** The Local network carrier, or null unless the user chose it (and the device can run it). Created once. */
+	private getLanCarrier(): LanCarrier | null {
+		if (!isLanCarrier(this.settings) || !this.lanAvailable()) return null;
+		this.lanCarrier ??= createLanCarrier({
+			getSettings: () => this.settings,
+			updateSettings: (mutator, reason) => this.updateSettings(mutator, reason),
+			filesFor: (folder) => new AdapterFileStore(
+				this.app.vault.adapter,
+				`${this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`}/lan/${folder}`,
+			),
+			log: (message) => this.log(message),
+			onProblem: (message) => {
+				new Notice(`YAOS: Local network sync cannot start. ${message}`, 15000);
+			},
+		});
+		return this.lanCarrier;
+	}
+
+	/** What the settings screen uses for the Local network carrier. Undefined where the carrier cannot run. */
+	get lan(): LanSettingsHost | undefined {
+		if (!this.lanAvailable()) return undefined;
+		this.lanHost ??= {
+			available: true,
+			prepare: () => this.prepareLanIdentity(),
+			status: () => this.getLanCarrier()?.status() ?? {
+				running: false, listening: false, port: null, error: null, discoveryRunning: false,
+				fingerprint: "", linked: [], seen: [], refusals: [],
+			},
+			copySetupCode: () => {
+				const code = lanSetupCodeOf(this.settings);
+				if (!code) {
+					new Notice("There is no pairing key yet. Reload the plugin once so it can be created.", 8000);
+					return;
+				}
+				void navigator.clipboard.writeText(code).then(
+					() => { new Notice("Setup code copied. Paste it on your other computer.", 6000); },
+					() => { new Notice("Could not copy. Select the code in the YAOS settings and copy it by hand.", 8000); },
+				);
+			},
+			regenerateKey: async () => {
+				await this.updateSettings((settings) => {
+					settings.lanKey = generateLanKey();
+					delete settings.lanPins;
+				}, "settings:lan-new-key");
+				new Notice("New pairing key created. Reload the plugin, then join again on your other devices with the new setup code.", 12000);
+			},
+			forgetDevice: async (deviceId) => {
+				await this.updateSettings((settings) => {
+					if (!settings.lanPins) return;
+					const kept = { ...settings.lanPins };
+					delete kept[deviceId];
+					settings.lanPins = kept;
+				}, "settings:lan-forget-device");
+			},
+			applyManualPeers: () => this.lanCarrier?.applyManualPeers(),
+		};
+		return this.lanHost;
+	}
+
 	/** The Google Drive carrier, or null unless the user chose it. Created once, so every part shares one sign-in. */
 	private getDriveCarrier(): DriveCarrier | null {
 		if (!isDriveCarrier(this.settings)) return null;
@@ -2487,12 +2597,15 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	get serverSupportsAttachments(): boolean {
 		// Drive stores attachments itself, so this is true there.
 		if (isDriveCarrier(this.settings)) return true;
+		// The Local network carrier keeps attachments on the devices themselves.
+		if (isLanCarrier(this.settings)) return true;
 		return this.capabilityUpdateService?.supportsAttachments ?? true;
 	}
 
 	get serverSupportsSnapshots(): boolean {
 		// Likewise for restore points.
 		if (isDriveCarrier(this.settings)) return true;
+		if (isLanCarrier(this.settings)) return true;
 		return this.capabilityUpdateService?.supportsSnapshots ?? true;
 	}
 

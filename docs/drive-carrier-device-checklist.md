@@ -163,3 +163,19 @@ What the trace shows for a note `X`:
 - [ ] **Sync speed, Google Drive.** Settings > YAOS > "Sync speed (Google Drive)": the default is Normal and the line below shows 3 s / 30 s idle / 120 s hidden. Pick Gentle: edits made on device 1 now show on device 2 after roughly 10 to 20 s instead of 3 to 6 s, and the setting line changes at once without a restart. Pick Custom: the number fields appear; a value below the default (for example 1 second) is refused. Pick Normal: speed returns to 3 to 6 s.
 - [ ] **Sync speed, Cloudflare.** Settings > YAOS > Advanced > "Sync speed (Cloudflare)": Normal is the default. Pick Minimal: type on device 1, other devices see the text about 5 s later, in one piece. Hide the window or close Obsidian right after typing: the text still arrives. Pick Normal: instant again.
 - [ ] **Private sign-in.** Settings > YAOS > "Set up Google Drive" > the sign-in choice offers "Easy sign-in" and "Private sign-in (your own Google client)". There is no "coming soon" button. Private sign-in leads to the screens asking for your own client ID and secret.
+
+## 18. Local network carrier (two desktops on the same Wi-Fi, scratch vault)
+
+Use two desktop computers (Windows, macOS or Linux) on one network. Not for phones.
+
+- [ ] **Off by default.** On a device that never chose it, nothing listens on the network and Settings > YAOS > Sync carrier works as before. On a phone the option is not offered.
+- [ ] **Choose it.** Settings > YAOS > Sync carrier > Local network (desktop only). Allow the firewall prompt for private networks. The status line says "Alone for now" and "Looking for your other devices".
+- [ ] **Join.** On device 1 press Copy setup code; on device 2 choose the same carrier and paste it under "Join with a setup code". Within about 10 s each status line says "Linked with <other device>. Up to date."
+- [ ] **Sync.** Create and edit a note on each device (also at the same time in the same note): both end up identical. Rename and delete follow. A picture added on one shows on the other.
+- [ ] **Offline.** Close Obsidian on device 2, edit on device 1, reopen device 2: the edit arrives within a minute.
+- [ ] **Wrong key.** On a third device (or after "Create a new pairing key" on device 2 only) the link is refused and the "Refused" line says why; no notes move.
+- [ ] **Forget.** Press Forget for a device in Local network (advanced): it is linked again at the next announcement (its certificate is pinned anew).
+- [ ] **Typed address.** Switch "Find devices automatically" off, type the other device's address: it links. Wrong address: no crash.
+- [ ] **Port in use.** Set the TCP port to one another program uses: a plain message says so, and nothing else breaks.
+- [ ] **Switch away.** Choose Cloudflare or Google Drive again: Local network stops listening (no more link in the status), your notes are untouched.
+- [ ] **Restore point.** "Take snapshot now" makes a restore point on this device; the other device does not list it.

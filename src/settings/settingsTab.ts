@@ -15,9 +15,12 @@ import {
 	isDriveCarrier,
 	isDriveSignedIn,
 	isHostedSignIn,
+	isLanCarrier,
 	isP2pCarrier,
 	type CarrierKind,
 } from "../drive-carrier/carrierSettings";
+import { lanLayout, type LanSettingsHost } from "../lan-carrier/lanSettingsRows";
+import { applyLanSetupCode, readLanSetting, writeLanSetting, type LanSettingKey } from "../lan-carrier/lanSettings";
 import { checkHostedToken, normalizeHostedToken } from "../drive-carrier/wizard/validate";
 import { isDetailedStatusShown, isStatusIconShown } from "../status/simpleStatus";
 import type { P2pSpikeHost } from "../p2p/spikeHost";
@@ -66,7 +69,8 @@ type DeclarativeSettingKey =
 	| "driveEncryptionPassphrase"
 	| "p2pTurnUrl"
 	| "p2pTurnUsername"
-	| "p2pTurnCredential";
+	| "p2pTurnCredential"
+	| LanSettingKey;
 
 interface SettingsUpdateState {
 	serverVersion: string | null;
@@ -126,6 +130,8 @@ export interface VaultSyncSettingsHost {
 	 * exactly once, by the P2P home page (which pre-fills the join field).
 	 */
 	takePendingP2pPairCode?(): string | null;
+	/** Local network carrier (desktop only). Absent on hosts that do not offer it. */
+	lan?: LanSettingsHost;
 }
 
 const CLOUDFLARE_DEPLOY_URL = "https://deploy.workers.cloudflare.com/?url=https://github.com/kavinsood/yaos/tree/main/server";
@@ -138,6 +144,7 @@ const CARRIER_OPTIONS: Record<CarrierKind, string> = {
 	cloudflare: "Cloudflare Worker (default)",
 	drive: "Google Drive (experimental)",
 	p2p: "P2P (experimental)",
+	lan: "Local network (experimental, desktop only)",
 };
 const SYNC_PACE_OPTIONS: Record<SyncPaceProfile, string> = {
 	normal: "Normal (default)",
@@ -514,6 +521,15 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 				this.p2pAdvancedPage(),
 			];
 		}
+		if (isLanCarrier(this.host.settings) && this.host.lan) {
+			// Local network carrier: its own rows come first, the Cloudflare-only rows are removed.
+			return this.withStatusRows(lanLayout(definitions, {
+				settings: this.host.settings,
+				lan: this.host.lan,
+				carrierRow: this.carrierRow(),
+				update: () => this.update(),
+			}));
+		}
 		return this.withStatusRows(this.applyCarrierChoiceRows(definitions));
 	}
 
@@ -522,8 +538,14 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 		return {
 			name: "Sync carrier (experimental)",
 			desc: "Where your notes are exchanged between devices. Changing it needs a reload of the plugin. Google Drive needs no server, but changes arrive in a few seconds instead of instantly.",
-			control: { type: "dropdown", key: "carrier", options: CARRIER_OPTIONS },
+			control: { type: "dropdown", key: "carrier", options: this.carrierOptions() },
 		};
+	}
+
+	/** The Local network option is only offered where it can run (the desktop app), or when it is already chosen. */
+	private carrierOptions(): Record<string, string> {
+		if (this.host.lan?.available === true || isLanCarrier(this.host.settings)) return CARRIER_OPTIONS;
+		return Object.fromEntries(Object.entries(CARRIER_OPTIONS).filter(([kind]) => kind !== "lan"));
 	}
 
 	/**
@@ -909,6 +931,11 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			case "p2pTurnUrl": return this.host.settings.p2pTurnUrl;
 			case "p2pTurnUsername": return this.host.settings.p2pTurnUsername;
 			case "p2pTurnCredential": return this.host.settings.p2pTurnCredential;
+			case "lanJoinCode":
+			case "lanManualPeers":
+			case "lanPort":
+			case "lanDiscoveryPort":
+			case "lanDiscovery": return readLanSetting(this.host.settings, key as LanSettingKey);
 			default: throw new Error(`Unknown Yaos setting: ${key}`);
 		}
 	}
@@ -1009,10 +1036,34 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 				this.host.applyP2pTurn?.();
 				return;
 			}
+			case "lanJoinCode": {
+				const code = expectStringValue(key, value);
+				if (code.trim() === "") return;
+				// Checked on a copy first, so a bad code never reaches the saved settings.
+				const problem = applyLanSetupCode({ ...this.host.settings }, code);
+				if (problem) throw new RangeError(problem);
+				await this.host.updateSettings((settings) => { applyLanSetupCode(settings, code); }, "settings:lan-join");
+				new Notice("Setup code accepted. Reload the plugin (or restart Obsidian) to start syncing with your other devices.", 10000);
+				this.update();
+				return;
+			}
+			case "lanManualPeers":
+			case "lanPort":
+			case "lanDiscoveryPort":
+			case "lanDiscovery": {
+				const lanKey = key as Exclude<LanSettingKey, "lanJoinCode">;
+				// Checked before saving, so a rejected value never reaches the saved settings.
+				writeLanSetting({ ...this.host.settings }, lanKey, value);
+				await this.host.updateSettings((settings) => { writeLanSetting(settings, lanKey, value); }, "settings:lan");
+				if (key === "lanManualPeers") this.host.lan?.applyManualPeers();
+				return;
+			}
 			case "carrier": {
 				const nextValue = expectStringValue(key, value);
 				if (!isCarrierKind(nextValue)) throw new RangeError(`Unsupported sync carrier: ${nextValue}`);
 				await this.host.updateSettings((settings) => { settings.carrier = nextValue; }, "settings:carrier");
+				// Choosing Local network: make this device's key and certificate now, so the setup code can be copied before the reload.
+				if (nextValue === "lan") await this.host.lan?.prepare();
 				new Notice("Reload the plugin (or restart Obsidian) to switch the sync carrier.", 8000);
 				this.update();
 				// Choosing Drive for the first time: walk the user through the rest.

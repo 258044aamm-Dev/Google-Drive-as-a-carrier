@@ -13,10 +13,26 @@ const HEX_64 = /^[0-9a-f]{64}$/;
  * checked, whoever sent it.
  */
 export class LanBlobStore implements BlobStoreClient, LanBlobHost {
+	private readonly source: () => LanTransport | null;
+
+	/**
+	 * `source` is the transport, or a function that returns the current one (the transport is
+	 * replaced when sync restarts, the store lives on). Given a transport directly, the store
+	 * registers itself with it; with a function, call `attach()` for each new transport.
+	 */
 	constructor(
 		private readonly files: LanFileStore,
-		private readonly transport: LanTransport,
+		source: LanTransport | (() => LanTransport | null),
 	) {
+		if (typeof source === "function") {
+			this.source = source;
+		} else {
+			this.source = () => source;
+			source.setBlobHost(this);
+		}
+	}
+
+	attach(transport: LanTransport): void {
 		transport.setBlobHost(this);
 	}
 
@@ -26,8 +42,9 @@ export class LanBlobStore implements BlobStoreClient, LanBlobHost {
 		const wanted = hashes.filter((h) => HEX_64.test(h));
 		const have = new Set(await this.has(wanted));
 		const missing = wanted.filter((h) => !have.has(h));
-		if (missing.length > 0) {
-			for (const h of await this.transport.peersHave(missing)) have.add(h);
+		const transport = this.source();
+		if (missing.length > 0 && transport) {
+			for (const h of await transport.peersHave(missing)) have.add(h);
 		}
 		return wanted.filter((h) => have.has(h));
 	}
@@ -40,7 +57,7 @@ export class LanBlobStore implements BlobStoreClient, LanBlobHost {
 		}
 		await this.files.write(hash, bytes);
 		// Best effort: linked devices get it now; the others ask for it when they need it.
-		this.transport.pushBlob(hash, bytes);
+		this.source()?.pushBlob(hash, bytes);
 	}
 
 	async download(hash: string, timeoutMs: number): Promise<ArrayBuffer> {
@@ -48,10 +65,11 @@ export class LanBlobStore implements BlobStoreClient, LanBlobHost {
 		const local = await this.readVerified(hash);
 		if (local) return toBuffer(local);
 		const deadline = Date.now() + timeoutMs;
-		if (!(await this.transport.waitForPeer(Math.max(0, deadline - Date.now())))) {
+		const transport = this.source();
+		if (!transport || !(await transport.waitForPeer(Math.max(0, deadline - Date.now())))) {
 			throw new Error(`blob download failed: 404 no other device is reachable for attachment ${hash.slice(0, 12)}`);
 		}
-		const bytes = await this.transport.requestBlob(hash, Math.max(1000, deadline - Date.now()));
+		const bytes = await transport.requestBlob(hash, Math.max(1000, deadline - Date.now()));
 		if (!bytes) {
 			throw new Error(`blob download failed: 404 attachment ${hash.slice(0, 12)} is not on the linked devices`);
 		}

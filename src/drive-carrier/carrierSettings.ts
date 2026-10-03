@@ -5,7 +5,7 @@
  * settings: a user who never touches them has exactly the same saved data as
  * before, and `carrier` being absent means the Cloudflare Worker.
  */
-export type CarrierKind = "cloudflare" | "drive" | "p2p";
+export type CarrierKind = "cloudflare" | "drive" | "p2p" | "lan";
 
 export interface DriveCarrierSettings {
 	carrier?: CarrierKind;
@@ -32,6 +32,7 @@ export interface DriveCarrierSettings {
 export function currentCarrier(settings: DriveCarrierSettings): CarrierKind {
 	if (settings.carrier === "drive") return "drive";
 	if (settings.carrier === "p2p") return "p2p";
+	if (settings.carrier === "lan") return "lan";
 	return "cloudflare";
 }
 
@@ -43,8 +44,13 @@ export function isP2pCarrier(settings: DriveCarrierSettings): boolean {
 	return currentCarrier(settings) === "p2p";
 }
 
+/** The Local network carrier (see src/lan-carrier). */
+export function isLanCarrier(settings: DriveCarrierSettings): boolean {
+	return currentCarrier(settings) === "lan";
+}
+
 export function isCarrierKind(value: string): value is CarrierKind {
-	return value === "cloudflare" || value === "drive" || value === "p2p";
+	return value === "cloudflare" || value === "drive" || value === "p2p" || value === "lan";
 }
 
 /** True when this device uses the easy sign-in (see `driveAuthMode`). */

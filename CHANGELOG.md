@@ -8,6 +8,30 @@ Up to `2.1.1-drive.10` the version number (like `2.1.1-drive.3`) existed only in
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
+## Unreleased - Local network carrier (desktop)
+
+### Added
+- **A fourth carrier: Local network (desktop only).** Desktop devices on the same network sync directly with each other: no server, no account. Choose it in Settings > YAOS > Sync carrier on the desktop app; the option does not exist on a phone. Everything is in `src/lan-carrier/`. The mechanism follows the Local Sync plugin by liuboacean (MIT): every device is server and client, links are WebSocket over TLS with a self-signed certificate, a shared key signs devices in, devices find each other with a UDP announcement. See `docs/lan-carrier.md` and `NOTICE-local-sync.md`.
+- Settings screen for it: status line, **Copy setup code**, **Join with a setup code** (`YAOS-LAN1:<vault id>:<key>`), **Create a new pairing key**, the devices on the network, and a "Local network (advanced)" page (find devices automatically, typed-in addresses, TCP and UDP ports, certificate fingerprint, Forget per device, refused sign-ins).
+- Command palette: with this carrier, "Reconnect to sync server" reads "Look for my other devices again" and the reset-cache command says "re-sync from linked devices".
+- Attachments are fetched from linked devices by hash and verified; restore points are kept on the device.
+- Real-device checklist section 18.
+
+### Chosen differences from Local Sync (approved)
+- A random pairing key is made at setup and a weak or missing key stops the carrier (the original falls back to `default-key`). A device whose certificate is not pinned is not accepted silently, sign-in is mutual and bound to the certificate, and there is no plain WebSocket fallback. Default ports 8872/8873 (configurable) so both plugins can coexist.
+- Own WebSocket codec instead of the `ws` library (it cannot be bundled usefully here); `ws` is only a test peer.
+
+### Existing files changed (all additive; Cloudflare, Drive and P2P paths are not edited)
+- `src/drive-carrier/carrierSettings.ts`: `"lan"` joins the carrier names and `isLanCarrier` is added.
+- `src/settings/settingsStore.ts`: the settings type also lists the optional Local network fields (none are in the defaults).
+- `src/settings/settingsTab.ts`: one more carrier option (offered only when the host says the carrier is available, or it is already chosen), the Local network layout when chosen, and its control values.
+- `src/main.ts`: the Local network start-up branch and the carrier fallbacks for transport, attachments and restore points; wording for this carrier in three messages.
+- `src/commands.ts`: optional `isLanCarrier` and three command names for this carrier.
+
+### Tests
+- New: `lan-hub`, `lan-socket`, `lan-auth`, `lan-transport`, `lan-stores`, `lan-settings`, `lan-runtime` (all on loopback with real sockets, certificates and UDP) with `tests/mocks/lanRig.ts`. The existing `drive-carrier-settings` suite passes unchanged: with no Local network host it still shows three carrier options and the same layouts.
+- `lan-settings` found and fixed one bug: an address typed without a port (`192.168.1.20`) was rejected although the screen says it is fine.
+
 ## 2.1.1-drive.17 (manifest 2.1.17) - 2026-10-03
 
 ### Fixed (P2P connection test: pairing could never connect)

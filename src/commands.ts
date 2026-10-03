@@ -16,6 +16,7 @@ export interface CommandsRuntimeHost {
 	nuclearReset(): void;
 	/** True when the Google Drive carrier is chosen; only changes command names. Absent means Cloudflare. */
 	isDriveCarrier?(): boolean;
+	isLanCarrier?(): boolean;
 }
 
 /**
@@ -28,12 +29,20 @@ const DRIVE_COMMAND_NAMES: Readonly<Record<string, string>> = {
 	"reset-cache": "Reset local cache (re-sync from Google Drive)",
 };
 
+const LAN_COMMAND_NAMES: Readonly<Record<string, string>> = {
+	reconnect: "Look for my other devices again",
+	"clear-local-server-receipt-state": "Clear local save-confirmation state",
+	"reset-cache": "Reset local cache (re-sync from linked devices)",
+};
+
 export function registerCommands(
 	registrar: Pick<Plugin, "addCommand">,
 	host: CommandsRuntimeHost,
 ): void {
 	const driveMode = host.isDriveCarrier?.() === true;
-	const nameFor = (id: string, name: string): string => (driveMode ? DRIVE_COMMAND_NAMES[id] ?? name : name);
+	const lanMode = host.isLanCarrier?.() === true;
+	const nameFor = (id: string, name: string): string =>
+		driveMode ? DRIVE_COMMAND_NAMES[id] ?? name : lanMode ? LAN_COMMAND_NAMES[id] ?? name : name;
 	const add = (command: Parameters<Pick<Plugin, "addCommand">["addCommand"]>[0]): void => {
 		registrar.addCommand({ ...command, name: nameFor(command.id, command.name) });
 	};
