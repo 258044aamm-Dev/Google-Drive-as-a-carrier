@@ -1811,9 +1811,14 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 	//      disk:  file GONE on B
 	//      CRDT:  file present (A has it, unchanged)
 	//
-	//   Expected: The local delete wins (or is preserved).
-	//   The key invariant: YAOS must not silently resurrect the file B deleted.
-	//   tombstone/delete semantics for offline delete.
+	//   Expected: The local delete wins. YAOS must not silently resurrect
+	//   the file B deleted. Fixed by the offline-delete classification in
+	//   engine step 2 (commit 30d333d): startup reconcile tombstones a
+	//   missing file whose persisted baseline hash (disk index) equals the
+	//   CRDT text, and the tombstone propagates to A through the CRDT.
+	//   HARD FAIL since 2026-10-03 (was a soft KNOWN-ISSUE log, 146a221):
+	//   engine-level wiring is covered by tests/client/engine-offline-delete.ts
+	//   (real controller, real VaultSync); this is the real-device regression.
 	// ───────────────────────────────────────────────────────────────────
 	"issue-22-disable-reenable-local-delete-remote-unchanged": async (a, b, log) => {
 		const errors: string[] = [];
@@ -1886,52 +1891,52 @@ const TWO_DEVICE_SCENARIOS: Record<string, TwoDeviceScenarioFn> = {
 		await new Promise((r) => setTimeout(r, 5000));
 
 		// ── Assert: file is absent on B (delete was not resurrected) ─────
-		// KNOWN FAILURE: YAOS currently resurrects the file. When a file is
-		// absent from disk but present in CRDT, reconcileVault puts it in
-		// `createdOnDisk` and writes it back -- treating the absence as
-		// "file never seen on this device" rather than "user deleted it."
-		//
-		// The fix requires distinguishing:
-		//   diskIndex[path].contentHash present → file was known → offline delete
-		//   diskIndex[path] absent              → file is new   → create from CRDT
-		//
-		// This is a separate bug from #22-B (edit loss). Tracked for fix in
-		// the startup reconcile / vaultSync.reconcileVault offline-delete path.
-		// expectedFail until fixed.
-
-		const fileOnB = await b.evalRaw<boolean>(
-			`!!app.vault.getAbstractFileByPath(${JSON.stringify(scratch)})`,
-		);
-		if (fileOnB) {
-			// EXPECTED FAIL: file was resurrected. Log clearly but don't hard-fail --
-			// this is a known pre-existing limitation, not a regression from the
-			// #22-B baseline fix. The deletion while disabled is not tracked by
-			// reconcileVault's present/absent logic.
-			log(
-				"KNOWN ISSUE: file was resurrected on B after re-enable. " +
-				"Offline delete resurrection is a separate bug pending fix in " +
-				"vaultSync.reconcileVault (needs disk-index presence check). " +
-				"Not a hard failure for this run -- tracked separately.",
-			);
-		} else {
-			log("Assert: file absent on B (local delete respected) ✓");
+		// SYNC-01, fixed in engine step 2 (30d333d): a file whose remembered
+		// baseline hash (persisted disk index) equals the CRDT text is a local
+		// delete, not a "never seen here" create — startup reconcile tombstones
+		// it instead of writing it back. Hard fail: resurrection means the bug
+		// is back.
+		{
+			let fileOnB = true;
+			const deadline = Date.now() + 30_000;
+			while (Date.now() < deadline) {
+				fileOnB = await b.evalRaw<boolean>(
+					`!!app.vault.getAbstractFileByPath(${JSON.stringify(scratch)})`,
+				);
+				if (!fileOnB) break;
+				await new Promise((r) => setTimeout(r, 1000));
+			}
+			if (fileOnB) {
+				errors.push(
+					`B: file was resurrected after re-enable (SYNC-01 offline-delete regression): ${scratch}`,
+				);
+			} else {
+				log("Assert: file absent on B (local delete respected) ✓");
+			}
 		}
 
 		// ── Assert: delete propagated to A ───────────────────────────────
-
+		// The tombstone B records is a CRDT change; A's DiskMirror applies
+		// remote deletes live (the same mechanism the hard-asserted s15
+		// Phase 3 exercises for online deletes).
 		await a.evalRaw(`window.__YAOS_DEBUG__?.waitForIdle(15000)`).catch(() => {});
-		await new Promise((r) => setTimeout(r, 5000));
-
-		const fileOnA = await a.evalRaw<boolean>(
-			`!!app.vault.getAbstractFileByPath(${JSON.stringify(scratch)})`,
-		);
-		if (fileOnA) {
-			// Not a hard error -- the delete may still be propagating, or
-			// YAOS may tombstone rather than propagate an offline delete
-			// depending on reconcile strategy. Log as a warning.
-			log("Note: file still present on A after B's offline delete (may require explicit re-delete or tombstone propagation)");
-		} else {
-			log("Assert: delete propagated to A ✓");
+		{
+			let fileOnA = true;
+			const deadline = Date.now() + 30_000;
+			while (Date.now() < deadline) {
+				fileOnA = await a.evalRaw<boolean>(
+					`!!app.vault.getAbstractFileByPath(${JSON.stringify(scratch)})`,
+				);
+				if (!fileOnA) break;
+				await new Promise((r) => setTimeout(r, 1000));
+			}
+			if (fileOnA) {
+				errors.push(
+					`A: file still present after B's offline delete (delete did not propagate): ${scratch}`,
+				);
+			} else {
+				log("Assert: delete propagated to A ✓");
+			}
 		}
 
 		// Cleanup if file ended up somewhere

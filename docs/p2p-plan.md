@@ -1,6 +1,6 @@
-# P2P sync plan ("Anytype-like") — v3
+# P2P sync plan ("Anytype-like")
+Status: **proposal — plan only, no code yet** (2026-10-03).
 
-Status: **proposal — plan only, no code yet**.
 Scope: a **P2P carrier** for YAOS whose **default mode is pure
 device-to-device — no Google Drive, no Cloudflare, no server of any kind**.
 Optionally, the user can enable a **backbone** (Google Drive or Cloudflare
@@ -536,13 +536,70 @@ Settings > YAOS > Setup > Sync carrier
 Effort = engineer-weeks (agent implements; maintainer reviews + provides
 phones for the real-device legs).
 
-### Phase A — P0 prerequisites (before any P2P code)
+### Phase A — P0 prerequisites (before any P2P code) — **DONE 2026-10-03**
 
-Land on this branch with backlog closure evidence: **SYNC-01** (offline
-delete resurrection), **SYNC-02** (bound-file edit discard), **ISSUE-68**
-(false receipts / idle auth). ≈ 2–4 wks. Nothing in Phases 0–6 may depend
-on these bugs being present; their regressions re-run on the P2P carrier in
-CI.
+Closure evidence landed on `p2p-implementation`. Finding: all three P0
+items already had engine-level fixes in the fork upstream of this branch;
+Phase A therefore produced the missing **closure evidence**, not new
+engine code. Nothing in Phases 0–6 may depend on these bugs being present;
+their regressions re-run on the P2P carrier in CI.
+
+- **SYNC-01 (offline delete resurrection)** — fixed upstream, engine step 2
+  (`30d333d`): pure policy `src/runtime/reconcile/offlineDeletePolicy.ts`
+  (baseline-hash classification, batch brake 20 AND 25 %) wired into
+  `ReconciliationController.runReconciliation` via `applyOfflineDeletes`.
+  Closure evidence:
+  - `tests/client/engine-offline-delete.ts` — controller-level wiring
+    (real controller + real VaultSync, fake app, real
+    `runReconciliation("authoritative")`): proven local delete → tombstone,
+    no write-back, index entry dropped, second reconcile stays dead, delete
+    visible in a second Y.Doc; the "write anyway" cases (remote edit, no
+    baseline, excluded path, still-on-filesystem) and conservative mode
+    unchanged; mass-delete brake.
+  - Efficacy proof (this branch): with `applyOfflineDeletes` neutered the
+    suite fails exactly 5 assertions (tombstone / no-write-back /
+    re-reconcile / cross-device / block-trace); restored → green.
+  - Real-device regression: QA scenario
+    `issue-22-disable-reenable-local-delete-remote-unchanged`
+    (qa/controllers/two-device.ts) flipped from soft "KNOWN ISSUE" log to
+    hard fail on both legs — no resurrection on the deleting device, and
+    delete propagation to the peer (the same live `DiskMirror`
+    remote-delete path that s15 Phase 3 already hard-asserts). Baseline
+    hash survives the disable/reenable round-trip via persisted plugin
+    state (`_diskIndex`).
+- **SYNC-02 (bound-file edit discard)** — fixed upstream, engine step 3
+  (`a667248`): `preserveCrdtIfBothSidesChanged` keeps the overwritten side
+  as a local-only conflict note when both sides changed from the baseline.
+  Closure evidence:
+  - `tests/client/engine-bound-both-changed.ts` — controller-level wiring
+    (real controller + real VaultSync, fake editor): both-sides-changed →
+    CRDT preserved, artifact minted, editor side wins, duplicate-call
+    dedupe; controls (single-side change, typing lag, no baseline)
+    unchanged.
+  - Efficacy proof (this branch): with `preserveCrdtIfBothSidesChanged`
+    neutered the three artifact assertions fail; restored → green.
+  - Remaining leg: real-device reproduction of the original iPad trace
+    (needs the user's devices) — see Phase 0 gate.
+- **ISSUE-68** —
+  - *68a false "local state not yet received" warning*: fixed upstream
+    (`1ed53e6`). The status bar now distinguishes "latest edit awaiting
+    server confirmation" (an earlier state is confirmed) from "never
+    confirmed"; `tests/client/server-ack-tracker.ts` Test 13 replays the
+    reported sequence. The confirmation rule itself was audited and left
+    unchanged (the reported state vectors could not be reproduced as a
+    tracker fault; maintainer ruled the label non-breaking).
+  - *68b auth rejection after idle (reload was required)*: audited on this
+    branch — the fork already carries the full ticket lifecycle: proactive
+    refresh timer (fires at `expiresAt − 30 s`,
+    `scheduleSocketTicketRefresh`), best-effort force-refresh on every
+    `disconnected` status event (the sleep/wake case), retry on transient
+    fetch failure, and URL patching that strips legacy `?token=`. The
+    sleep/wake scenario is covered by the live smoke test
+    `tests/live/ws-ticket-reconnect.ts` (8 s ticket TTL). Result: mechanism
+    present and tested; no code change required.
+- **Global criterion**: Drive/CF carriers byte-identical — all 124
+  regression suites pass on this branch (2026-10-03); `typecheck:qa`
+  green. `docs/BACKLOG.md` still lists SYNC-01/02 as open — stale, ignore.
 
 ### Phase 0 — Feasibility spike (1–2 wks) — **GATE**
 
