@@ -10,10 +10,20 @@
  * All three segments are colon-free by construction, so the code splits
  * unambiguously. The vault secret is carried but NOT yet used for
  * authentication — that is Phase 1 (the spike proves transport only).
+ *
+ * WebRTC needs the answer on the offering side as well (ICE credentials and
+ * the DTLS fingerprint of the joiner), so pairing is a two-way exchange:
+ *
+ *   YAOS-P2P1-ANS:<vaultId>:<offerId>:<b64url(sdp)>
+ *
+ * The joiner shows this answer code, the creator pastes it. `offerId` is the
+ * ICE username fragment of the offer the answer belongs to, so an answer for
+ * an older code is refused instead of silently failing to connect.
  */
 
 export const SPIKE_CODE_PREFIX = "YAOS-P2P1";
 export const SPIKE_CODE_VERSION = 1;
+export const SPIKE_ANSWER_PREFIX = "YAOS-P2P1-ANS";
 
 export interface PairingCodeParts {
 	vaultId: string;
@@ -252,5 +262,55 @@ export function decodePairingCode(code: string): DecodedPairingCode | null {
 		sdp,
 		charLength: trimmed.length,
 		byteLength: bytes.length,
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Answer code (the joiner's reply)
+// ---------------------------------------------------------------------------
+
+export interface AnswerCodeParts {
+	vaultId: string;
+	/** ICE username fragment of the offer this answer belongs to. */
+	offerId: string;
+	sdp: string;
+}
+
+export interface DecodedAnswerCode extends AnswerCodeParts {
+	charLength: number;
+	byteLength: number;
+}
+
+/** The ICE username fragment (`a=ice-ufrag:`) of an SDP, or null. */
+export function extractIceUfrag(sdp: string): string | null {
+	const match = sdp.match(/^a=ice-ufrag:(\S+)\s*$/m);
+	return match?.[1] ?? null;
+}
+
+export function encodeAnswerCode(parts: AnswerCodeParts): string {
+	if (parts.vaultId.length === 0) throw new Error("vaultId is required");
+	if (parts.offerId.length === 0) throw new Error("offerId is required");
+	if (!parts.sdp.startsWith("v=")) throw new Error("sdp must start with 'v='");
+	assertColonFree(parts.vaultId, "vaultId");
+	assertColonFree(parts.offerId, "offerId");
+	return `${SPIKE_ANSWER_PREFIX}:${parts.vaultId}:${parts.offerId}:${toB64UrlText(parts.sdp)}`;
+}
+
+export function decodeAnswerCode(code: string): DecodedAnswerCode | null {
+	if (typeof code !== "string") return null;
+	const trimmed = code.trim();
+	if (!trimmed.startsWith(SPIKE_ANSWER_PREFIX + ":")) return null;
+	const segments = trimmed.split(":");
+	if (segments.length !== 4) return null;
+	const [, vaultId, offerId, sdpB64] = segments;
+	if (!vaultId || !offerId) return null;
+	const sdp = fromB64UrlText(sdpB64 ?? "");
+	if (sdp === null || !sdp.startsWith("v=")) return null;
+	return {
+		vaultId,
+		offerId,
+		sdp,
+		charLength: trimmed.length,
+		byteLength: new TextEncoder().encode(trimmed).length,
 	};
 }

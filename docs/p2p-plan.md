@@ -224,11 +224,17 @@ YAOS-P2P1:<vaultId>:<vaultSecret>:<b64(anchorOffer)>
 **Flow** (new device B joining existing device A):
 1. A: "Pair another device" → modal (QR + code) — generates a fresh offer
    (STUN pre-gather) on demand.
-2. B: scans/pastes → `hello` handshake (vaultId, **vaultSecret**, schema) →
-   sets A's offer as remote description → B's answer goes straight to A's
-   candidate address (no signalling server exists — the answer is delivered
-   to the address *inside the code*; see §4.6 for when that address is
-   reachable).
+2. B: scans/pastes → sets A's offer as remote description → B shows an
+   **answer code** (`YAOS-P2P1-ANS:…`; same medium: copy/paste) → the user
+   sends it back to A, which pastes it (*Step 2*) and applies it as the
+   remote description. **Correction (2026-10-03, drive.17):** the original
+   text claimed the answer "goes straight to A's candidate address" with no
+   signalling. That is not possible in WebRTC — A needs B's ICE credentials
+   and DTLS fingerprint before anything can connect (proved in real
+   Chromium: `qa/p2p-spike/handshake-proof.mjs`). Automatic return of the
+   answer needs a mailbox (an optional backbone: Drive / Cloudflare); pure
+   mode uses the manual second code. See §4.6 for when the address is
+   reachable.
 3. Sync step1/step2: A (or its doc) bootstraps B with the full document.
 4. B writes its own `__yaos.peers` entry (its own offer) → all devices learn
    B → B dials every other peer with stored offers → mesh completes

@@ -4,7 +4,9 @@
  *
  * A role-based wizard: the user picks "Create a pairing code" (on this
  * device) or "Join with a code" (from the other device), and only the
- * selected step is shown. All visibility decisions come from a pure,
+ * selected step is shown. Pairing is a two-way exchange (WebRTC needs both
+ * sides' details): the creator shows a pairing code, the joiner pastes it
+ * and gets an ANSWER code back, and the creator pastes that answer. All visibility decisions come from a pure,
  * DOM-free view model (p2pWizardView), so the logic is unit-testable
  * without a DOM; mount() is never called in the unit tests.
  *
@@ -41,6 +43,16 @@ export interface P2pWizardViewModel {
 	joinEnabled: boolean;
 	/** "Generating a new code ends the current link" hint. */
 	showGenerateHint: boolean;
+	/** Create step 2: paste the joiner's answer — only while a code waits for its answer. */
+	showAnswerEntry: boolean;
+	/** Connect button (apply the pasted answer) — only while the answer field has text. */
+	connectEnabled: boolean;
+	/** Join step 2: the answer code to send back — only after joining. */
+	showAnswerPanel: boolean;
+	/** The answer code text ("" until joined). */
+	answerCode: string;
+	/** Copy answer button. */
+	copyAnswerEnabled: boolean;
 }
 
 /**
@@ -53,8 +65,13 @@ export function p2pWizardView(input: {
 	code: string;
 	qrRendered: boolean;
 	joinValue: string;
+	/** The joiner's answer code ("" when none). */
+	answerCode?: string;
+	/** Current text of the creator's "paste the answer" field. */
+	answerValue?: string;
 }): P2pWizardViewModel {
 	const code = input.code;
+	const answerCode = input.answerCode ?? "";
 	return {
 		role: input.role,
 		showDisconnect: input.phase === "connected",
@@ -64,6 +81,11 @@ export function p2pWizardView(input: {
 		copyEnabled: code !== "",
 		joinEnabled: input.joinValue.trim() !== "",
 		showGenerateHint: input.phase === "connected",
+		showAnswerEntry: code !== "" && input.phase === "awaiting-peer",
+		connectEnabled: (input.answerValue ?? "").trim() !== "",
+		showAnswerPanel: answerCode !== "",
+		answerCode,
+		copyAnswerEnabled: answerCode !== "",
 	};
 }
 
@@ -71,6 +93,12 @@ export class P2pPairingFlow {
 	private currentRole: P2pWizardRole = "create";
 	private codeEl: HTMLTextAreaElement | null = null;
 	private joinEl: HTMLTextAreaElement | null = null;
+	private answerEntryPanel: HTMLDivElement | null = null;
+	private answerEntryEl: HTMLTextAreaElement | null = null;
+	private connectBtn: HTMLButtonElement | null = null;
+	private answerPanel: HTMLDivElement | null = null;
+	private answerEl: HTMLTextAreaElement | null = null;
+	private copyAnswerBtn: HTMLButtonElement | null = null;
 	private roleCreateBtn: HTMLButtonElement | null = null;
 	private roleJoinBtn: HTMLButtonElement | null = null;
 	private stepCreate: HTMLDivElement | null = null;
@@ -88,6 +116,7 @@ export class P2pPairingFlow {
 	private lastQrText: string | null = null;
 	private qrReady = false;
 	private joinValue = "";
+	private answerValue = "";
 	private mounted = false;
 
 	constructor(private readonly host: P2pSpikeHost) {}
@@ -132,6 +161,8 @@ export class P2pPairingFlow {
 			code: this.lastCode ?? "",
 			qrRendered: this.qrReady,
 			joinValue: joinValue ?? this.joinValue,
+			answerCode: s.answerCode ?? "",
+			answerValue: this.answerValue,
 		});
 	}
 
@@ -147,6 +178,8 @@ export class P2pPairingFlow {
 		this.lastCode = code;
 		this.lastDeepLink = deepLink;
 		this.qrReady = false;
+		this.answerValue = "";
+		if (this.answerEntryEl) this.answerEntryEl.value = "";
 		if (this.mounted) {
 			if (this.codeEl) this.codeEl.value = code;
 			this.renderQr(deepLink);
@@ -161,6 +194,13 @@ export class P2pPairingFlow {
 		return this.host.join(code);
 	}
 
+	/** Apply the answer code pasted on the creating device (trimmed). An empty code is a no-op. */
+	acceptAnswer(rawCode: string): Promise<void> {
+		const code = rawCode.trim();
+		if (!code) return Promise.resolve();
+		return this.host.acceptAnswer(code);
+	}
+
 	/** Pre-fill the join input (from the pairing deep link) and switch to the join step. */
 	prefillJoin(code: string): void {
 		const trimmed = code.trim();
@@ -173,6 +213,8 @@ export class P2pPairingFlow {
 	/** Close the current link and clear the generated code. */
 	disconnect(): void {
 		this.host.close();
+		this.answerValue = "";
+		if (this.answerEntryEl) this.answerEntryEl.value = "";
 		this.lastCode = null;
 		this.lastDeepLink = null;
 		this.lastQrText = null;
@@ -205,7 +247,7 @@ export class P2pPairingFlow {
 		this.generateHint = this.stepCreate.createDiv({ text: "Generating a new code ends the current link.", cls: "yaos-p2p-hint" });
 
 		this.codePanel = this.stepCreate.createDiv({ cls: "yaos-p2p-panel" });
-		this.codePanel.createEl("div", { text: "Pairing code", cls: "yaos-p2p-label" });
+		this.codePanel.createDiv({ text: "Pairing code", cls: "yaos-p2p-label" });
 		this.codeEl = this.codePanel.createEl("textarea", { cls: "yaos-p2p-code" });
 		this.codeEl.rows = 3;
 		this.codeEl.readOnly = true;
@@ -216,14 +258,33 @@ export class P2pPairingFlow {
 
 		this.qrBlock = this.codePanel.createDiv({ cls: "yaos-p2p-qr-block" });
 		this.qrCanvas = this.qrBlock.createEl("canvas", { cls: "yaos-p2p-qr-canvas" });
-		this.qrBlock.createEl("div", { text: "Scan this with the other device's camera", cls: "yaos-p2p-qr-caption" });
+		this.qrBlock.createDiv({ text: "Scan this with the other device's camera", cls: "yaos-p2p-qr-caption" });
 		const deepLinkBtn = this.qrBlock.createEl("button", { text: "Copy deep link", cls: "yaos-p2p-btn yaos-p2p-btn--subtle" });
 		deepLinkBtn.addEventListener("click", () => {
 			void this.copyText(this.lastDeepLink ?? "", "P2P deep link copied.");
 		});
 
+		this.answerEntryPanel = this.stepCreate.createDiv({ cls: "yaos-p2p-panel" });
+		this.answerEntryPanel.createDiv({ text: "Step 2: paste the answer from the other device", cls: "yaos-p2p-label" });
+		this.answerEntryPanel.createDiv({
+			text: "On the other device choose Join, paste the code above, then copy the answer code it shows and paste it here.",
+			cls: "yaos-p2p-hint",
+		});
+		this.answerEntryEl = this.answerEntryPanel.createEl("textarea", { cls: "yaos-p2p-code", placeholder: "Paste YAOS-P2P1-ANS:…" });
+		this.answerEntryEl.rows = 2;
+		this.answerEntryEl.addEventListener("input", () => {
+			this.answerValue = this.answerEntryEl?.value ?? "";
+			this.update();
+		});
+		this.connectBtn = this.answerEntryPanel.createEl("button", { text: "Connect", cls: "yaos-p2p-btn yaos-p2p-btn--full" });
+		this.connectBtn.addEventListener("click", () => {
+			void this.acceptAnswer(this.answerEntryEl?.value ?? "").catch((err) => {
+				new Notice(err instanceof Error ? err.message : String(err), 8000);
+			});
+		});
+
 		this.stepJoin = container.createDiv({ cls: "yaos-p2p-step" });
-		this.stepJoin.createEl("div", { text: "Pairing code from the other device", cls: "yaos-p2p-label" });
+		this.stepJoin.createDiv({ text: "Pairing code from the other device", cls: "yaos-p2p-label" });
 		this.joinEl = this.stepJoin.createEl("textarea", { cls: "yaos-p2p-code", placeholder: "Paste YAOS-P2P1:…" });
 		this.joinEl.rows = 2;
 		this.joinEl.addEventListener("input", () => {
@@ -239,12 +300,32 @@ export class P2pPairingFlow {
 			});
 		});
 
+		this.answerPanel = this.stepJoin.createDiv({ cls: "yaos-p2p-panel" });
+		this.answerPanel.createDiv({ text: "Step 2: send this answer back to the other device", cls: "yaos-p2p-label" });
+		this.answerPanel.createDiv({
+			text: "Copy it, send it to the device that made the pairing code, and paste it there under Step 2.",
+			cls: "yaos-p2p-hint",
+		});
+		this.answerEl = this.answerPanel.createEl("textarea", { cls: "yaos-p2p-code" });
+		this.answerEl.rows = 3;
+		this.answerEl.readOnly = true;
+		this.copyAnswerBtn = this.answerPanel.createEl("button", { text: "Copy answer", cls: "yaos-p2p-btn" });
+		this.copyAnswerBtn.addEventListener("click", () => {
+			void this.copyText(this.host.state().answerCode ?? "", "P2P answer code copied.");
+		});
+
 		this.mounted = true;
 		this.update();
 		return () => {
 			this.mounted = false;
 			this.codeEl = null;
 			this.joinEl = null;
+			this.answerEntryPanel = null;
+			this.answerEntryEl = null;
+			this.connectBtn = null;
+			this.answerPanel = null;
+			this.answerEl = null;
+			this.copyAnswerBtn = null;
 			this.roleCreateBtn = null;
 			this.roleJoinBtn = null;
 			this.stepCreate = null;
@@ -274,6 +355,11 @@ export class P2pPairingFlow {
 		if (this.qrBlock) this.qrBlock.toggleClass("yaos-p2p-hidden", !vm.showQr);
 		if (this.joinBtn) this.joinBtn.disabled = !vm.joinEnabled;
 		if (this.generateHint) this.generateHint.toggleClass("yaos-p2p-hidden", !vm.showGenerateHint);
+		if (this.answerEntryPanel) this.answerEntryPanel.toggleClass("yaos-p2p-hidden", !vm.showAnswerEntry);
+		if (this.connectBtn) this.connectBtn.disabled = !vm.connectEnabled;
+		if (this.answerPanel) this.answerPanel.toggleClass("yaos-p2p-hidden", !vm.showAnswerPanel);
+		if (this.copyAnswerBtn) this.copyAnswerBtn.disabled = !vm.copyAnswerEnabled;
+		if (this.answerEl && this.answerEl.value !== vm.answerCode) this.answerEl.value = vm.answerCode;
 		// Keep the code box in sync without fighting the (read-only) user.
 		if (this.codeEl && this.codeEl.value !== vm.code) this.codeEl.value = vm.code;
 		// A pre-filled join code lands in the input exactly once.

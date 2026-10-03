@@ -4,9 +4,64 @@ All notable changes to this fork of [YAOS](https://github.com/kavinsood/yaos) (p
 
 Releases: https://github.com/258044aamm-Dev/Google-Drive-as-a-carrier/releases
 
-Version numbers like `2.1.1-drive.3` exist only in each release's `manifest.json`. The repository itself still says `2.1.1`.
+Up to `2.1.1-drive.10` the version number (like `2.1.1-drive.3`) existed only in each release's `manifest.json` and the repository said `2.1.1`. From `2.1.1-drive.15` on, `manifest.json`, `package.json` and `versions.json` carry `2.1.<N>` for build `.N`, so updaters such as BRAT see a clean upgrade. Git tags keep the `2.1.1-drive.N` names.
 
 This file is specific to this fork. It is not part of upstream YAOS.
+
+## 2.1.1-drive.17 (manifest 2.1.17) - 2026-10-03
+
+### Fixed (P2P connection test: pairing could never connect)
+- **Pairing is now a two-way exchange.** Builds `.11`-`.16` put only the creator's WebRTC offer into the pairing code, and nothing carried the joiner's answer back. WebRTC cannot connect that way (the offering side needs the joiner's ICE credentials and DTLS fingerprint), so the P2P link could not open. Checked in real Chromium and with aiortc: offer only stays "connecting"; with the answer it connects.
+- New flow: the creator makes a pairing code; the joiner pastes it and gets an **answer code** (`YAOS-P2P1-ANS:...`); the creator pastes that under **Step 2** and presses **Connect**. An answer made for an older pairing code, a pairing code pasted as an answer (and the reverse), and a second answer are refused with a plain message.
+- The dev panel has the same two steps; the DevTools surface has `acceptAnswer(code)`.
+- `ping()` never settled (the promise was dropped when the reply arrived). It now returns the round-trip time and settles with `null` if the link closes.
+- Code: `src/p2p/spikeOffer.ts` (answer code), `spikeLink.ts` (`acceptAnswer`, the answer waits for its candidates), `spikeHost.ts`, `src/settings/P2pPairingFlow.ts`, `P2pHomeSettingPage.ts`, `P2pSpikeModal.ts`, `src/main.ts` (debug API only).
+
+### Changed (honest wording)
+- The carrier row, the P2P page and its card now say plainly: **P2P is a connection test; notes are not synced over P2P yet.** With P2P selected the sync runtime does not carry notes, so switch back to Cloudflare or Google Drive to keep syncing. Other carriers' text is unchanged.
+
+### Housekeeping (P2P branch merged into the single branch)
+- `guard:no-any` passes again (three `as unknown as` replaced by `Reflect` and a type check), `typecheck:tests` is clean, the mixed indentation in the deep-link handler and the lint warnings for `createDiv` and `window.setTimeout` are fixed.
+- The four release zips that had been committed to the repository root (`.11`-`.14`) are removed from the tree and `yaos-drive-*.zip` is ignored. They stay in the git history and in the releases.
+- This changelog now covers `.11`-`.16`.
+
+### Tests
+- New `tests/client/p2p-handshake.ts` (25 checks) with `tests/mocks/fakeRtc.ts`, a fake peer connection that opens a channel only after the answer is applied. It fails if `acceptAnswer` does nothing. New answer-code checks in `p2p-spike-offer.ts`; `p2p-pairing-flow.ts` covers the answer step.
+- New `qa/p2p-spike/handshake-proof.mjs`: runs the real host twice in headless Chromium (offer only stays closed, two-way opens, Yjs converges both ways).
+- `drive-carrier-settings.ts`: the P2P home row text changed, and two checks pin the new carrier note and the unchanged Cloudflare text.
+
+## 2.1.1-drive.16 - 2026-10-03
+
+### Changed (P2P connection test, only visible with the P2P carrier selected)
+- A pairing wizard on the P2P page: pick "Create a pairing code" or "Join with a code"; only that step shows. Copy is enabled only when a code exists, Join only when the field has text, and Disconnect only while linked (visibility is decided by a pure view model, and hidden elements use a scoped class so themes cannot override it).
+- The P2P engine now starts on demand, so selecting the carrier no longer needs a plugin reload to use the P2P page. The `onload` P2P block cannot abort the rest of start-up.
+- `manifest.json` and `package.json` are `2.1.16`.
+
+## 2.1.1-drive.15 - 2026-10-03
+
+### Changed (P2P connection test)
+- The P2P settings became a home page (status card plus pairing flow) and an Advanced page with a visible "Run check" button. All P2P styles are scoped under `.yaos-p2p-*` and a new guard (`guard:p2p-css-scope`) enforces that.
+- First build of the `2.1.N` version scheme (manifest `2.1.15`), which removes the BRAT version-mismatch warning.
+
+## 2.1.1-drive.14 - 2026-10-03
+
+### Changed (P2P connection test)
+- The P2P settings are split into a beginner section (link explanation, pairing, vault status) and a navigable Advanced page (backbone placeholder, TURN fields, network check, debug mode).
+
+## 2.1.1-drive.13 - 2026-10-03
+
+### Changed (P2P connection test)
+- The P2P settings show only while the P2P carrier is selected. With any other carrier the whole P2P surface is dormant (no P2P screen, no status-bar item, pairing links refused with a notice).
+
+## 2.1.1-drive.12 - 2026-10-03
+
+### Added (P2P connection test)
+- A "P2P (experimental)" settings group with TURN URL, username and credential (saved, applied on the next pairing), a "Pair another device" button and a network check. The status bar shows the P2P link state while a link is active. `P2P` becomes a third value of the Sync carrier setting.
+
+## 2.1.1-drive.11 - 2026-10-03
+
+### Added (P2P connection test, debug mode only)
+- A development rig for a direct WebRTC link between two devices: the "P2P spike panel (dev)" command, the `obsidian://yaos?action=p2p-pair&code=...` deep link, `window.__YAOS_P2P_DEBUG__`, and Yjs sync over the data channel. Plan: `docs/p2p-plan.md`; runbook: `qa/p2p-spike/runbook.md`.
 
 ## 2.1.1-drive.10 - 2026-10-03
 

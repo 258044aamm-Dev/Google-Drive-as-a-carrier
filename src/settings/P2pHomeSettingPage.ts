@@ -41,6 +41,11 @@ export class P2pHomeSettingPage extends SettingPage {
 			this.cardDot = card.createSpan({ cls: "yaos-p2p-dot" });
 			this.cardText = card.createSpan({ cls: "yaos-p2p-status-text" });
 
+			c.createDiv({
+				text: "Connection test: pair two devices to check that a direct link opens. Your notes do not sync over P2P yet.",
+				cls: "yaos-p2p-hint",
+			});
+
 			const pairBody = c.createDiv();
 			const spikeHost = this.settingsHost.getP2pSpikeHost?.() ?? null;
 			if (spikeHost) {
@@ -122,9 +127,11 @@ function p2pCardText(s: SpikeState): string {
 			return `Linked${rtt}${seen}`;
 		}
 		case "awaiting-peer":
-			return "Waiting for a device to join — share the code or scan the QR below.";
+			return "Waiting for the other device — send it the code, then paste the answer it gives you (Step 2).";
 		case "connecting":
-			return "Connecting…";
+			return s.answerCode
+				? "Answer ready — send it back to the other device (Step 2) and wait for the link to open."
+				: "Connecting…";
 		case "error":
 			return s.error ? `Connection problem: ${s.error}` : "Connection problem.";
 		default:

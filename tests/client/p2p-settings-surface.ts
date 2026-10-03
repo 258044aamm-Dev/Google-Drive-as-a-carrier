@@ -112,11 +112,11 @@ interface P2pRow {
 }
 
 /** The custom "P2P (experimental)" home page (null when not on the P2P carrier). */
-function p2pHomePage(tab: VaultSyncSettingTab): { name: string; desc?: string; page?: () => unknown } | null {
+function p2pHomePage(tab: VaultSyncSettingTab): { type?: string; name: string; desc?: string; page?: () => unknown } | null {
 	const items = tab.getSettingDefinitions();
 	for (const item of items) {
 		if ("type" in item && item.type === "page" && item.name === "P2P (experimental)") {
-			return item as { name: string; desc?: string; page?: () => unknown };
+			return item as { type?: string; name: string; desc?: string; page?: () => unknown };
 		}
 	}
 	return null;
@@ -195,20 +195,20 @@ s.section("3: buttonified network check and peer summary source");
 	s.check(home !== null, "home page present for wiring checks");
 	const checkRow = advanced.find((g) => g.name === "P2P network check");
 	s.check(typeof checkRow?.render === "function", "network check row uses the render hook (a visible button, not an action row)");
-	let click: (() => void) | null = null;
+	const clicks: Array<() => void> = [];
 	let buttonLabel: string | null = null;
 	checkRow?.render?.({
 		settingEl: {
 			createEl: (tag, opts) => {
 				if (tag === "button") buttonLabel = opts?.text ?? null;
 				return {
-					addEventListener: (_ev, cb) => { click = cb; },
+					addEventListener: (_ev, cb) => { clicks.push(cb); },
 				};
 			},
 		},
 	});
 	s.check(buttonLabel === "Run check", `the render hook builds a labeled button (${buttonLabel ?? "none"})`);
-	click?.();
+	clicks[0]?.();
 	s.check(p2pCalls.includes("network-check"), "clicking the button runs the network check");
 }
 

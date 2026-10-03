@@ -3,8 +3,9 @@
  *
  * Roles are deterministic from the pairing flow: the device that generated
  * the code (the anchor) is the offerer; the device that joins with the code
- * is the answerer. No signalling service exists — the trimmed offer inside
- * the code is the whole handshake.
+ * is the answerer. No signalling service exists — the handshake is a manual
+ * two-way exchange: the creator's offer code goes to the joiner, the joiner's
+ * answer code goes back to the creator.
  *
  * Transport split (no byte-prefix ambiguity with Yjs updates):
  *   - binary channel traffic  → Yjs sync updates / sync messages (spikeYjs)
@@ -74,7 +75,12 @@ export class SpikeLink {
 
 	// ── answerer side ───────────────────────────────────────────────
 
-	async createAnswer(offerSdp: string): Promise<void> {
+	/**
+	 * Set the creator's offer, create the answer and wait (inside the same
+	 * budget as the offer side) until its candidates are gathered, so the
+	 * answer code carries them. Resolves with the FULL local answer SDP.
+	 */
+	async createAnswer(offerSdp: string): Promise<{ sdp: string; gathering: "complete" | "timeout" }> {
 		const pc = this.createPeerConnection();
 		// The anchor's data channel arrives here.
 		pc.ondatachannel = (event) => {
@@ -83,7 +89,26 @@ export class SpikeLink {
 		await pc.setRemoteDescription({ type: "offer", sdp: offerSdp });
 		const answer = await pc.createAnswer();
 		await pc.setLocalDescription(answer);
-		this.cb.onLog(`answer set, awaiting connection`);
+		const gathering = await this.waitForGathering(pc);
+		const sdp = pc.localDescription?.sdp;
+		if (!sdp) throw new Error("no local SDP after setLocalDescription");
+		this.cb.onLog(`answer created (gathering ${gathering}, ${this.candidateTotal} candidates)`);
+		return { sdp, gathering };
+	}
+
+	/**
+	 * Offerer side: apply the joiner's answer. Without it the offerer never
+	 * learns the joiner's ICE credentials or DTLS fingerprint and the data
+	 * channel cannot open.
+	 */
+	async acceptAnswer(answerSdp: string): Promise<void> {
+		const pc = this.pc;
+		if (!pc) throw new Error("no pairing in progress");
+		if (pc.signalingState !== "have-local-offer") {
+			throw new Error("this pairing code has already been answered — generate a new one");
+		}
+		await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+		this.cb.onLog("answer applied, awaiting connection");
 	}
 
 	// ── shared ──────────────────────────────────────────────────────

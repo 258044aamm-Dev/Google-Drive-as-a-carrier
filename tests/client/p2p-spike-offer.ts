@@ -6,8 +6,11 @@
  */
 import {
 	countCandidateTypes,
+	decodeAnswerCode,
 	decodePairingCode,
+	encodeAnswerCode,
 	encodePairingCode,
+	extractIceUfrag,
 	fromB64Url,
 	fromB64UrlText,
 	trimSdpForPairing,
@@ -55,7 +58,8 @@ s.section("b64url");
 	s.check(toB64UrlText("héllo 🌍") === "aMOpbGxvIPCfjI0", "unicode encodes (matches base64url)");
 	s.check(fromB64UrlText("aMOpbGxvIPCfjI0") === "héllo 🌍", "unicode decodes");
 	const bytes = new Uint8Array([0, 1, 2, 250, 251, 252, 253, 254, 255]);
-	s.check(toB64Url(fromB64Url(toB64Url(bytes))) === toB64Url(bytes), "bytes round-trip");
+	const roundTrip = fromB64Url(toB64Url(bytes));
+	s.check(roundTrip !== null && toB64Url(roundTrip) === toB64Url(bytes), "bytes round-trip");
 	s.check(toB64Url(bytes) === "AAEC-vv8_f7_", "bytes match base64url");
 	s.check(fromB64Url("no-such-!charset") === null, "bad alphabet rejected");
 	s.check(fromB64Url("") === null, "empty rejected");
@@ -150,6 +154,45 @@ s.section("code rejects");
 		threw = true;
 	}
 	s.check(threw, "colon in vaultId throws");
+}
+
+s.section("answer code (the joiner's reply)");
+{
+	const offer = "v=0\no=- 1 2 IN IP4 127.0.0.1\ns=-\nt=0 0\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\na=ice-ufrag:AbC+/9\na=ice-pwd:secretsecretsecretsecret1\na=fingerprint:sha-256 AA:BB\na=setup:actpass\n";
+	const answerSdp = "v=0\no=- 3 2 IN IP4 127.0.0.1\ns=-\nt=0 0\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\na=ice-ufrag:Zz12\na=ice-pwd:anotherSecretAnotherSecret\na=fingerprint:sha-256 CC:DD\na=setup:active\na=candidate:1 1 udp 2113937151 192.168.1.5 50000 typ host\n";
+	s.check(extractIceUfrag(offer) === "AbC+/9", "the offer's ICE ufrag is extracted (it identifies the offer)");
+	s.check(extractIceUfrag("v=0\nm=application 9\n") === null, "no ufrag gives null");
+	s.check(extractIceUfrag("v=0\r\na=ice-ufrag:Zz12\r\n") === "Zz12", "CRLF line endings are handled");
+
+	const code = encodeAnswerCode({ vaultId: "vault1", offerId: "AbC+/9", sdp: answerSdp });
+	s.check(code.startsWith("YAOS-P2P1-ANS:vault1:AbC+/9:"), `answer code format (${code.slice(0, 32)}…)`);
+	const back = decodeAnswerCode(code);
+	s.check(back !== null && back.vaultId === "vault1" && back.offerId === "AbC+/9" && back.sdp === answerSdp, "answer code round-trips byte for byte");
+	s.check(back !== null && back.charLength === code.length, "the answer code reports its length");
+	s.check(decodeAnswerCode("  " + code + " \n") !== null, "surrounding whitespace tolerated");
+
+	const offerCode = encodePairingCode({ vaultId: "vault1", vaultSecret: "sec", sdp: offer });
+	s.check(decodePairingCode(code) === null, "an answer code is never accepted as a pairing code");
+	s.check(decodeAnswerCode(offerCode) === null, "a pairing code is never accepted as an answer code");
+	s.check(decodeAnswerCode("YAOS-P2P1-ANS:v:o") === null, "too few segments rejected");
+	s.check(decodeAnswerCode(code + ":extra") === null, "too many segments rejected");
+	s.check(decodeAnswerCode(`YAOS-P2P1-ANS:v:o:${toB64UrlText("not-sdp")}`) === null, "non-SDP payload rejected");
+	s.check(decodeAnswerCode("YAOS-P2P1-ANS::o:x") === null && decodeAnswerCode("YAOS-P2P1-ANS:v::x") === null, "empty vault or offer id rejected");
+	let threw = 0;
+	for (const parts of [
+		{ vaultId: "a:b", offerId: "o", sdp: answerSdp },
+		{ vaultId: "a", offerId: "o:p", sdp: answerSdp },
+		{ vaultId: "", offerId: "o", sdp: answerSdp },
+		{ vaultId: "a", offerId: "", sdp: answerSdp },
+		{ vaultId: "a", offerId: "o", sdp: "nope" },
+	]) {
+		try {
+			encodeAnswerCode(parts);
+		} catch {
+			threw++;
+		}
+	}
+	s.check(threw === 5, `encoding rejects colons, empty ids and non-SDP (${threw}/5)`);
 }
 
 await s.done();

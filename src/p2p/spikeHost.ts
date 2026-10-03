@@ -13,9 +13,12 @@
 import {
 	type CandidateStats,
 	type DecodedPairingCode,
+	decodeAnswerCode,
 	decodePairingCode,
+	encodeAnswerCode,
 	encodePairingCode,
 	countCandidateTypes,
+	extractIceUfrag,
 	trimSdpForPairing,
 } from "./spikeOffer";
 import { SpikeLink, type LinkStateSnapshot } from "./spikeLink";
@@ -23,8 +26,8 @@ import { SpikeYjs, type SpikeYjsStats } from "./spikeYjs";
 
 export type SpikePhase =
 	| "idle"
-	| "awaiting-peer" // anchor: code out, channel not open yet
-	| "connecting" // joiner: answer set, channel not open yet
+	| "awaiting-peer" // anchor: code out, waiting for the joiner's answer code
+	| "connecting" // joiner: answer code shown, waiting for the anchor; anchor: answer applied
 	| "connected"
 	| "closed"
 	| "error";
@@ -39,6 +42,8 @@ export interface SpikeState {
 	error: string | null;
 	code: string | null;
 	deepLink: string | null;
+	/** Joiner side: the answer code to send back to the anchor (null otherwise). */
+	answerCode: string | null;
 	codeCharLength: number;
 	codeByteLength: number;
 	candidates: CandidateStats;
@@ -72,6 +77,9 @@ export class P2pSpikeHost {
 	private turnOverrides: TurnOverride[] = [];
 	private code: string | null = null;
 	private deepLink: string | null = null;
+	private answerCode: string | null = null;
+	/** Anchor side: ICE ufrag of the offer in the current code (answers must carry it). */
+	private offerId: string | null = null;
 	private codeLengths = { charLength: 0, byteLength: 0 };
 	private candidates: CandidateStats = {
 		byType: { host: 0, srflx: 0, prflx: 0, relay: 0 },
@@ -80,7 +88,7 @@ export class P2pSpikeHost {
 	private gathering: "complete" | "timeout" | null = null;
 	private lastRttMs: number | null = null;
 	private lastSeen: number | null = null;
-	private pendingPings = new Map<number, { sentAt: number; timer: number }>();
+	private pendingPings = new Map<number, { sentAt: number; timer: number; resolve: (rtt: number | null) => void }>();
 	private pingCounter = 0;
 	private vaultSecret: string;
 
@@ -114,6 +122,7 @@ export class P2pSpikeHost {
 				sdp: trimmed,
 			});
 			this.code = code;
+			this.offerId = extractIceUfrag(trimmed);
 			this.deepLink = `obsidian://yaos?action=p2p-pair&code=${encodeURIComponent(code)}`;
 			const decoded = decodePairingCode(code);
 			this.codeLengths = {
@@ -136,12 +145,25 @@ export class P2pSpikeHost {
 		}
 	}
 
-	/** Joiner side: decode the code and answer. */
-	async join(rawCode: string): Promise<{ vaultId: string; candidates: CandidateStats }> {
+	/**
+	 * Joiner side: decode the code and answer. Resolves once the answer code
+	 * exists; that code must be sent back to the anchor (`acceptAnswer`).
+	 */
+	async join(rawCode: string): Promise<{
+		vaultId: string;
+		candidates: CandidateStats;
+		answerCode: string;
+		gathering: "complete" | "timeout";
+	}> {
 		const decoded: DecodedPairingCode | null = decodePairingCode(rawCode);
 		if (!decoded) {
+			if (decodeAnswerCode(rawCode)) {
+				throw new Error("this is an answer code — paste it on the device that created the pairing code");
+			}
 			throw new Error("not a valid pairing code (expected YAOS-P2P1:…)");
 		}
+		const offerId = extractIceUfrag(decoded.sdp);
+		if (!offerId) throw new Error("the pairing code carries no usable connection offer");
 		const currentVaultId = this.getVaultId();
 		if (decoded.vaultId !== currentVaultId) {
 			this.log(
@@ -163,14 +185,59 @@ export class P2pSpikeHost {
 		this.phase = "connecting";
 		this.error = null;
 		try {
-			await link.createAnswer(decoded.sdp);
-			this.candidates = countCandidateTypes(decoded.sdp);
-			this.log(`joined (offer carries ${this.candidates.total} candidates)`);
-			return { vaultId: decoded.vaultId, candidates: this.candidates };
+			const { sdp, gathering } = await link.createAnswer(decoded.sdp);
+			const trimmed = trimSdpForPairing(sdp);
+			const answerCode = encodeAnswerCode({ vaultId: currentVaultId, offerId, sdp: trimmed });
+			this.answerCode = answerCode;
+			this.gathering = gathering;
+			this.candidates = countCandidateTypes(sdp);
+			this.log(
+				`answer code ready (${answerCode.length} chars, ${this.candidates.total} candidates, ` +
+					`gathering ${gathering}) — send it back to the other device`,
+			);
+			return { vaultId: decoded.vaultId, candidates: this.candidates, answerCode, gathering };
 		} catch (err) {
 			this.phase = "error";
 			this.error = formatUnknown(err);
 			this.log(`join failed: ${this.error}`);
+			throw err;
+		}
+	}
+
+	/**
+	 * Anchor side: apply the answer code the joiner sent back. The data
+	 * channel opens once this succeeds (and the network allows the link).
+	 */
+	async acceptAnswer(rawCode: string): Promise<void> {
+		const decoded = decodeAnswerCode(rawCode);
+		if (!decoded) {
+			if (decodePairingCode(rawCode)) {
+				throw new Error("this is a pairing code — paste it on the device that is joining");
+			}
+			throw new Error("not a valid answer code (expected YAOS-P2P1-ANS:…)");
+		}
+		const link = this.link;
+		if (!link || link.role !== "offerer" || this.phase !== "awaiting-peer" || !this.offerId) {
+			throw new Error("no pairing code is waiting for an answer — generate a code first");
+		}
+		if (decoded.offerId !== this.offerId) {
+			throw new Error("this answer belongs to a different pairing code — generate a new code and join again");
+		}
+		if (decoded.vaultId !== this.getVaultId()) {
+			this.log(
+				`vault id mismatch (answer: ${decoded.vaultId}, this device: ${this.getVaultId()}) — ` +
+					`continuing; the spike does not gate on vault identity yet`,
+			);
+		}
+		try {
+			await link.acceptAnswer(decoded.sdp);
+			// The channel may already have opened while the promise settled.
+			if (this.phase === "awaiting-peer") this.phase = "connecting";
+			this.log("answer accepted");
+		} catch (err) {
+			this.phase = "error";
+			this.error = formatUnknown(err);
+			this.log(`accept answer failed: ${this.error}`);
 			throw err;
 		}
 	}
@@ -190,7 +257,7 @@ export class P2pSpikeHost {
 				this.pendingPings.delete(id);
 				resolve(null);
 			}, timeoutMs);
-			this.pendingPings.set(id, { sentAt, timer });
+			this.pendingPings.set(id, { sentAt, timer, resolve });
 			this.link.sendControl({ t: "ping", id, at: sentAt });
 		});
 	}
@@ -235,6 +302,7 @@ export class P2pSpikeHost {
 			error: this.error,
 			code: this.code,
 			deepLink: this.deepLink,
+			answerCode: this.answerCode,
 			codeCharLength: this.codeLengths.charLength,
 			codeByteLength: this.codeLengths.byteLength,
 			candidates: this.candidates,
@@ -293,7 +361,10 @@ export class P2pSpikeHost {
 		this.yjsDetach?.();
 		this.yjsDetach = null;
 		this.link = null;
-		for (const { timer } of this.pendingPings.values()) window.clearTimeout(timer);
+		for (const { timer, resolve } of this.pendingPings.values()) {
+			window.clearTimeout(timer);
+			resolve(null);
+		}
 		this.pendingPings.clear();
 	}
 
@@ -324,6 +395,7 @@ export class P2pSpikeHost {
 				const rtt = Date.now() - pending.sentAt;
 				this.lastRttMs = rtt;
 				this.log(`ping RTT ${rtt} ms`);
+				pending.resolve(rtt);
 			}
 			return;
 		}
@@ -345,10 +417,15 @@ export class P2pSpikeHost {
 			this.yjs.doc.destroy();
 			this.yjs = null;
 		}
-		for (const { timer } of this.pendingPings.values()) window.clearTimeout(timer);
+		for (const { timer, resolve } of this.pendingPings.values()) {
+			window.clearTimeout(timer);
+			resolve(null);
+		}
 		this.pendingPings.clear();
 		this.code = null;
 		this.deepLink = null;
+		this.answerCode = null;
+		this.offerId = null;
 		this.codeLengths = { charLength: 0, byteLength: 0 };
 		this.gathering = null;
 		this.error = null;

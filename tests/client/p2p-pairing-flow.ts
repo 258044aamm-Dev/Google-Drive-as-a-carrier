@@ -13,6 +13,7 @@
 import type { P2pSpikeHost, SpikeState } from "../../src/p2p/spikeHost";
 import { P2pPairingFlow, p2pWizardView } from "../../src/settings/P2pPairingFlow";
 import { suite } from "../harness.ts";
+import { partialOf } from "../mocks/productFixture";
 
 const s = suite("p2p-pairing-flow");
 
@@ -22,6 +23,7 @@ function baseState(phase: SpikeState["phase"]): SpikeState {
 		error: null,
 		code: null,
 		deepLink: null,
+		answerCode: null,
 		codeCharLength: 0,
 		codeByteLength: 0,
 		candidates: { byType: { host: 0, srflx: 0, prflx: 0, relay: 0 }, total: 0 },
@@ -38,13 +40,15 @@ interface FakeSpike {
 	host: P2pSpikeHost;
 	calls: string[];
 	phase: { value: SpikeState["phase"] };
+	answer: { value: string | null };
 }
 
 function fakeSpike(): FakeSpike {
 	const calls: string[] = [];
 	const phase = { value: "idle" as SpikeState["phase"] };
-	const host = {
-		state: () => baseState(phase.value),
+	const answer = { value: null as string | null };
+	const host = partialOf<P2pSpikeHost>({
+		state: () => ({ ...baseState(phase.value), answerCode: answer.value }),
 		generate: async () => {
 			calls.push("generate");
 			phase.value = "awaiting-peer";
@@ -53,14 +57,24 @@ function fakeSpike(): FakeSpike {
 		join: async (code: string) => {
 			calls.push(`join:${code}`);
 			phase.value = "connecting";
-			return { vaultId: "test-vault", candidates: { byType: { host: 0, srflx: 0, prflx: 0, relay: 0 }, total: 0 } };
+			answer.value = "YAOS-P2P1-ANS:test-vault:test-offer:answer";
+			return {
+				vaultId: "test-vault",
+				candidates: { byType: { host: 0, srflx: 0, prflx: 0, relay: 0 }, total: 0 },
+				answerCode: answer.value,
+				gathering: "complete" as const,
+			};
+		},
+		acceptAnswer: async (code: string) => {
+			calls.push(`answer:${code}`);
+			phase.value = "connecting";
 		},
 		close: () => {
 			calls.push("close");
 			phase.value = "closed";
 		},
-	} as unknown as P2pSpikeHost;
-	return { host, calls, phase };
+	});
+	return { host, calls, phase, answer };
 }
 
 s.section("1: pure view model — visibility and enabled decisions");
@@ -172,6 +186,42 @@ s.section("6: update() is safe without a mount and never swallows the prefill");
 	flow.update(); // still unmounted — the prefill must survive for consumption
 	s.check(flow.consumeJoinPrefill() === "YAOS-P2P1:test-vault:pending", "an unmounted update() does not swallow the prefill");
 	s.check(flow.view().role === "join", "the role survives an unmounted update()");
+}
+
+s.section("7: the answer step (the offer alone cannot open a WebRTC link)");
+{
+	const idle = p2pWizardView({ phase: "idle", role: "create", code: "", qrRendered: false, joinValue: "" });
+	s.check(!idle.showAnswerEntry && !idle.showAnswerPanel, "no answer controls before anything happens");
+	s.check(!idle.connectEnabled && !idle.copyAnswerEnabled, "Connect and Copy answer are disabled when idle");
+
+	const waiting = p2pWizardView({ phase: "awaiting-peer", role: "create", code: "YAOS-P2P1:v:s:x", qrRendered: true, joinValue: "" });
+	s.check(waiting.showAnswerEntry, "the creator sees the answer field while its code waits for an answer");
+	s.check(!waiting.connectEnabled, "Connect stays disabled while the answer field is empty");
+	const typed = p2pWizardView({ phase: "awaiting-peer", role: "create", code: "YAOS-P2P1:v:s:x", qrRendered: true, joinValue: "", answerValue: "  YAOS-P2P1-ANS:a:b:c  " });
+	s.check(typed.connectEnabled, "Connect is enabled once the answer field has text");
+	const noCode = p2pWizardView({ phase: "awaiting-peer", role: "create", code: "", qrRendered: false, joinValue: "" });
+	s.check(!noCode.showAnswerEntry, "no answer field without a generated code");
+	for (const phase of ["connecting", "connected", "closed", "error", "idle"] as const) {
+		const vm = p2pWizardView({ phase, role: "create", code: "YAOS-P2P1:v:s:x", qrRendered: true, joinValue: "" });
+		s.check(!vm.showAnswerEntry, `the answer field is hidden in phase ${phase} (an answer is applied once)`);
+	}
+
+	const joined = p2pWizardView({ phase: "connecting", role: "join", code: "", qrRendered: false, joinValue: "x", answerCode: "YAOS-P2P1-ANS:v:o:s" });
+	s.check(joined.showAnswerPanel && joined.copyAnswerEnabled, "the joiner sees the answer code and can copy it");
+	s.check(joined.answerCode === "YAOS-P2P1-ANS:v:o:s", "the answer code text is passed through");
+
+	s.test("the flow trims the answer, ignores a blank one, and exposes the host's answer code", async () => {
+		const fake = fakeSpike();
+		const flow = new P2pPairingFlow(fake.host);
+		await flow.acceptAnswer("   ");
+		s.check(fake.calls.length === 0, "a blank answer makes no host call");
+		await flow.acceptAnswer("  YAOS-P2P1-ANS:v:o:s \n");
+		s.check(fake.calls.join("|") === "answer:YAOS-P2P1-ANS:v:o:s", `the trimmed answer reaches the host (${fake.calls.join("|")})`);
+		s.check(flow.view().showAnswerPanel === false, "no answer panel before joining");
+		await fake.host.join("YAOS-P2P1:test-vault:s:x");
+		s.check(flow.view().showAnswerPanel && flow.view().answerCode.startsWith("YAOS-P2P1-ANS:"), "after joining, the view shows the host's answer code");
+		flow.disconnect();
+	});
 }
 
 await s.done();

@@ -29,6 +29,8 @@ export class P2pSpikeModal extends Modal {
 	private deepLinkEl: HTMLTextAreaElement | null = null;
 	private sizeEl: HTMLDivElement | null = null;
 	private joinCodeEl: HTMLTextAreaElement | null = null;
+	private answerOutEl: HTMLTextAreaElement | null = null;
+	private answerInEl: HTMLTextAreaElement | null = null;
 	private statusEl: HTMLDivElement | null = null;
 	private yjsEl: HTMLTextAreaElement | null = null;
 	private yjsStatusEl: HTMLDivElement | null = null;
@@ -114,6 +116,38 @@ export class P2pSpikeModal extends Modal {
 				return;
 			}
 			void this.host.join(code).catch((err) => {
+				new Notice(err instanceof Error ? err.message : String(err), 8000);
+			});
+		});
+		joinBody.createDiv({ text: "Answer code to send back to the other device:", cls: "yaos-modal-copy" });
+		this.answerOutEl = joinBody.createEl("textarea", { cls: "yaos-p2p-spike-code" });
+		this.answerOutEl.rows = 3;
+		this.answerOutEl.readOnly = true;
+		this.answerOutEl.placeholder = "Appears here after joining";
+		const copyAnswerBtn = joinBody.createEl("button", { text: "Copy answer" });
+		copyAnswerBtn.addEventListener("click", () => {
+			const answer = this.answerOutEl?.value ?? "";
+			if (!answer) return;
+			void navigator.clipboard.writeText(answer).then(
+				() => new Notice("P2P answer code copied."),
+				() => new Notice("Clipboard write failed — select the code manually.", 6000),
+			);
+		});
+
+		// ── anchor, step 2: apply the joiner's answer ───────────────
+		const answerIn = createDetailsSection(contentEl, "2b · Anchor — paste the answer code", true);
+		const answerInBody = answerIn.createDiv({ cls: "yaos-settings-details-body" });
+		this.answerInEl = answerInBody.createEl("textarea", { cls: "yaos-p2p-spike-code" });
+		this.answerInEl.rows = 3;
+		this.answerInEl.placeholder = "Paste YAOS-P2P1-ANS:… code";
+		const connectBtn = answerInBody.createEl("button", { text: "Connect" });
+		connectBtn.addEventListener("click", () => {
+			const answer = this.answerInEl?.value.trim() ?? "";
+			if (!answer) {
+				new Notice("Paste an answer code first.", 6000);
+				return;
+			}
+			void this.host.acceptAnswer(answer).catch((err) => {
 				new Notice(err instanceof Error ? err.message : String(err), 8000);
 			});
 		});
@@ -280,6 +314,9 @@ export class P2pSpikeModal extends Modal {
 					`RTT: ${s.lastRttMs === null ? "–" : s.lastRttMs + " ms"}`,
 			);
 		}
+		if (this.answerOutEl && this.answerOutEl.value !== (s.answerCode ?? "")) {
+			this.answerOutEl.value = s.answerCode ?? "";
+		}
 		if (this.yjsEl && s.phase === "connected" && this.yjsEl.value !== this.host.yjsRead()) {
 			this.yjsEl.value = this.host.yjsRead();
 		}
@@ -314,5 +351,5 @@ function createDetailsSection(containerEl: HTMLElement, title: string, open = fa
 }
 
 function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
+	return new Promise((resolve) => window.setTimeout(resolve, ms));
 }

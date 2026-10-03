@@ -12,7 +12,7 @@ device measurements from `qa/p2p-spike/runbook.md` before the gate call.
 ## 1. What the spike must prove
 
 Per plan §Phase 0: two Obsidian instances open a raw WebRTC data channel
-(signalling via embedded offer in a pairing code, no service), and real Yjs
+(signalling by a manual two-code exchange — offer code, then answer code — no service), and real Yjs
 state converges over it. Exit criterion: desktop direct = go (assumed); each
 mobile platform = go / degraded / no-go.
 
@@ -83,6 +83,28 @@ WebRTC on real devices — that is the runbook's job.
    **`obsidian://yaos?action=p2p-pair&code=<urlencoded-code>`**. The plan doc
    has been corrected in place.
 
+## 4b. Correction (drive.17): pairing needs the answer back
+
+Drive.11–.16 shipped a pairing code that held only the creator's offer. WebRTC
+cannot connect from an offer alone: the offering side must also apply the
+joiner's answer (ICE credentials, DTLS fingerprint). Evidence, same machine:
+
+- Real Chromium 148: offer only → `connecting` forever, no channel; with the
+  answer → `connected`, channel open.
+- aiortc (spec implementation): the same.
+
+Fix: the joiner now shows an **answer code** (`YAOS-P2P1-ANS:<vaultId>:<offerId>:<b64url(sdp)>`);
+the creator pastes it (*Step 2*). `offerId` is the ICE ufrag of the creator's
+offer, so an answer for an older code is refused. Proof script:
+`node qa/p2p-spike/handshake-proof.mjs` (real `P2pSpikeHost` ×2 in headless
+Chromium: offer-only stays closed, two-way opens, Yjs converges both ways,
+ping resolves). CI uses `tests/mocks/fakeRtc.ts`, which opens a channel only
+after the answer is applied. Limit that remains: a later reconnect (new
+addresses) needs signalling again — a backbone mailbox is the planned answer.
+
+Also fixed in drive.17: `ping()` never settled (its promise was dropped on
+the pong), so `__YAOS_P2P_DEBUG__.ping()` hung.
+
 ## 5. Documented gaps (by choice, not by accident)
 
 - **T1.3 settings surface (plan §8 shape, wizard, drive.16):**
@@ -126,7 +148,7 @@ WebRTC on real devices — that is the runbook's job.
 | Test | Question | Status |
 | --- | --- | --- |
 | T0.1 | Raw data channel between two Obsidian instances | CI: protocol ✓ · **device: pending** (runbook §3) |
-| T0.2 | Pairing from the embedded offer alone; code size + QR capacity | CI: format/size ✓ · **device: pending** (runbook §4, real phone scans) |
+| T0.2 | Pairing with the two codes (offer + answer); code size + QR capacity | CI: format/size ✓ · **device: pending** (runbook §4, real phone scans) |
 | T0.3 | QR → phone camera → deep link → join view | **device: pending** (runbook §5) |
 | T0.4 | Real Yjs sync: edit/restart/offline-resume, convergence + timing | CI: protocol convergence ✓ · **device: pending** (runbook §6) |
 | T0.5 | NAT traversal matrix (STUN-only outcomes) | **device: pending** (runbook §7; same-WiFi first, then 4G) |

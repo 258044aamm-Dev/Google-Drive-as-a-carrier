@@ -130,6 +130,10 @@ export interface VaultSyncSettingsHost {
 
 const CLOUDFLARE_DEPLOY_URL = "https://deploy.workers.cloudflare.com/?url=https://github.com/kavinsood/yaos/tree/main/server";
 const ATTACHMENT_SETUP_VIDEO_URL = "https://youtu.be/Z7xCMEYfdFM";
+/** Shown on the carrier row while the P2P carrier is selected (Phase 0 is a link test). */
+export const P2P_CARRIER_NOTE =
+	"P2P is a connection test for now: your notes are NOT synced over P2P yet. Switch back to Cloudflare or Google Drive to keep syncing. Changing the carrier needs a reload of the plugin.";
+
 const CARRIER_OPTIONS: Record<CarrierKind, string> = {
 	cloudflare: "Cloudflare Worker (default)",
 	drive: "Google Drive (experimental)",
@@ -501,7 +505,14 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			// then the navigable Advanced sub-page with the power controls.
 			// The Drive/CF-specific pages do not apply here: the P2P link
 			// carries no notes yet.
-			return [this.carrierRow(), this.p2pHomePage(), this.p2pAdvancedPage()];
+			return [
+				{
+					...this.carrierRow(),
+					desc: P2P_CARRIER_NOTE,
+				},
+				this.p2pHomePage(),
+				this.p2pAdvancedPage(),
+			];
 		}
 		return this.withStatusRows(this.applyCarrierChoiceRows(definitions));
 	}
@@ -527,7 +538,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 		return {
 			type: "page",
 			name: "P2P (experimental)",
-			desc: "Link devices directly — pair with a code or QR.",
+			desc: "Link devices directly — pair with a code. Connection test only.",
 			page: () => new P2pHomeSettingPage(this.host),
 		};
 	}

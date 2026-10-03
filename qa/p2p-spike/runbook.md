@@ -68,7 +68,10 @@ record which one you see.
   N bytes · candidates N (host X, srflx Y, relay Z) · gathering complete|timeout`)
   + code textarea + *Copy code* + a **QR** of the deep link + a *Deep link
   (manual / no QR)* disclosure with *Copy deep link*.
-- **2 · Joiner**: paste `YAOS-P2P1:…` → *Join*.
+- **2 · Joiner**: paste `YAOS-P2P1:…` → *Join* → the panel shows an **answer
+  code** (`YAOS-P2P1-ANS:…`, *Copy answer*). Send it back to the anchor.
+- **2b · Anchor, paste the answer**: paste `YAOS-P2P1-ANS:…` → *Connect*.
+  Only now does the link open (WebRTC needs both sides' details).
 - **3 · Live Yjs test**: shared textarea (replicates when connected),
   *Send random edit*, *Copy converged text*, and a yjs status line
   (`synced · local edits N · remote edits N · N bytes received`).
@@ -116,6 +119,10 @@ Goal: both Obsidian instances reach `channel: open` with no code changes.
 2. Android: copy the code (clipboard share, or retype the prefix + scan the
    text off the desktop screen if clipboard sharing is flaky) → P2P home
    page (or dev panel) → wizard: **Join with a code** → paste → **Join**.
+   The phone now shows **Step 2: an answer code** → *Copy answer* and send
+   it to the desktop (any messenger / clipboard sync / email to yourself).
+2b. Desktop: under **Step 2: paste the answer** paste it → **Connect**.
+   (Drive.16 and older had no answer step, so their links could never open.)
 3. Expected: joiner `phase: connecting` → `connected`; anchor the same;
    `ice: connected`, `channel: open` within seconds. Log shows gathered
    candidate types.
@@ -124,10 +131,12 @@ Goal: both Obsidian instances reach `channel: open` with no code changes.
 
 **Pass**: 3/3 pairings reach `open`, ping RTT < ~50 ms on the same LAN.
 
-## 4. T0.2 — embedded-offer pairing + code size/QR
+## 4. T0.2 — two-code pairing + code size/QR
 
-Goal: the code alone is enough (no second channel, no service), and the QR
-is actually scannable on the phone.
+Goal: the two codes (offer, then answer) are enough (no service), record the
+size of both, and check that the QR of the offer is actually scannable on the
+phone. Offer ≈ 0.9 KB and answer ≈ 0.7 KB in a desktop Chromium run
+(`qa/p2p-spike/handshake-proof.mjs`).
 
 1. Desktop: **Generate** (record the size line — CI already proves the
    format; this records the *real* offer from a real Chromium: candidate
@@ -149,7 +158,7 @@ is actually scannable on the phone.
 6. Close link. Regenerate once more with a long vaultId-style setup is NOT
    needed — CI covers synthetic sizes; just record the real one.
 
-**Pass**: pairing from code alone works; QR scan outcome recorded (scan
+**Pass**: pairing with the two codes works; QR scan outcome recorded (scan
 worked / degraded to paste + reason); code byte count recorded.
 
 ## 5. T0.3 — deep-link proof (Android)

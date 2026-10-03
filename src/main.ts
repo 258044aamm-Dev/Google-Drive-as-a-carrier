@@ -488,28 +488,28 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				// P2P pairing deep link (Phase 0 spike): the code was produced
 				// by another device's spike panel. Route to the join view.
 				const code = typeof params.code === "string" ? params.code.trim() : "";
-						if (!code) {
-							new Notice("P2P pairing link is missing a code.", 8000);
-							return;
-						}
-						if (!isP2pCarrier(this.settings)) {
-							// Dormant: the P2P carrier is not selected on this
-							// device, so no link can be accepted.
-							new Notice("Select the P2P (experimental) carrier in Settings → YAOS to accept a pairing link.", 8000);
-							return;
-						}
-						// The host starts on demand (carrier switch after
-						// load no longer needs a plugin reload); the getter
-						// reports a failed start with a Notice of its own.
-						if (!this.ensureP2pSpikeHost()) return;
-						// Hand the code to the P2P home page (settings UI, not
-						// an overlay): the page consumes it exactly once,
-						// switches the wizard to the join step, and
-						// pre-fills the join field.
-						this.pendingP2pPairCode = code;
-						this.openP2pSettingsTab();
-						return;
-					}
+				if (!code) {
+					new Notice("P2P pairing link is missing a code.", 8000);
+					return;
+				}
+				if (!isP2pCarrier(this.settings)) {
+					// Dormant: the P2P carrier is not selected on this
+					// device, so no link can be accepted.
+					new Notice("Select the P2P (experimental) carrier in Settings → YAOS to accept a pairing link.", 8000);
+					return;
+				}
+				// The host starts on demand (carrier switch after
+				// load no longer needs a plugin reload); the getter
+				// reports a failed start with a Notice of its own.
+				if (!this.ensureP2pSpikeHost()) return;
+				// Hand the code to the P2P home page (settings UI, not
+				// an overlay): the page consumes it exactly once,
+				// switches the wizard to the join step, and
+				// pre-fills the join field.
+				this.pendingP2pPairCode = code;
+				this.openP2pSettingsTab();
+				return;
+			}
 			void this.setupLinkController?.handleSetupLink(params);
 		});
 
@@ -538,8 +538,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			// the spike panel). Removed in onunload. Only exists while the
 			// P2P carrier is selected — dormant otherwise.
 			if (isP2pCarrier(this.settings)) {
-				(window as unknown as Record<string, unknown>).__YAOS_P2P_DEBUG__ =
-					this.createP2pSpikeDebugApi();
+				Reflect.set(window, "__YAOS_P2P_DEBUG__", this.createP2pSpikeDebugApi());
 			}
 
 			const host: TelemetryRuntimeHost = {
@@ -2655,10 +2654,12 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	 * pre-fills the join field the same way.
 	 */
 	private openP2pSettingsTab(): void {
-		const setting = (this.app as unknown as { setting?: { openSettingTab?: (tab: unknown) => void } }).setting;
-		if (setting && typeof setting.openSettingTab === "function") {
+		const setting: unknown = Reflect.get(this.app, "setting");
+		const openSettingTab: unknown =
+			typeof setting === "object" && setting !== null ? Reflect.get(setting, "openSettingTab") : undefined;
+		if (typeof openSettingTab === "function") {
 			try {
-				setting.openSettingTab(this);
+				Reflect.apply(openSettingTab, setting, [this]);
 				return;
 			} catch {
 				// fall through to the dev-panel fallback
@@ -2700,6 +2701,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		return {
 			generate: () => this.p2pSpikeHost?.generate(),
 			join: (code: string) => this.p2pSpikeHost?.join(code),
+			acceptAnswer: (code: string) => this.p2pSpikeHost?.acceptAnswer(code),
 			state: () => this.p2pSpikeHost?.state() ?? null,
 			log: (limit?: number) => this.p2pSpikeHost?.logEntries(limit) ?? [],
 			clearLog: () => this.p2pSpikeHost?.clearLog(),

@@ -220,12 +220,16 @@ s.section("Test 4b: the P2P carrier layout (designed home page + Advanced page)"
 	// and nothing else (no Drive/CF leak).
 	s.check(items.length === 3, `top level is exactly row + home page + advanced page (${items.length})`);
 	s.check(!("type" in items[0]!) && items[0]!.name === "Sync carrier (experimental)", "the carrier row comes first, so switching back is one tap away");
+	const p2pCarrierDesc = (items[0] as { desc?: string }).desc ?? "";
+	s.check(p2pCarrierDesc.includes("NOT synced over P2P"), "the carrier row says plainly that notes are not synced over P2P yet");
+	const cfCarrierDesc = String(flatten(makeFixture().tab.getSettingDefinitions()).find((d) => d.name === "Sync carrier (experimental)")?.desc ?? "");
+	s.check(cfCarrierDesc !== "" && !cfCarrierDesc.includes("P2P"), "the Cloudflare layout's carrier row text is unchanged");
 	s.check(pageNames(items).join("|") === "P2P (experimental)|Advanced", `the two navigable pages (${pageNames(items).join(" / ")})`);
 	const home = items[1] as { type?: string; page?: () => unknown; desc?: string } | undefined;
 	s.check(home?.type === "page" && typeof home?.page === "function", "the P2P home is a custom page (factory), not a flat row group");
 	s.check(home?.page?.() instanceof SettingPage, "the home page factory constructs a SettingPage instance");
 	s.check(
-		home?.desc === "Link devices directly — pair with a code or QR.",
+		home?.desc === "Link devices directly — pair with a code. Connection test only.",
 		`the home page row invites pairing without jargon (${home?.desc ?? "—"})`,
 	);
 	const advanced: string[] = [];
