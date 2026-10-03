@@ -8,7 +8,7 @@ Up to `2.1.1-drive.10` the version number (like `2.1.1-drive.3`) existed only in
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
-## Unreleased - Local network carrier (desktop)
+## 2.1.1-drive.18 (manifest 2.1.18) - 2026-10-04 - test release: Local network carrier (desktop)
 
 ### Added
 - **A fourth carrier: Local network (desktop only).** Desktop devices on the same network sync directly with each other: no server, no account. Choose it in Settings > YAOS > Sync carrier on the desktop app; the option does not exist on a phone. Everything is in `src/lan-carrier/`. The mechanism follows the Local Sync plugin by liuboacean (MIT): every device is server and client, links are WebSocket over TLS with a self-signed certificate, a shared key signs devices in, devices find each other with a UDP announcement. See `docs/lan-carrier.md` and `NOTICE-local-sync.md`.
