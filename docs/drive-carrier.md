@@ -115,6 +115,11 @@ allowed range). The change applies immediately, without a restart. Nothing is
 stored until you pick a different speed, so vaults that never touch it behave
 exactly as before.
 
+Cloudflare vaults have the same setting (Advanced, once a server is set up). A
+live connection has nothing to poll, so there it only controls how long your
+edits are gathered before being sent together: Normal sends each edit at once
+(default), Gentle 2 s, Minimal 5 s, Custom 0 to 30 s.
+
 ## Setup wizard (recommended)
 
 Choose **Google Drive (experimental)** under Settings > YAOS > Setup > Sync

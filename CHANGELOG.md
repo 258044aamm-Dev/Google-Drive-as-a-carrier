@@ -21,6 +21,12 @@ This file is specific to this fork. It is not part of upstream YAOS.
 - Explicit test overrides still take priority over the setting. The Cloudflare carrier is untouched by this entry (its send-side control is a separate entry).
 - New test: `tests/client/drive-carrier-sync-pace.ts` (45 checks: default equals today's numbers, profiles, clamping and a property check over 196 combinations, live change on a running transport, the settings screen, Cloudflare mode shows no Drive group). No existing test changed; all other Drive suites pass unchanged.
 
+### Added (Cloudflare: optional edit grouping, same "Sync speed" setting)
+- **Cloudflare vaults get the same setting, in Advanced (shown once a server is set up).** Cloudflare keeps a live connection, so nothing is polled; the only thing to slow down is how often edits are sent. **Normal (default) sends every edit at once, exactly as before.** Gentle gathers edits for 2 s and Minimal for 5 s, then sends them as one merged message; Custom takes 0 to 30 s (0 = at once). Receiving is not affected. The choice is shared with the Drive setting (one profile name), and applies at once to the running connection.
+- Safe by construction: a merged Yjs update holds exactly the same changes; updates the provider applied itself are never sent back; hiding the window, turning the setting back to Normal and closing the vault all send what is waiting; anything unsent while offline is caught up by the normal sync on reconnect. While the setting is Normal the provider's own forwarder stays in place and the new code is not in the data path at all.
+- Code: new `src/sync/outgoingBatcher.ts`; `VaultSync` gets an optional `getOutgoingBatchMs` and `applyOutgoingBatchPace()` and hands the forwarder back in `destroy()`; `resolveCloudflareBatchMs` in `src/settings/syncPace.ts`; two rows in the Advanced page of `settingsTab.ts`; `main.ts` passes the getter. Not used by the Drive carrier.
+- New test: `tests/client/cloudflare-edit-batching.ts` (35 checks, incl. through the real `VaultSync` on the Cloudflare path with a fake socket). Existing test changed on purpose: one check in `drive-carrier-settings` (Test 3) lists the Advanced rows of a configured Cloudflare vault, and now lists the two new rows; nothing else changed. `drive-carrier-sync-pace` grew to 52 checks (Cloudflare screen).
+
 ## 2.1.1-drive.8 - 2026-10-03
 
 ### Fixed (engine, every carrier including Cloudflare)

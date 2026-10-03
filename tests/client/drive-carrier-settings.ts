@@ -168,7 +168,7 @@ s.section("Test 3: default (Cloudflare) screens are the same as before, plus one
 	const configured = makeFixture({ host: "https://sync.example", token: "tok", vaultId: "vid" });
 	const cItems = configured.tab.getSettingDefinitions();
 	s.check(groupHeadings(cItems).join() === "Sync status,Updates,This device,What syncs,Attachments,Collaboration", `configured groups (${groupHeadings(cItems).join()})`);
-	s.check(advancedItems(cItems).map((i) => ("name" in i ? i.name : "")).join("|") === ["Sync carrier (experimental)", "Vault ID", "Deployment repository URL", "Deployment default branch", "Edits from other apps", "Frontmatter safety guard", "Debug mode", "Reload required"].join("|"), "a configured Cloudflare user finds the carrier row first in Advanced");
+	s.check(advancedItems(cItems).map((i) => ("name" in i ? i.name : "")).join("|") === ["Sync carrier (experimental)", "Vault ID", "Deployment repository URL", "Deployment default branch", "Edits from other apps", "Frontmatter safety guard", "Debug mode", "Sync speed (Cloudflare)", "Group edits for (seconds)", "Reload required"].join("|"), "a configured Cloudflare user finds the carrier row first in Advanced, and the two sync-speed rows just above the reload note");
 	s.check(!groupItems(cItems, "Sync status").includes("Sync carrier (experimental)"), "and the Sync status group is untouched");
 	const defs = flatten(cItems);
 	s.check(!defs.some((d) => d.name === "Sign in with Google" || d.name === "Google client ID" || d.name === "Encryption passphrase"), "no Drive rows for Cloudflare users");

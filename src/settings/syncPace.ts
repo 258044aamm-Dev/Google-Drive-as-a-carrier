@@ -29,6 +29,8 @@ export interface SyncPaceCustom {
 	driveBatchSec?: number;
 	/** Google Drive: minutes between full "does Drive hold everything" checks. */
 	driveFullCheckMin?: number;
+	/** Cloudflare: seconds your edits are gathered before one message is sent. 0 = send each edit at once. */
+	cloudflareBatchSec?: number;
 }
 
 export interface SyncPaceSettings {
@@ -70,6 +72,8 @@ export const CUSTOM_LIMITS = {
 	driveHiddenSec: { min: 120, max: 7200 },
 	driveBatchSec: { min: 2, max: 60 },
 	driveFullCheckMin: { min: 5, max: 120 },
+	/** 0 is allowed and means "off" (today's behaviour). */
+	cloudflareBatchSec: { min: 1, max: 30 },
 } as const;
 
 function clamp(value: number | undefined, limit: { min: number; max: number }, fallback: number): number {
@@ -125,4 +129,15 @@ export function resolveDrivePace(settings: SyncPaceSettings, isMobile: boolean):
 		batchMs: clamp(c.driveBatchSec, CUSTOM_LIMITS.driveBatchSec, NORMAL_DRIVE_PACE.batchMs / 1000) * 1000,
 		reconcileIntervalMs: clamp(c.driveFullCheckMin, CUSTOM_LIMITS.driveFullCheckMin, NORMAL_DRIVE_PACE.reconcileIntervalMs / 60_000) * 60_000,
 	};
+}
+
+/** Cloudflare: gather edits for this long before sending (ms). 0 = send each edit at once, which is today's behaviour. */
+export const CLOUDFLARE_PROFILE_BATCH_MS = { normal: 0, gentle: 2_000, minimal: 5_000 } as const;
+
+export function resolveCloudflareBatchMs(settings: SyncPaceSettings): number {
+	const profile = currentSyncPace(settings);
+	if (profile !== "custom") return CLOUDFLARE_PROFILE_BATCH_MS[profile];
+	const sec = settings.syncPaceCustom?.cloudflareBatchSec;
+	if (typeof sec !== "number" || !Number.isFinite(sec) || sec <= 0) return 0;
+	return clamp(sec, CUSTOM_LIMITS.cloudflareBatchSec, 0) * 1000;
 }

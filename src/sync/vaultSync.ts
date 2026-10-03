@@ -1,5 +1,6 @@
 import * as Y from "yjs";
 import YSyncProvider from "y-partyserver/provider";
+import { OutgoingUpdateBatcher } from "./outgoingBatcher";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { normalizePath } from "obsidian";
 import { type BlobRef, type BlobMeta, type BlobTombstone } from "../types";
@@ -149,6 +150,8 @@ export class VaultSync {
 	 * Holds the Cloudflare-only concerns (socket termination, ticketed URL).
 	 */
 	private readonly cloudflareProvider: YSyncProvider | null;
+	private readonly getOutgoingBatchMs: (() => number) | null = null;
+	private outgoingBatcher: OutgoingUpdateBatcher | null = null;
 	readonly persistence: IndexeddbPersistence;
 	readonly updateTracker: UpdateTracker;
 	readonly serverAckTracker: ServerAckTracker;
@@ -337,6 +340,12 @@ export class VaultSync {
 			 * provider. When set, no Worker connection, ticket or token is used.
 			 */
 			transportFactory?: SyncTransportFactory;
+			/**
+			 * Cloudflare only: how long to gather edits before sending them as
+			 * one message, in ms. Absent or 0 = send every edit at once (the
+			 * default). Read again by applyOutgoingBatchPace().
+			 */
+			getOutgoingBatchMs?: () => number;
 		},
 	) {
 		this.debug = settings.debug;
@@ -444,6 +453,12 @@ export class VaultSync {
 		if (!provider) throw new Error("No sync transport could be created");
 		this.cloudflareProvider = cloudflare;
 		this.provider = provider;
+		this.getOutgoingBatchMs = options?.getOutgoingBatchMs ?? null;
+		if (cloudflare && this.getOutgoingBatchMs) {
+			this.outgoingBatcher = new OutgoingUpdateBatcher(this.ydoc, cloudflare);
+			// 0 (the default) leaves the provider's own forwarder in place.
+			this.outgoingBatcher.setDelayMs(this.getOutgoingBatchMs());
+		}
 
 		// Wire update tracker before any Y.Doc events so timestamps are captured.
 		this.updateTracker = new UpdateTracker();
@@ -2089,6 +2104,13 @@ export class VaultSync {
 		}
 	}
 
+	/** The "sync speed" setting changed: apply the new Cloudflare edit-grouping delay to the running connection. */
+	applyOutgoingBatchPace(): void {
+		if (this.outgoingBatcher && this.getOutgoingBatchMs) {
+			this.outgoingBatcher.setDelayMs(this.getOutgoingBatchMs());
+		}
+	}
+
 	async destroy(): Promise<void> {
 		this.log("Destroying VaultSync");
 		if (this._renameTimer) window.clearTimeout(this._renameTimer);
@@ -2110,6 +2132,8 @@ export class VaultSync {
 			this.provider.awareness.destroy();
 		}
 
+		// Hand the update forwarding back to the provider (sending what is waiting) before it is destroyed.
+		this.outgoingBatcher?.dispose();
 		this.provider.destroy();
 		await this.persistence.destroy();
 		this.ydoc.destroy();

@@ -6,6 +6,7 @@ import {
 	type VaultSyncSettings,
 } from "./settings";
 import { SettingsStore } from "./settings/settingsStore";
+import { resolveCloudflareBatchMs } from "./settings/syncPace";
 import { VaultSync, type ReconcileMode } from "./sync/vaultSync";
 import { SCHEMA_VERSION } from "./sync/vaultSync";
 import { EditorBindingManager } from "./sync/editorBinding";
@@ -740,6 +741,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				onFlightPathEvent: (event) => this.recordFlightPathEvent(event),
 				onServerReceiptStatusChanged: () => this.queueReceiptStatusRefresh(),
 				transportFactory: this.getDriveCarrier()?.transportFactory,
+				getOutgoingBatchMs: () => resolveCloudflareBatchMs(this.settings),
 				getSocketTicket: isDriveCarrier(this.settings) ? undefined : (() => {
 				// Each VaultSync instance gets its own ticket cache.  The cache
 				// is discarded when VaultSync is torn down and recreated.
@@ -2207,6 +2209,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	/** The "sync speed" setting changed: let the running carrier pick it up without a restart. */
 	applySyncPace(): void {
 		this.driveCarrier?.applyPace();
+		this.vaultSync?.applyOutgoingBatchPace();
 	}
 
 	/** Google Drive carrier: the step-by-step setup wizard. */

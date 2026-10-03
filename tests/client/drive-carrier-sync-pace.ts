@@ -198,11 +198,30 @@ s.section("Test 5: the settings screen");
 	s.check(!("syncPace" in settings) && applied.at(-1) === "normal", "choosing Normal stores nothing again");
 	s.check(reasons.every((r) => r.startsWith("settings:sync-pace")), "only the pace settings were written");
 
-	// Cloudflare mode: no Drive speed group.
-	const cf: VaultSyncSettings = { ...DEFAULT_SETTINGS };
-	const tab2 = new VaultSyncSettingTab(new App(), Object.create(Plugin.prototype) as Plugin, { ...host, settings: cf });
-	const h2 = (tab2.getSettingDefinitions() as SettingDefinitionItem[]).flatMap((i) => "type" in i && i.type === "group" && typeof i.heading === "string" ? [i.heading] : []);
+	// Cloudflare mode: no Drive speed group; one dropdown and one number in Advanced, only once a server is set up.
+	const cf: VaultSyncSettings = { ...DEFAULT_SETTINGS, host: "https://sync.example", token: "tok", vaultId: "vid" };
+	const cfApplied: string[] = [];
+	const tab2 = new VaultSyncSettingTab(new App(), Object.create(Plugin.prototype) as Plugin, { ...host, settings: cf, updateSettings: async (mutator) => { mutator(cf); }, applySyncPace: () => { cfApplied.push("applied"); } });
+	const cfDefs = tab2.getSettingDefinitions() as SettingDefinitionItem[];
+	const h2 = cfDefs.flatMap((i) => "type" in i && i.type === "group" && typeof i.heading === "string" ? [i.heading] : []);
 	s.check(!h2.includes("Sync speed (Google Drive)"), "Cloudflare mode does not show the Drive speed group");
+	const cfRow = (name: string) => flat(cfDefs).find((d) => d.name === name);
+	s.check(cfRow("Sync speed (Cloudflare)")?.control?.key === "syncPace", "the Cloudflare dropdown uses the same setting");
+	s.check(!isVisible(cfRow("Group edits for (seconds)")), "its number field is hidden unless Custom");
+	await tab2.setControlValue("syncPace", "minimal");
+	s.check(cf.syncPace === "minimal" && cfApplied.length === 1, "choosing Minimal is saved and applied");
+	await tab2.setControlValue("syncPace", "custom");
+	await tab2.setControlValue("cloudflarePaceBatch", 8);
+	s.check(cf.syncPaceCustom?.cloudflareBatchSec === 8 && tab2.getControlValue("cloudflarePaceBatch") === 8, "custom seconds are saved and read back");
+	await tab2.setControlValue("cloudflarePaceBatch", 0);
+	s.check(cf.syncPaceCustom?.cloudflareBatchSec === 0, "0 (send at once) is allowed");
+	let cfRejected = 0;
+	for (const v of [0.5, -1, 31, 2.5, Number.NaN]) {
+		try { await tab2.setControlValue("cloudflarePaceBatch", v); } catch { cfRejected += 1; }
+	}
+	s.check(cfRejected === 5 && cf.syncPaceCustom?.cloudflareBatchSec === 0, "values outside 0 or 1 to 30 are refused");
+	const unconfigured = new VaultSyncSettingTab(new App(), Object.create(Plugin.prototype) as Plugin, { ...host, settings: { ...DEFAULT_SETTINGS } });
+	s.check(!flat(unconfigured.getSettingDefinitions() as SettingDefinitionItem[]).some((d) => d.control?.key === "syncPace"), "before a server is set up the screen is exactly as before (no speed rows)");
 }
 
 await s.done();

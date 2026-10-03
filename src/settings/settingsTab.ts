@@ -18,7 +18,7 @@ import {
 	type CarrierKind,
 } from "../drive-carrier/carrierSettings";
 import { checkHostedToken, normalizeHostedToken } from "../drive-carrier/wizard/validate";
-import { CUSTOM_LIMITS, currentSyncPace, isSyncPaceProfile, resolveDrivePace, type SyncPaceCustom, type SyncPaceProfile } from "./syncPace";
+import { CUSTOM_LIMITS, currentSyncPace, isSyncPaceProfile, resolveCloudflareBatchMs, resolveDrivePace, type SyncPaceCustom, type SyncPaceProfile } from "./syncPace";
 import { PairDeviceModal } from "./PairDeviceModal";
 import { RecoveryKitModal } from "./RecoveryKitModal";
 import {
@@ -53,6 +53,7 @@ type DeclarativeSettingKey =
 	| "drivePaceHidden"
 	| "drivePaceBatch"
 	| "drivePaceFullCheck"
+	| "cloudflarePaceBatch"
 	| "driveClientId"
 	| "driveClientSecret"
 	| "driveHostedToken"
@@ -469,7 +470,11 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			isGroupDefinition(item) && item.heading === "Setup";
 		const carrierInAdvanced = (item: SettingDefinitionItem): SettingDefinitionItem => {
 			if (!isPageDefinition(item) || item.name !== "Advanced" || !item.items) return item;
-			return { ...item, items: [carrierRow, ...item.items] };
+			// A configured server only: the speed rows go just above the "Reload required" note.
+			const items = [carrierRow, ...item.items];
+			const note = items.findIndex((entry) => "name" in entry && entry.name === "Reload required");
+			items.splice(note >= 0 ? note : items.length, 0, ...this.cloudflarePaceRows());
+			return { ...item, items };
 		};
 		const carrierInSetup = (item: SettingDefinitionItem): SettingDefinitionItem => {
 			if (!isSetupGroup(item)) return item;
@@ -578,6 +583,36 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 					},
 					...this.drivePaceCustomRows(),
 				],
+			},
+		];
+	}
+
+	/** Cloudflare has a live connection (nothing to poll), so its only speed control is how long edits are gathered before sending. */
+	private cloudflarePaceRows(): SettingDefinition[] {
+		const ms = resolveCloudflareBatchMs(this.host.settings);
+		const now = ms === 0 ? "Every edit is sent at once." : `Edits are gathered for ${ms / 1000} s and sent together.`;
+		const limit = CUSTOM_LIMITS.cloudflareBatchSec;
+		return [
+			{
+				name: "Sync speed (Cloudflare)",
+				desc: `Normal sends every edit at once (default). If your Cloudflare plan reports too many requests, choose Gentle or Minimal to send your edits in groups: a few seconds later for other devices, far fewer messages. Receiving is not affected. ${now}`,
+				control: { type: "dropdown", key: "syncPace", options: SYNC_PACE_OPTIONS },
+			},
+			{
+				name: "Group edits for (seconds)",
+				desc: `Custom only. Allowed: 0 (send at once) or ${limit.min} to ${limit.max}.`,
+				visible: () => currentSyncPace(this.host.settings) === "custom",
+				control: {
+					type: "number",
+					key: "cloudflarePaceBatch",
+					min: 0,
+					step: 1,
+					validate: (value) => {
+						if (!Number.isInteger(value)) return "Enter a whole number.";
+						if (value !== 0 && (value < limit.min || value > limit.max)) return `Enter 0 or a number from ${limit.min} to ${limit.max}.`;
+						return undefined;
+					},
+				},
 			},
 		];
 	}
@@ -695,6 +730,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			case "debug": return this.host.settings.debug;
 			case "carrier": return currentCarrier(this.host.settings);
 			case "syncPace": return currentSyncPace(this.host.settings);
+			case "cloudflarePaceBatch": return this.host.settings.syncPaceCustom?.cloudflareBatchSec ?? 0;
 			case "drivePaceActive":
 			case "drivePaceIdle":
 			case "drivePaceHidden":
@@ -821,6 +857,19 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 					if (nextValue === "normal") delete settings.syncPace;
 					else settings.syncPace = nextValue;
 				}, "settings:sync-pace");
+				this.host.applySyncPace?.();
+				this.update();
+				return;
+			}
+			case "cloudflarePaceBatch": {
+				const nextValue = expectFiniteNumber(key, value);
+				const limit = CUSTOM_LIMITS.cloudflareBatchSec;
+				if (!Number.isInteger(nextValue) || !(nextValue === 0 || (nextValue >= limit.min && nextValue <= limit.max))) {
+					throw new RangeError(`cloudflareBatchSec must be 0 or a whole number from ${limit.min} to ${limit.max}`);
+				}
+				await this.host.updateSettings((settings) => {
+					settings.syncPaceCustom = { ...settings.syncPaceCustom, cloudflareBatchSec: nextValue };
+				}, "settings:sync-pace-custom");
 				this.host.applySyncPace?.();
 				this.update();
 				return;
