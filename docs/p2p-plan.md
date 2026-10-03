@@ -613,8 +613,12 @@ Deliverable: `docs/p2p/feasibility.md` with go/no-go per platform.
   trimmed offer, puts it in a code, device B (different network, then same
   LAN) connects from the code alone. Measure code size and QR capacity
   (real `qrcode` render, real phone scans).
-- T0.3 **Deep-link proof**: QR → phone camera → `obsidian://yaos/p2p-pair?
-  code=…` → plugin handler fires on desktop, iOS, Android.
+- T0.3 **Deep-link proof**: QR → phone camera →
+  `obsidian://yaos?action=p2p-pair&code=<urlencoded>` → plugin handler fires
+  on desktop, iOS, Android. (Corrected 2026-10-03 during Phase 0: the
+  registered handler is `registerObsidianProtocolHandler("yaos", …)` keyed on
+  `action=p2p-pair`; the earlier `yaos/p2p-pair?code=…` form was wrong. See
+  `docs/p2p/feasibility.md` §4.6.)
 - T0.4 Real Yjs sync over the channel (edit/restart/offline-resume); verify
   convergence + timing.
 - T0.5 NAT traversal matrix: STUN-only outcomes (laptop–laptop,

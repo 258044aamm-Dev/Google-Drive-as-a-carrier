@@ -37,6 +37,8 @@ import {
 	FrontmatterGuardCoordinator,
 } from "./sync/frontmatterGuardCoordinator";
 import { createSocketTicketCache, isTicketEndpointUnsupported } from "./sync/socketTicket";
+import { P2pSpikeHost } from "./p2p/spikeHost";
+import { P2pSpikeModal } from "./settings/P2pSpikeModal";
 import {
 	type DiskIndex,
 	moveIndexEntries,
@@ -161,6 +163,8 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	private reconciliationController!: ReconciliationController;
 	private setupLinkController: SetupLinkController | null = null;
 	private traceRuntime: TraceRuntimeController | null = null;
+	/** Phase 0 P2P spike host. UI-free; the modal + __YAOS_P2P_DEBUG__ are thin views. */
+	private p2pSpikeHost: P2pSpikeHost | null = null;
 	/** Debug runtime handle — null unless debug mode installed it at startup. */
 	private lab: TelemetryRuntimeHandle | null = null;
 
@@ -460,7 +464,27 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				void this.initSync();
 			},
 		});
+		// Phase 0 P2P spike host. Constructed eagerly (cheap, UI-free) so the
+		// pairing deep link can hand a code straight to the join view.
+		this.p2pSpikeHost = new P2pSpikeHost(() => this.settings.vaultId ?? "");
+
 		this.registerObsidianProtocolHandler("yaos", (params) => {
+			const action = typeof params.action === "string" ? params.action : "";
+			if (action === "p2p-pair") {
+				// P2P pairing deep link (Phase 0 spike): the code was produced
+				// by another device's spike panel. Route to the join view.
+				const code = typeof params.code === "string" ? params.code.trim() : "";
+				if (!code) {
+					new Notice("P2P pairing link is missing a code.", 8000);
+					return;
+				}
+				if (!this.p2pSpikeHost) {
+					new Notice("P2P spike not ready — open the spike panel and paste the code.", 8000);
+					return;
+				}
+				new P2pSpikeModal(this.app, this.p2pSpikeHost, code).open();
+				return;
+			}
 			void this.setupLinkController?.handleSetupLink(params);
 		});
 
@@ -484,6 +508,12 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		// retention and export all go through app.vault.adapter, which exists on
 		// every platform. settings.debug is the only gate, and it is off by default.
 		if (this.settings.debug || this.settings.qaDebugMode) {
+			// CDP/DevTools surface for the Phase 0 P2P spike (mirrors the host
+			// API; desktop leg of the runbook drives this, the phone leg uses
+			// the spike panel). Removed in onunload.
+			(window as unknown as Record<string, unknown>).__YAOS_P2P_DEBUG__ =
+				this.createP2pSpikeDebugApi();
+
 			const host: TelemetryRuntimeHost = {
 					app: this.app,
 					getSettings: () => this.settings,
@@ -612,6 +642,19 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			checkCallback: (checking: boolean) => {
 				if (!isDriveCarrier(this.settings)) return false;
 				if (!checking) this.openDriveWizard();
+				return true;
+			},
+		});
+		// P2P spike panel (Phase 0 feasibility). A development tool: hidden
+		// unless the debug setting is on, so it never appears for end users.
+		this.addCommand({
+			id: "p2p-spike-panel",
+			name: "P2P spike panel (dev)",
+			checkCallback: (checking: boolean) => {
+				if (!(this.settings.debug || this.settings.qaDebugMode)) return false;
+				if (!checking && this.p2pSpikeHost) {
+					new P2pSpikeModal(this.app, this.p2pSpikeHost, null).open();
+				}
 				return true;
 			},
 		});
@@ -2186,6 +2229,18 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			Reflect.deleteProperty(window, "__YAOS_DEBUG__");
 		}
 
+		// Phase 0 P2P spike: tear down the WebRTC link and drop its debug
+		// global the same way (stale globals confuse test harnesses after a
+		// plugin reload).
+		if (this.p2pSpikeHost) {
+			this.p2pSpikeHost.destroy();
+			this.p2pSpikeHost = null;
+		}
+		const staleP2pApi: unknown = Reflect.get(window, "__YAOS_P2P_DEBUG__");
+		if (staleP2pApi) {
+			Reflect.deleteProperty(window, "__YAOS_P2P_DEBUG__");
+		}
+
 		// This starts and retains the shared teardown promise, but synchronous
 		// onunload is not an async completion barrier: a host shutdown/cold kill
 		// can still end the process before pending durable writes settle.
@@ -2412,6 +2467,25 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 
 	get serverMaxBlobUploadBytes(): number | null {
 		return this.capabilityUpdateService?.capabilities?.maxBlobUploadBytes ?? null;
+	}
+
+	/** CDP/DevTools view over the Phase 0 P2P spike host (debug-gated). */
+	private createP2pSpikeDebugApi(): Record<string, unknown> {
+		return {
+			generate: () => this.p2pSpikeHost?.generate(),
+			join: (code: string) => this.p2pSpikeHost?.join(code),
+			state: () => this.p2pSpikeHost?.state() ?? null,
+			log: (limit?: number) => this.p2pSpikeHost?.logEntries(limit) ?? [],
+			clearLog: () => this.p2pSpikeHost?.clearLog(),
+			ping: (timeoutMs?: number) =>
+				this.p2pSpikeHost ? this.p2pSpikeHost.ping(timeoutMs) : Promise.resolve(null),
+			yjsEdit: (text: string) => this.p2pSpikeHost?.yjsEdit(text),
+			yjsRead: () => this.p2pSpikeHost?.yjsRead() ?? "",
+			setTurn: (turn: { url: string; username?: string; credential?: string }) =>
+				this.p2pSpikeHost?.setTurnOverrides([turn]),
+			clearTurn: () => this.p2pSpikeHost?.setTurnOverrides([]),
+			close: () => this.p2pSpikeHost?.close(),
+		};
 	}
 
 	buildSetupDeepLink(): string | null {

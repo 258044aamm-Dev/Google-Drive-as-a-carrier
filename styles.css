@@ -256,3 +256,61 @@ textarea.yaos-wizard-input { min-height: 5em; font-family: var(--font-monospace)
 		animation: none;
 	}
 }
+
+/* ── P2P spike panel (Phase 0 dev tool) ─────────────────────────── */
+.yaos-p2p-spike-status {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 6px 10px;
+	margin: 8px 0 12px;
+	white-space: pre-wrap;
+	overflow-x: auto;
+}
+
+.yaos-p2p-spike-size {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	margin: 8px 0;
+}
+
+.yaos-p2p-spike-code {
+	width: 100%;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	word-break: break-all;
+	margin: 6px 0;
+}
+
+.yaos-p2p-spike-qr-wrap {
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	padding: 12px;
+	margin: 8px 0 12px;
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 12px;
+}
+
+.yaos-p2p-spike-qr-canvas {
+	display: block;
+	max-width: 100%;
+	height: auto;
+}
+
+.yaos-p2p-spike-log {
+	max-height: 180px;
+	overflow-y: auto;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 8px 10px;
+	margin: 8px 0 4px;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
