@@ -60,7 +60,10 @@ type DeclarativeSettingKey =
 	| "driveClientId"
 	| "driveClientSecret"
 	| "driveHostedToken"
-	| "driveEncryptionPassphrase";
+	| "driveEncryptionPassphrase"
+	| "p2pTurnUrl"
+	| "p2pTurnUsername"
+	| "p2pTurnCredential";
 
 interface SettingsUpdateState {
 	serverVersion: string | null;
@@ -99,6 +102,17 @@ export interface VaultSyncSettingsHost {
 	applySyncPace?(): void;
 	/** Redraws the status bar and adds or removes the header icons after a status display setting changed. */
 	applyStatusDisplay?(): void;
+	/**
+	 * Phase 0 P2P spike — one-line peer summary for the "This vault" row in
+	 * the P2P settings group. Absent on hosts that do not run the spike.
+	 */
+	getP2pPeerSummary?(): string;
+	/** Phase 0 P2P spike — opens the spike panel (pairing code + QR / join). */
+	openP2pPanel?(): void;
+	/** Phase 0 P2P spike — runs the network check (candidate types + link state). */
+	runP2pNetworkCheck?(): void;
+	/** Phase 0 P2P spike — push the just-saved TURN fields to the running spike host. */
+	applyP2pTurn?(): void;
 }
 
 const CLOUDFLARE_DEPLOY_URL = "https://deploy.workers.cloudflare.com/?url=https://github.com/kavinsood/yaos/tree/main/server";
@@ -465,7 +479,58 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 	 * With the Drive carrier the server-only screens are replaced by the Drive one.
 	 */
 	private applyCarrierChoice(definitions: SettingDefinitionItem[]): SettingDefinitionItem[] {
-		return this.withStatusRows(this.applyCarrierChoiceRows(definitions));
+		return this.withP2pSection(this.withStatusRows(this.applyCarrierChoiceRows(definitions)));
+	}
+
+	/**
+	 * Phase 0 P2P spike — the "P2P (experimental)" group. Appended AFTER the
+	 * existing pages/groups so no current layout (server Setup, configured
+	 * Advanced, Drive screen) is touched. The group is always visible in
+	 * this test build; the dev-only command-palette entry stays debug-gated.
+	 */
+	private withP2pSection(definitions: SettingDefinitionItem[]): SettingDefinitionItem[] {
+		const group: SettingDefinitionItem = {
+			type: "group",
+			heading: "P2P (experimental)",
+			items: [
+				{
+					name: "Direct P2P link",
+					desc: "Devices find each other with a pairing code or QR — nothing to deploy, nothing to sign up for. Test build for the feasibility check; pair from the panel below.",
+				},
+				{
+					name: "This vault",
+					desc: this.host.getP2pPeerSummary?.() ?? "No P2P link yet.",
+				},
+				{
+					name: "Backbone (optional)",
+					desc: "None (default) — direct link only. Optional backbone options arrive in Phase 1 and are disabled here.",
+				},
+				{
+					name: "TURN URL (advanced)",
+					desc: "Optional relay for restricted networks, e.g. turn:your-turn-host:3478. Leave empty for STUN only. Applies on the next pairing.",
+					control: { type: "text", key: "p2pTurnUrl", placeholder: "turn:host:3478" },
+				},
+				{
+					name: "TURN username (optional)",
+					control: { type: "text", key: "p2pTurnUsername" },
+				},
+				{
+					name: "TURN credential (optional)",
+					control: { type: "text", key: "p2pTurnCredential" },
+				},
+				{
+					name: "Pair another device (QR + code)",
+					desc: "Opens the P2P panel: generate a pairing code + QR here, or join with a code from another device.",
+					action: () => { this.host.openP2pPanel?.(); },
+				},
+				{
+					name: "P2P network check",
+					desc: "Reports the last gathered candidate types and the current link state.",
+					action: () => { this.host.runP2pNetworkCheck?.(); },
+				},
+			],
+		};
+		return [...definitions, group];
 	}
 
 	/** Two switches for the status display, in Advanced for every carrier, just above the "Reload required" note. */
@@ -785,6 +850,9 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			case "driveClientSecret": return this.host.settings.driveClientSecret ?? "";
 			case "driveHostedToken": return this.host.settings.driveRefreshToken ?? "";
 			case "driveEncryptionPassphrase": return this.host.settings.driveEncryptionPassphrase ?? "";
+			case "p2pTurnUrl": return this.host.settings.p2pTurnUrl;
+			case "p2pTurnUsername": return this.host.settings.p2pTurnUsername;
+			case "p2pTurnCredential": return this.host.settings.p2pTurnCredential;
 			default: throw new Error(`Unknown Yaos setting: ${key}`);
 		}
 	}
@@ -873,6 +941,18 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 					settings.debug = expectBooleanValue(key, value);
 				}, "settings:debug");
 				return;
+			case "p2pTurnUrl":
+			case "p2pTurnUsername":
+			case "p2pTurnCredential": {
+				await this.host.updateSettings((settings) => {
+					settings[key as "p2pTurnUrl" | "p2pTurnUsername" | "p2pTurnCredential"] =
+						expectStringValue(key, value).trim();
+				}, "settings:p2p-turn");
+				// Push the relay settings to the running spike (no-op on hosts
+				// without one); takes effect on the next pairing.
+				this.host.applyP2pTurn?.();
+				return;
+			}
 			case "carrier": {
 				const nextValue = expectStringValue(key, value);
 				if (!isCarrierKind(nextValue)) throw new RangeError(`Unsupported sync carrier: ${nextValue}`);

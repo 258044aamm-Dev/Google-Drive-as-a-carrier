@@ -13,15 +13,20 @@ feasibility doc's documented gaps).
 3. Android: same plugin build, installed in the phone's test vault
    (copy `main.js` + `manifest.json` over the existing install, restart
    Obsidian).
-4. **Both devices**: Settings → the tab containing **"Debug mode"** → turn
-   **Debug mode ON** and restart Obsidian. The command palette now offers
-   **"P2P spike panel (dev)"** (command id `p2p-spike-panel`). This is the
-   only gate for every step below.
-5. Desktop extra: open DevTools (Ctrl+Shift+I → Console). With debug mode on,
-   `window.__YAOS_P2P_DEBUG__` mirrors the panel's host API
-   (`generate()`, `join(code)`, `state()`, `log()`, `ping()`, `yjsEdit(t)`,
-   `yjsRead()`, `setTurn(t)`, `clearTurn()`, `close()`). The phone has **no
-   CDP** — the panel is its whole surface.
+4. **Both devices**: open **Settings → YAOS** and scroll to the
+   **"P2P (experimental)"** group (bottom of the tab). It is always visible
+   in this test build — the *"Pair another device (QR + code)"* row opens the
+   spike panel, and the *TURN* fields here are the primary way to set a relay
+   (T0.5).
+5. **Optional, for the command palette + DevTools**: turn **Debug mode** on
+   (same settings tab, above the P2P group) and restart Obsidian. Then the
+   command palette offers **"P2P spike panel (dev)"** (command id
+   `p2p-spike-panel`) and the desktop DevTools console exposes
+   `window.__YAOS_P2P_DEBUG__` (`generate()`, `join(code)`, `state()`,
+   `log()`, `ping()`, `yjsEdit(t)`, `yjsRead()`, `setTurn(t)`,
+   `clearTurn()`, `close()`). The phone has **no CDP** — the panel is its
+   whole surface. While a link is active, the bottom status bar shows
+   `P2P · linked` (+ RTT) / `P2P · awaiting pair` / `P2P · connecting`.
 
 ### Panel tour (both devices, identical)
 
@@ -181,10 +186,11 @@ generate's size line — the anchor's — and the ICE outcome):
 If a STUN-only attempt fails (phase `connecting` stuck, `ice: failed`):
 
 1. Record the exact failure (log lines, ice state).
-2. Retry **with a TURN override**: panel section 4 → *Apply TURN* (any
-   reachable `turn:host:3478`; username/credential if required) → re-generate
-   on the anchor → re-join. Relay candidates then appear (`relay N > 0` in
-   the size line).
+2. Retry **with a TURN override**: enter URL/username/credential in the
+   **Settings → P2P (experimental) → TURN** fields (persisted; takes effect
+   on the next pairing — the panel's *Apply TURN* writes the same fields) →
+   re-generate on the anchor → re-join. Relay candidates then appear
+   (`relay N > 0` in the size line).
 3. A success **only with relay** = "degraded" for that network pair — this
    is the planned outcome that motivates the backbone fallback; it is not a
    no-go.

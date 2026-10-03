@@ -59,6 +59,12 @@ export interface VaultSyncSettings extends DriveCarrierSettings, SyncPaceSetting
 	updateRepoUrl: string;
 	/** Optional default branch for provider-native update links. */
 	updateRepoBranch: string;
+	/** Phase 0 P2P spike — TURN relay override (advanced). Empty URL = STUN only. */
+	p2pTurnUrl: string;
+	/** Phase 0 P2P spike — optional TURN username. */
+	p2pTurnUsername: string;
+	/** Phase 0 P2P spike — optional TURN credential. */
+	p2pTurnCredential: string;
 	/** Expose window.__YAOS_DEBUG__ programmatic control surface for QA. Never ship enabled. */
 	qaDebugMode: boolean;
 }
@@ -81,6 +87,9 @@ export const DEFAULT_SETTINGS: VaultSyncSettings = {
 	showRemoteCursors: true,
 	updateRepoUrl: "",
 	updateRepoBranch: "main",
+	p2pTurnUrl: "",
+	p2pTurnUsername: "",
+	p2pTurnCredential: "",
 	qaDebugMode: false,
 };
 

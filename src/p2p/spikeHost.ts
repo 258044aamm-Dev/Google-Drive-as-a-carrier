@@ -18,7 +18,7 @@ import {
 	countCandidateTypes,
 	trimSdpForPairing,
 } from "./spikeOffer";
-import { SpikeLink, type LinkStateSnapshot, type SpikeLinkRole } from "./spikeLink";
+import { SpikeLink, type LinkStateSnapshot } from "./spikeLink";
 import { SpikeYjs, type SpikeYjsStats } from "./spikeYjs";
 
 export type SpikePhase =
@@ -47,6 +47,8 @@ export interface SpikeState {
 	yjs: SpikeYjsStats | null;
 	lastRttMs: number | null;
 	iceServers: string[];
+	/** When the current link last opened (ms epoch); null when never/idle. */
+	lastSeen: number | null;
 }
 
 export interface TurnOverride {
@@ -77,6 +79,7 @@ export class P2pSpikeHost {
 	};
 	private gathering: "complete" | "timeout" | null = null;
 	private lastRttMs: number | null = null;
+	private lastSeen: number | null = null;
 	private pendingPings = new Map<number, { sentAt: number; timer: number }>();
 	private pingCounter = 0;
 	private vaultSecret: string;
@@ -197,7 +200,9 @@ export class P2pSpikeHost {
 	}
 
 	yjsRead(): string {
-		return this.yjs ? this.yjs.text.toString() : "";
+		// toJSON() is YText's declared string accessor (its .d.ts omits
+		// toString(), so .toString() trips no-base-to-string).
+		return this.yjs ? this.yjs.text.toJSON() : "";
 	}
 
 	// ── public: teardown / config ───────────────────────────────────
@@ -236,9 +241,10 @@ export class P2pSpikeHost {
 			gathering: this.gathering,
 			link: this.link ? this.link.state() : null,
 			yjs: this.yjs ? this.yjs.stats() : null,
-			lastRttMs: this.lastRttMs,
-			iceServers: this.iceServerList,
-		};
+		lastRttMs: this.lastRttMs,
+		iceServers: this.iceServerList,
+		lastSeen: this.lastSeen,
+	};
 	}
 
 	logEntries(limit = 400): SpikeLogEntry[] {
@@ -271,6 +277,7 @@ export class P2pSpikeHost {
 
 	private onLinkOpen(): void {
 		this.phase = "connected";
+		this.lastSeen = Date.now();
 		this.log("LINK OPEN — connecting Yjs");
 		if (this.yjs) {
 			this.yjsDetach?.();
@@ -346,6 +353,7 @@ export class P2pSpikeHost {
 		this.gathering = null;
 		this.error = null;
 		this.phase = "idle";
+		this.lastSeen = null;
 		this.log(`session reset (${reason})`);
 	}
 }

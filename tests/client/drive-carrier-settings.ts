@@ -157,7 +157,9 @@ s.section("Test 3: default (Cloudflare) screens are the same as before, plus one
 {
 	const unconfigured = makeFixture();
 	const items = unconfigured.tab.getSettingDefinitions();
-	s.check(groupHeadings(items).join() === "Setup,This device,What syncs,Attachments,Collaboration", `unconfigured groups (${groupHeadings(items).join()})`);
+	// The P2P (experimental) group (Phase 0 spike, plan §8) is appended last
+	// in every layout; the rest of the inventory is unchanged.
+	s.check(groupHeadings(items).join() === "Setup,This device,What syncs,Attachments,Collaboration,P2P (experimental)", `unconfigured groups (${groupHeadings(items).join()})`);
 	s.check(pageNames(items).join() === "Manual connection,Advanced", "pages unchanged");
 	const adv = advancedItems(items);
 	const advNames = adv.map((i) => "name" in i ? i.name : "");
@@ -167,7 +169,7 @@ s.section("Test 3: default (Cloudflare) screens are the same as before, plus one
 	s.check(setupRow?.control?.key === "carrier" && flatten(items).filter((d) => d.name === "Sync carrier (experimental)").length === 1, "one carrier dropdown, bound to the carrier setting");
 	const configured = makeFixture({ host: "https://sync.example", token: "tok", vaultId: "vid" });
 	const cItems = configured.tab.getSettingDefinitions();
-	s.check(groupHeadings(cItems).join() === "Sync status,Updates,This device,What syncs,Attachments,Collaboration", `configured groups (${groupHeadings(cItems).join()})`);
+	s.check(groupHeadings(cItems).join() === "Sync status,Updates,This device,What syncs,Attachments,Collaboration,P2P (experimental)", `configured groups (${groupHeadings(cItems).join()})`);
 	s.check(advancedItems(cItems).map((i) => ("name" in i ? i.name : "")).join("|") === ["Sync carrier (experimental)", "Vault ID", "Deployment repository URL", "Deployment default branch", "Edits from other apps", "Frontmatter safety guard", "Debug mode", "Sync speed (Cloudflare)", "Group edits for (seconds)", "Status icon in the note header", "Detailed status text", "Reload required"].join("|"), "a configured Cloudflare user finds the carrier row first in Advanced, then the two sync-speed rows and the two status display switches just above the reload note");
 	s.check(!groupItems(cItems, "Sync status").includes("Sync carrier (experimental)"), "and the Sync status group is untouched");
 	const defs = flatten(cItems);

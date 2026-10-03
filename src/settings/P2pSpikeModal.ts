@@ -10,7 +10,19 @@
 
 import { Modal, Notice } from "obsidian";
 import * as QRCode from "qrcode";
-import type { P2pSpikeHost } from "../p2p/spikeHost";
+import type { P2pSpikeHost, TurnOverride } from "../p2p/spikeHost";
+
+/**
+ * Optional TURN bridge: the panel reads the persisted TURN fields on open
+ * and persists them again when the user applies an override from the panel,
+ * so the settings tab and the panel stay one source of truth.
+ */
+export interface P2pSpikeTurnState {
+	url: string;
+	username: string;
+	credential: string;
+	onSave(turn: TurnOverride[]): void;
+}
 
 export class P2pSpikeModal extends Modal {
 	private codeEl: HTMLTextAreaElement | null = null;
@@ -29,6 +41,7 @@ export class P2pSpikeModal extends Modal {
 		app: Modal["app"],
 		private readonly host: P2pSpikeHost,
 		private readonly initialCode: string | null,
+		private readonly turn?: P2pSpikeTurnState,
 	) {
 		super(app);
 	}
@@ -144,6 +157,10 @@ export class P2pSpikeModal extends Modal {
 		turnUser.addClass("yaos-p2p-spike-turn-user");
 		const turnCred = iceBody.createEl("input", { type: "text", placeholder: "credential (optional)" });
 		turnCred.addClass("yaos-p2p-spike-turn-cred");
+		// Pre-fill from the persisted fields when the settings tab provided them.
+		turnUrl.value = this.turn?.url ?? "";
+		turnUser.value = this.turn?.username ?? "";
+		turnCred.value = this.turn?.credential ?? "";
 		const applyBtn = iceBody.createEl("button", { text: "Apply TURN" });
 		applyBtn.addEventListener("click", () => {
 			const url = turnUrl.value.trim();
@@ -151,7 +168,11 @@ export class P2pSpikeModal extends Modal {
 				new Notice("TURN URL is empty.", 6000);
 				return;
 			}
-			this.host.setTurnOverrides([{ url, username: turnUser.value.trim() || undefined, credential: turnCred.value.trim() || undefined }]);
+			const overrides: TurnOverride[] = [
+				{ url, username: turnUser.value.trim() || undefined, credential: turnCred.value.trim() || undefined },
+			];
+			this.host.setTurnOverrides(overrides);
+			this.turn?.onSave(overrides); // persist to settings (no-op without the bridge)
 			new Notice("TURN override applied — generate/join again to use it.", 8000);
 		});
 		const clearBtn = iceBody.createEl("button", { text: "Clear overrides" });

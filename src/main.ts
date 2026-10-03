@@ -165,6 +165,9 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	private traceRuntime: TraceRuntimeController | null = null;
 	/** Phase 0 P2P spike host. UI-free; the modal + __YAOS_P2P_DEBUG__ are thin views. */
 	private p2pSpikeHost: P2pSpikeHost | null = null;
+	/** P2P status-bar item (separate from the sync one; hidden when idle). */
+	private p2pStatusBarEl: HTMLElement | null = null;
+	private p2pStatusTimer: number | null = null;
 	/** Debug runtime handle — null unless debug mode installed it at startup. */
 	private lab: TelemetryRuntimeHandle | null = null;
 
@@ -467,6 +470,14 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		// Phase 0 P2P spike host. Constructed eagerly (cheap, UI-free) so the
 		// pairing deep link can hand a code straight to the join view.
 		this.p2pSpikeHost = new P2pSpikeHost(() => this.settings.vaultId ?? "");
+		// Persisted TURN relay fields (Settings > YAOS > P2P) take effect now
+		// and on every later settings change; empty URL = STUN only.
+		this.applyP2pTurnOverrides();
+		// Separate status-bar item (the existing sync one is untouched):
+		// honest §4.10 wording for the direct link, hidden when idle.
+		this.p2pStatusBarEl = this.addStatusBarItem();
+		this.refreshP2pStatusBar();
+		this.p2pStatusTimer = window.setInterval(() => this.refreshP2pStatusBar(), 1000);
 
 		this.registerObsidianProtocolHandler("yaos", (params) => {
 			const action = typeof params.action === "string" ? params.action : "";
@@ -479,11 +490,11 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 					return;
 				}
 				if (!this.p2pSpikeHost) {
-					new Notice("P2P spike not ready — open the spike panel and paste the code.", 8000);
+						new Notice("P2P spike not ready — open the spike panel and paste the code.", 8000);
+						return;
+					}
+					this.openP2pSpikePanel(code);
 					return;
-				}
-				new P2pSpikeModal(this.app, this.p2pSpikeHost, code).open();
-				return;
 			}
 			void this.setupLinkController?.handleSetupLink(params);
 		});
@@ -652,9 +663,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			name: "P2P spike panel (dev)",
 			checkCallback: (checking: boolean) => {
 				if (!(this.settings.debug || this.settings.qaDebugMode)) return false;
-				if (!checking && this.p2pSpikeHost) {
-					new P2pSpikeModal(this.app, this.p2pSpikeHost, null).open();
-				}
+				if (!checking) this.openP2pSpikePanel(null);
 				return true;
 			},
 		});
@@ -2236,6 +2245,10 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			this.p2pSpikeHost.destroy();
 			this.p2pSpikeHost = null;
 		}
+		if (this.p2pStatusTimer !== null) {
+			window.clearInterval(this.p2pStatusTimer);
+			this.p2pStatusTimer = null;
+		}
 		const staleP2pApi: unknown = Reflect.get(window, "__YAOS_P2P_DEBUG__");
 		if (staleP2pApi) {
 			Reflect.deleteProperty(window, "__YAOS_P2P_DEBUG__");
@@ -2467,6 +2480,126 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 
 	get serverMaxBlobUploadBytes(): number | null {
 		return this.capabilityUpdateService?.capabilities?.maxBlobUploadBytes ?? null;
+	}
+
+	// ── Phase 0 P2P spike: settings surface (see "P2P (experimental)" group) ──
+
+	/**
+	 * Single construction point for the spike panel (command palette, pairing
+	 * deep link, settings "Pair another device" row): the TURN fields are
+	 * read from settings and written back when the panel applies an override.
+	 */
+	private openP2pSpikePanel(code: string | null): void {
+		if (!this.p2pSpikeHost) return;
+		const s = this.settings;
+		new P2pSpikeModal(
+			this.app,
+			this.p2pSpikeHost,
+			code,
+			{
+				url: s.p2pTurnUrl,
+				username: s.p2pTurnUsername,
+				credential: s.p2pTurnCredential,
+				onSave: (turn) => {
+					void this.updateSettings(
+						(settings) => {
+							settings.p2pTurnUrl = turn[0]?.url ?? "";
+							settings.p2pTurnUsername = turn[0]?.username ?? "";
+							settings.p2pTurnCredential = turn[0]?.credential ?? "";
+						},
+						"settings:p2p-turn",
+					);
+				},
+			},
+		).open();
+	}
+
+	/** Push the settings TURN fields to the running spike host (empty URL = STUN only). */
+	private applyP2pTurnOverrides(): void {
+		if (!this.p2pSpikeHost) return;
+		const s = this.settings;
+		const url = s.p2pTurnUrl.trim();
+		if (!url) {
+			this.p2pSpikeHost.setTurnOverrides([]);
+			return;
+		}
+		this.p2pSpikeHost.setTurnOverrides([
+			{
+				url,
+				username: s.p2pTurnUsername.trim() || undefined,
+				credential: s.p2pTurnCredential.trim() || undefined,
+			},
+		]);
+	}
+
+	// VaultSyncSettingsHost — Phase 0 P2P surface (settings "P2P (experimental)" group).
+
+	getP2pPeerSummary(): string {
+		const host = this.p2pSpikeHost;
+		if (!host) return "No P2P link yet.";
+		const s = host.state();
+		if (s.phase === "connected" && s.link) {
+			const state = s.link.channelState === "open" ? "direct" : "unreachable";
+			const seen = s.lastSeen ? ` · last seen ${new Date(s.lastSeen).toLocaleTimeString()}` : "";
+			const rtt = s.lastRttMs !== null ? ` · RTT ${s.lastRttMs} ms` : "";
+			return `1 peer — ${state}${seen}${rtt}`;
+		}
+		if (s.phase === "awaiting-peer") return "Awaiting a peer — share the pairing code or QR.";
+		if (s.phase === "connecting") return "Connecting to the anchor…";
+		if (s.phase === "error" && s.error) return `Error: ${s.error}`;
+		return "No P2P link yet.";
+	}
+
+	openP2pPanel(): void {
+		this.openP2pSpikePanel(null);
+	}
+
+	async runP2pNetworkCheck(): Promise<void> {
+		const host = this.p2pSpikeHost;
+		if (!host) {
+			new Notice("P2P spike not ready — reload the plugin.", 8000);
+			return;
+		}
+		const s = host.state();
+		const c = s.candidates;
+		let report = `P2P check — phase ${s.phase}`;
+		if (s.link) report += ` · ICE ${s.link.iceConnectionState}`;
+		if (s.gathering) report += ` · gathering ${s.gathering}`;
+		report += ` · candidates ${c.total} (host ${c.byType.host}, srflx ${c.byType.srflx}, relay ${c.byType.relay})`;
+		const rtt = await host.ping(3000);
+		report += rtt === null ? " · ping failed (no open link)" : ` · ping ${rtt} ms`;
+		new Notice(report, 10000);
+	}
+
+	applyP2pTurn(): void {
+		this.applyP2pTurnOverrides();
+	}
+
+	/** Concise, honest status-bar wording for the direct link (§4.10); hidden when idle. */
+	private refreshP2pStatusBar(): void {
+		const el = this.p2pStatusBarEl;
+		if (!el) return;
+		const state = this.p2pSpikeHost?.state();
+		if (!state || state.phase === "idle" || state.phase === "closed") {
+			el.setText("");
+			el.hide();
+			return;
+		}
+		el.show();
+		switch (state.phase) {
+			case "connected":
+				el.setText(state.lastRttMs !== null ? `P2P · linked · ${state.lastRttMs} ms` : "P2P · linked");
+				break;
+			case "awaiting-peer":
+				el.setText("P2P · awaiting pair");
+				break;
+			case "connecting":
+				el.setText("P2P · connecting");
+				break;
+			default:
+				el.setText("P2P · error");
+				break;
+		}
 	}
 
 	/** CDP/DevTools view over the Phase 0 P2P spike host (debug-gated). */

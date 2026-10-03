@@ -29,6 +29,7 @@ All of it is dev-only, gated behind the debug setting, and removed from
 | `src/p2p/spikeHost.ts` | UI-free state machine (idle → awaiting-peer/connecting → connected), log, ping, TURN overrides |
 | `src/settings/P2pSpikeModal.ts` | in-app panel ("P2P spike panel (dev)"): anchor/join/Yjs test/ICE overrides/log — plain DOM, works on Android |
 | `src/main.ts` | wiring: `obsidian://yaos?action=p2p-pair&code=…` deep link → join view; command; `window.__YAOS_P2P_DEBUG__` (DevTools surface, mirrors the host API) |
+| `src/settings/settingsTab.ts` + `settingsStore.ts` + `main.ts` (P2P parts) | **"P2P (experimental)" settings group** (plan §8 surface, T1.3 pulled forward): carrier row, honestly-disabled backbone options (Phase 1), persisted TURN fields → spike host, one-peer "This vault" row, *Pair another device* button, *P2P network check* action, §4.10 status-bar copy. Always visible in this test build; the dev-only command/DevTools entry stays debug-gated. |
 
 Pairing code: `YAOS-P2P1:<vaultId>:<vaultSecret>:<b64url(trimmedSDP)>`.
 The QR encodes the **deep link** (URL-encoded code), so a camera scan goes
@@ -84,6 +85,13 @@ WebRTC on real devices — that is the runbook's job.
 
 ## 5. Documented gaps (by choice, not by accident)
 
+- **T1.3 settings surface pulled forward** (2026-10-03): the
+  "P2P (experimental)" settings group ships in this Phase 0 test build
+  (always visible; TURN fields fully functional and persisted). The backbone
+  dropdown options are **disabled placeholders** — the composite carrier
+  (T1.2) and backbone adapters still belong to Phase 1 proper, after the
+  gate. Cellular data saver (A4), secret rotation, and the wizard first
+  screen are not included.
 - **No CDP on phones**: the panel is the mobile control surface; DevTools
   (`__YAOS_P2P_DEBUG__`) is desktop-only.
 - **One data channel only**, mid fixed by the code; no renegotiation.
