@@ -1,4 +1,4 @@
-import { MarkdownView, Menu, Notice, Platform, Plugin, TFile, arrayBufferToHex, setIcon } from "obsidian";
+import { MarkdownView, Menu, Notice, Platform, Plugin, TFile, addIcon, arrayBufferToHex, setIcon } from "obsidian";
 import {
 	DEFAULT_SETTINGS,
 	VaultSyncSettingTab,
@@ -8,6 +8,7 @@ import {
 import { SettingsStore } from "./settings/settingsStore";
 import { resolveCloudflareBatchMs } from "./settings/syncPace";
 import { HeaderStatusIcons } from "./status/headerStatusIcons";
+import { registerStatusIcons } from "./status/statusIcons";
 import { clearSimpleStatusClasses, isDetailedStatusShown, isStatusIconShown, renderSimpleStatusBar, toSimpleStatus, type SimpleStatus } from "./status/simpleStatus";
 import { VaultSync, type ReconcileMode } from "./sync/vaultSync";
 import { SCHEMA_VERSION } from "./sync/vaultSync";
@@ -1900,6 +1901,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 
 	/** The header icon: one small button per open note, plus a menu with the status and a retry. */
 	private setupHeaderStatusIcons(): void {
+		registerStatusIcons(addIcon);
 		const icons = new HeaderStatusIcons({
 			setIcon: (el, icon) => { setIcon(el as HTMLElement, icon); },
 			onClick: (evt) => this.showStatusMenu(evt),

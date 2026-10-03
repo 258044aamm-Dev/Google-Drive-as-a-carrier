@@ -19,6 +19,8 @@ import {
 import { getLabelFromConnectionState } from "../../src/status/statusBarController";
 import { DEFAULT_SETTINGS, readVaultSyncSettings, type VaultSyncSettings } from "../../src/settings/settingsStore";
 import { VaultSyncSettingTab, type VaultSyncSettingsHost } from "../../src/settings/settingsTab";
+import { STATUS_ICON_IDS, registerStatusIcons, statusIconSvg, type StatusIconLevel } from "../../src/status/statusIcons";
+import { readFileSync } from "node:fs";
 import { suite } from "../harness.ts";
 
 const s = suite("status-simple");
@@ -111,16 +113,16 @@ s.section("Test 3: the header icons");
 	icons.sync([v1, v2]);
 	s.check(created.length === 2, "syncing again adds nothing twice");
 	icons.update({ level: "ok", text: "Synced", detail: "d" });
-	s.check(created.every((e) => e.icon === "check" && e.attrs["aria-label"] === "YAOS: Synced" && e.classes.has("yaos-status-ok")), "both are painted");
+	s.check(created.every((e) => e.icon === "yaos-status-ok" && e.attrs["aria-label"] === "YAOS: Synced" && e.classes.has("yaos-status-ok")), "both are painted");
 	const before = iconCalls;
 	icons.update({ level: "ok", text: "Synced", detail: "d" });
 	s.check(iconCalls === before, "an unchanged status does not touch the DOM");
 	icons.update({ level: "offline", text: "Offline", detail: "x" });
-	s.check(created[0]!.icon === "cloud-off" && created[0]!.classes.has("yaos-status-offline") && !created[0]!.classes.has("yaos-status-ok"), "a changed status repaints and swaps the class");
+	s.check(created[0]!.icon === "yaos-status-offline" && created[0]!.classes.has("yaos-status-offline") && !created[0]!.classes.has("yaos-status-ok"), "a changed status repaints and swaps the class");
 	const v3 = makeView();
 	icons.sync([v2, v3]);
 	s.check(created[0]!.removed && !created[1]!.removed && icons.count === 2, "a closed view's icon is dropped");
-	s.check(created[2]!.icon === "cloud-off" && created[2]!.attrs["aria-label"] === "YAOS: Offline", "a new view starts with the current status");
+	s.check(created[2]!.icon === "yaos-status-offline" && created[2]!.attrs["aria-label"] === "YAOS: Offline", "a new view starts with the current status");
 	icons.setEnabled(false);
 	s.check(created.every((e) => e.removed) && icons.count === 0, "switching off removes every icon");
 	icons.sync([v2, v3]);
@@ -172,6 +174,29 @@ s.section("Test 4: the settings");
 	let bad = 0;
 	for (const k of ["showStatusIcon", "detailedStatus"]) { try { await tab.setControlValue(k, "yes"); } catch { bad += 1; } }
 	s.check(bad === 2, "a non-boolean is refused");
+}
+
+s.section("Test 5: the drawn icons");
+{
+	const levels = Object.keys(STATUS_ICON_IDS) as StatusIconLevel[];
+	const registered = new Map<string, string>();
+	registerStatusIcons((id, svg) => { registered.set(id, svg); });
+	s.check(registered.size === 5 && levels.every((l) => registered.has(STATUS_ICON_IDS[l])), "all five icons are registered under their ids");
+	s.check(Object.values(STATUS_ICONS).every((id) => registered.has(id)), "every id the display uses is registered");
+	registerStatusIcons((id, svg) => { registered.set(id, svg); });
+	s.check(registered.size === 5, "registering twice changes nothing");
+	s.check(new Set(levels.map((l) => statusIconSvg(l))).size === 5, "five different drawings");
+	const wellFormed = levels.every((l) => {
+		const svg = statusIconSvg(l);
+		const open = (svg.match(/<g[ >]/g) ?? []).length;
+		const close = (svg.match(/<\/g>/g) ?? []).length;
+		return open === close && svg.includes('stroke="currentColor"') && !/#[0-9a-f]{3,6}|rgb\(/i.test(svg) && svg.includes("M30 76H69");
+	});
+	s.check(wellFormed, "balanced tags, the colour comes from the theme (currentColor), the same cloud in each");
+	s.check(statusIconSvg("busy").includes('class="yaos-spin"') && levels.filter((l) => statusIconSvg(l).includes("yaos-spin")).length === 1, "only the syncing icon has the turning part");
+	const css = readFileSync(new URL("../../styles.css", import.meta.url), "utf8");
+	for (const l of levels) s.check(css.includes(`.yaos-header-status.yaos-status-${l} {`), `styles.css colours the ${l} icon`);
+	s.check(/prefers-reduced-motion: reduce[\s\S]*animation: none/.test(css), "the turning stops when the system asks for reduced motion");
 }
 
 await s.done();

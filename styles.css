@@ -200,20 +200,59 @@ textarea.yaos-wizard-input { min-height: 5em; font-family: var(--font-monospace)
 .yaos-wizard-plain { background: transparent; box-shadow: none; }
 
 /*
- * Status icon in the note header and short status text in the bottom bar.
- * Only warnings and errors get a colour; the rest keep the theme's normal look.
+ * Status text in the bottom bar: only warnings and errors get a colour.
  */
-.yaos-header-status.yaos-status-attention,
 .yaos-status-attention {
 	color: var(--text-warning);
 }
 
-.yaos-header-status.yaos-status-error,
 .yaos-status-error {
 	color: var(--text-error);
 }
 
-.yaos-header-status.yaos-status-offline,
 .yaos-status-offline {
 	color: var(--text-faint);
+}
+
+/*
+ * Status icon in the note header: a cloud whose colour and inner mark show the
+ * state. The strokes use currentColor, so the colour below is all there is.
+ */
+.yaos-header-status.yaos-status-ok {
+	color: var(--color-green);
+}
+
+.yaos-header-status.yaos-status-busy {
+	color: var(--interactive-accent);
+}
+
+.yaos-header-status.yaos-status-offline {
+	color: var(--text-faint);
+}
+
+.yaos-header-status.yaos-status-attention {
+	color: var(--color-orange);
+}
+
+.yaos-header-status.yaos-status-error {
+	color: var(--color-red);
+}
+
+/* While syncing, only the small ring turns; the cloud stays still. */
+.yaos-header-status.yaos-status-busy .yaos-spin {
+	transform-box: view-box;
+	transform-origin: 50px 60px;
+	animation: yaos-status-spin 1.1s linear infinite;
+}
+
+@keyframes yaos-status-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.yaos-header-status.yaos-status-busy .yaos-spin {
+		animation: none;
+	}
 }

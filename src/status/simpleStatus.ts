@@ -1,5 +1,6 @@
 import type { ConnectionState } from "../runtime/connectionController";
 import type { ServerReceiptStatus, SyncStatus } from "./statusBarController";
+import { STATUS_ICON_IDS } from "./statusIcons";
 
 /**
  * A plain-language status for people who just want to know "is it working?".
@@ -84,14 +85,8 @@ function coarseKind(state: SyncStatus): string {
 	return state === "connected" ? "online" : state;
 }
 
-/** Icons that exist in every Obsidian version; the shapes differ so colour is not the only cue. */
-export const STATUS_ICONS: Record<SimpleStatusLevel, string> = {
-	ok: "check",
-	busy: "refresh-cw",
-	offline: "cloud-off",
-	attention: "alert-triangle",
-	error: "alert-circle",
-};
+/** Icon ids (drawn in `statusIcons.ts`; the shapes differ so colour is not the only cue). */
+export const STATUS_ICONS: Record<SimpleStatusLevel, string> = STATUS_ICON_IDS;
 
 const LEVELS: readonly SimpleStatusLevel[] = ["ok", "busy", "offline", "attention", "error"];
 
