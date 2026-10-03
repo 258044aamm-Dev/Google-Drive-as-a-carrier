@@ -6,7 +6,6 @@
 import {
 	App,
 	Plugin,
-	SettingPage,
 	type SettingDefinition,
 	type SettingDefinitionItem,
 } from "obsidian";
@@ -16,7 +15,6 @@ import {
 	isCarrierKind,
 	isDriveCarrier,
 	isDriveSignedIn,
-	isP2pCarrier,
 	newDriveDeviceId,
 } from "../../src/drive-carrier/carrierSettings";
 import { createDriveTransportFactory } from "../../src/drive-carrier/driveCarrierRuntime";
@@ -128,9 +126,7 @@ s.section("Test 1: helpers");
 	s.check(currentCarrier({}) === "cloudflare" && currentCarrier({ carrier: "cloudflare" }) === "cloudflare", "no setting means Cloudflare");
 	s.check(currentCarrier({ carrier: "drive" }) === "drive" && isDriveCarrier({ carrier: "drive" }), "drive when chosen");
 	s.check(currentCarrier({ carrier: "bogus" as never }) === "cloudflare", "an unknown value falls back to Cloudflare");
-	s.check(isCarrierKind("drive") && isCarrierKind("cloudflare") && isCarrierKind("p2p") && !isCarrierKind("s3"), "carrier names validated");
-	s.check(currentCarrier({ carrier: "p2p" }) === "p2p" && isP2pCarrier({ carrier: "p2p" }), "p2p when chosen");
-	s.check(!isP2pCarrier({}) && !isP2pCarrier({ carrier: "drive" }) && !isP2pCarrier({ carrier: "cloudflare" }) && !isP2pCarrier({ carrier: "bogus" as never }), "p2p never means anything else (absent, drive, cloudflare, unknown)");
+	s.check(isCarrierKind("drive") && isCarrierKind("cloudflare") && !isCarrierKind("s3"), "carrier names validated");
 	s.check(!isDriveSignedIn({}) && !isDriveSignedIn({ driveClientId: "a", driveClientSecret: "b" }) && !isDriveSignedIn({ driveClientId: " ", driveClientSecret: "b", driveRefreshToken: "r" }), "signed in needs client id, secret and refresh token");
 	s.check(isDriveSignedIn({ driveClientId: "a", driveClientSecret: "b", driveRefreshToken: "r" }), "complete settings count as signed in");
 	s.check(driveFolderLabel("abc") === "YAOS abc", "folder label");
@@ -161,8 +157,6 @@ s.section("Test 3: default (Cloudflare) screens are the same as before, plus one
 {
 	const unconfigured = makeFixture();
 	const items = unconfigured.tab.getSettingDefinitions();
-	// The P2P (experimental) group is NOT part of the Cloudflare layouts: it
-	// is shown only while the P2P carrier is selected (plan §8 shape).
 	s.check(groupHeadings(items).join() === "Setup,This device,What syncs,Attachments,Collaboration", `unconfigured groups (${groupHeadings(items).join()})`);
 	s.check(pageNames(items).join() === "Manual connection,Advanced", "pages unchanged");
 	const adv = advancedItems(items);
@@ -196,8 +190,6 @@ s.section("Test 4: choosing the carrier");
 	let wrongType = false;
 	try { await f.tab.setControlValue("carrier", 3); } catch { wrongType = true; }
 	s.check(wrongType, "a non-string is rejected");
-	await f.tab.setControlValue("carrier", "p2p");
-	s.check(f.settings.carrier === "p2p" && f.reasons.at(-1) === "settings:carrier", "p2p can be chosen");
 	await f.tab.setControlValue("driveClientId", "  id-1 ");
 	await f.tab.setControlValue("driveClientSecret", " sec ");
 	s.check(f.settings.driveClientId === "id-1" && f.settings.driveClientSecret === "sec", "client details are trimmed and saved");
@@ -210,46 +202,6 @@ s.section("Test 4: choosing the carrier");
 	let badPass = false;
 	try { await f.tab.setControlValue("driveEncryptionPassphrase", 5); } catch { badPass = true; }
 	s.check(badPass, "a non-string passphrase is rejected");
-}
-
-s.section("Test 4b: the P2P carrier layout (designed home page + Advanced page)");
-{
-	const p = makeFixture({ carrier: "p2p" });
-	const items = p.tab.getSettingDefinitions();
-	// Top level: the carrier row, the P2P home page, the Advanced page —
-	// and nothing else (no Drive/CF leak).
-	s.check(items.length === 3, `top level is exactly row + home page + advanced page (${items.length})`);
-	s.check(!("type" in items[0]!) && items[0]!.name === "Sync carrier (experimental)", "the carrier row comes first, so switching back is one tap away");
-	const p2pCarrierDesc = (items[0] as { desc?: string }).desc ?? "";
-	s.check(p2pCarrierDesc.includes("NOT synced over P2P"), "the carrier row says plainly that notes are not synced over P2P yet");
-	const cfCarrierDesc = String(flatten(makeFixture().tab.getSettingDefinitions()).find((d) => d.name === "Sync carrier (experimental)")?.desc ?? "");
-	s.check(cfCarrierDesc !== "" && !cfCarrierDesc.includes("P2P"), "the Cloudflare layout's carrier row text is unchanged");
-	s.check(pageNames(items).join("|") === "P2P (experimental)|Advanced", `the two navigable pages (${pageNames(items).join(" / ")})`);
-	const home = items[1] as { type?: string; page?: () => unknown; desc?: string } | undefined;
-	s.check(home?.type === "page" && typeof home?.page === "function", "the P2P home is a custom page (factory), not a flat row group");
-	s.check(home?.page?.() instanceof SettingPage, "the home page factory constructs a SettingPage instance");
-	s.check(
-		home?.desc === "Link devices directly — pair with a code. Connection test only.",
-		`the home page row invites pairing without jargon (${home?.desc ?? "—"})`,
-	);
-	const advanced: string[] = [];
-	for (const item of items) {
-		if ("type" in item && item.type === "page" && item.name === "Advanced") {
-			advanced.push(...(item.items ?? []).map((i) => ("name" in i ? String(i.name) : "")));
-		}
-	}
-	s.check(advanced.join("|") === "Backbone (optional)|TURN URL (advanced)|TURN username (optional)|TURN credential (optional)|P2P network check|Debug mode", `Advanced page holds the technical controls (${advanced.join("|")})`);
-	const control = flatten(items).find((d) => d.name === "Sync carrier (experimental)")?.control as { type?: string; options?: Record<string, string> } | undefined;
-	const opts = control && control.type === "dropdown" ? Object.values(control.options ?? {}) : [];
-	s.check(opts.length === 3 && opts.includes("P2P (experimental)"), `dropdown offers all three carriers (${opts.join(" / ")})`);
-	// Every other carrier: the P2P surface is fully dormant.
-	for (const other of [makeFixture(), makeFixture({ carrier: "drive" })]) {
-		const otherItems = other.tab.getSettingDefinitions();
-		const p2pLeak = groupHeadings(otherItems).includes("P2P (experimental)")
-			|| pageNames(otherItems).includes("P2P (experimental)")
-			|| flatten(otherItems).some((d) => String(d.name).includes("P2P") || /^TURN /u.test(String(d.name)));
-		s.check(!p2pLeak, `no P2P surface on the ${other.settings.carrier ?? "cloudflare"} layout`);
-	}
 }
 
 s.section("Test 5: Drive screens");
