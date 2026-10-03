@@ -34,6 +34,12 @@ This file is specific to this fork. It is not part of upstream YAOS.
 - Code: new `src/status/simpleStatus.ts` (pure: `toSimpleStatus`) and `src/status/headerStatusIcons.ts`; `main.ts` (`updateStatusBar` picks short or long text; `setupHeaderStatusIcons`; `applyStatusDisplay`); two switches in `settingsTab.ts`; styles in `styles.css`. `statusBarController.ts` (the long labels) is NOT changed, and its 74 checks pass unchanged. Two optional settings fields (`showStatusIcon`, `detailedStatus`); nothing is stored for the defaults.
 - New test: `tests/client/status-simple.ts` (57 checks). Existing tests changed on purpose, all in `drive-carrier-settings`: three assertions that list the rows of the Advanced page now list the two new switches (Cloudflare without a server, Cloudflare with a server, Drive). Nothing else changed.
 
+### Fixed (engine, every carrier including Cloudflare: two gaps next to upstream PR #80)
+- **A conflict note is never written to disk by `DiskMirror`, however the write is asked for.** The `.8` fix stopped the startup reconcile from re-creating a conflict note that is still an active shared entry, but other paths into `DiskMirror.flushWrite` (a remote update to such an entry, a snapshot restore, a forced write) could still create or overwrite the file. `flushWrite` now returns early for any conflict-note path. The shared entry itself is left alone; deleting the file still records the delete (the `.8` fix). Conflict notes are local-only by contract, so nothing that was meant to sync is affected; the one visible difference is that an old shared conflict note no longer follows remote edits to its text on disk.
+- **A conflict copy whose extension is upper case (`.MD`) is recognised as a conflict note.** The name pattern was case-sensitive on the extension. Effect: the delete rule, the reconcile filter and the new write gate treat such a copy like the others. (`.MD` files are not treated as notes elsewhere in the engine, and that is unchanged.)
+- Code: `flushWriteUnlocked` in `src/sync/diskMirror.ts` (one early return); the pattern in `src/sync/markdownConflictArtifact.ts` (`\.[mM][dD]$`).
+- New test: `tests/client/engine-conflict-note-writeback.ts` (16 checks; 6 of them fail without the change). Existing tests unchanged.
+
 ## 2.1.1-drive.8 - 2026-10-03
 
 ### Fixed (engine, every carrier including Cloudflare)

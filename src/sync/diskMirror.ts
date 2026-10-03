@@ -12,6 +12,7 @@ import {
 } from "./frontmatterGuard";
 import { isLocalOrigin } from "./origins";
 import { contentBaselineHash } from "./diskIndex";
+import { isMarkdownConflictArtifactPath } from "./markdownConflictArtifact";
 import { PreservedUnresolvedRegistry, type PreservedUnresolvedEntry, type PreservedUnresolvedReason } from "./preservedUnresolved";
 export { isLocalOrigin };
 
@@ -525,6 +526,14 @@ export class DiskMirror {
 	}
 
 	private async flushWriteUnlocked(path: string, force: boolean): Promise<void> {
+		// Conflict notes are local-only by contract. A vault can still hold one as
+		// an active shared entry (it synced in 2.1.0); keeping the entry is fine,
+		// but it must never be written to disk, even when forced or when a remote
+		// update arrives, or a deleted note comes back (upstream issue #78).
+		if (isMarkdownConflictArtifactPath(path)) {
+			this.log(`flushWrite: "${path}" is a conflict note (local-only), not writing it`);
+			return;
+		}
 		const ytext = this.vaultSync.getTextForPath(path);
 		if (!ytext) {
 			this.log(`flushWrite: no Y.Text for "${path}", skipping`);
