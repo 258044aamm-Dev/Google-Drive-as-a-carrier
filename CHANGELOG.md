@@ -8,7 +8,7 @@ Version numbers like `2.1.1-drive.3` exist only in each release's `manifest.json
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
-## Unreleased - 2.1.1-drive.10 (committed locally, not published)
+## 2.1.1-drive.10 - 2026-10-03
 
 ### Changed (header status icon, every carrier)
 - **A nicer header icon.** The five states are now one drawn cloud with a small mark inside: a check (synced), a turning ring (syncing), a slash across the cloud (offline), an exclamation mark (needs a look) and a cross (error). The icons are drawn by the plugin (registered with Obsidian's `addIcon`) instead of borrowed from the built-in icon set, so they look the same in every Obsidian version and stay readable at header size. Colour follows the theme: green, accent colour, faint grey, orange, red. While syncing only the small ring turns (the cloud stays still); the turning stops when the system asks for reduced motion. The shapes still differ, so colour is not the only cue. Preview: `docs/status-icons-preview.png`.
