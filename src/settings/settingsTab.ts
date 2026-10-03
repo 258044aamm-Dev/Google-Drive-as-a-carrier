@@ -20,6 +20,8 @@ import {
 } from "../drive-carrier/carrierSettings";
 import { checkHostedToken, normalizeHostedToken } from "../drive-carrier/wizard/validate";
 import { isDetailedStatusShown, isStatusIconShown } from "../status/simpleStatus";
+import type { P2pSpikeHost } from "../p2p/spikeHost";
+import { P2pHomeSettingPage } from "./P2pHomeSettingPage";
 import { CUSTOM_LIMITS, currentSyncPace, isSyncPaceProfile, resolveCloudflareBatchMs, resolveDrivePace, type SyncPaceCustom, type SyncPaceProfile } from "./syncPace";
 import { PairDeviceModal } from "./PairDeviceModal";
 import { RecoveryKitModal } from "./RecoveryKitModal";
@@ -104,8 +106,8 @@ export interface VaultSyncSettingsHost {
 	/** Redraws the status bar and adds or removes the header icons after a status display setting changed. */
 	applyStatusDisplay?(): void;
 	/**
-	 * Phase 0 P2P spike — one-line peer summary for the "This vault" row in
-	 * the P2P settings group. Absent on hosts that do not run the spike.
+	 * Phase 0 P2P spike — one-line peer summary for the "This vault" line on
+	 * the P2P home page. Absent on hosts that do not run the spike.
 	 */
 	getP2pPeerSummary?(): string;
 	/** Phase 0 P2P spike — opens the spike panel (pairing code + QR / join). */
@@ -114,6 +116,16 @@ export interface VaultSyncSettingsHost {
 	runP2pNetworkCheck?(): void;
 	/** Phase 0 P2P spike — push the just-saved TURN fields to the running spike host. */
 	applyP2pTurn?(): void;
+	/**
+	 * The running spike host, for the P2P settings home page. Null while the
+	 * host is not initialized (e.g. the P2P carrier is not selected).
+	 */
+	getP2pSpikeHost?(): P2pSpikeHost | null;
+	/**
+	 * A pairing code handed over by the pairing deep link — read and cleared
+	 * exactly once, by the P2P home page (which pre-fills the join field).
+	 */
+	takePendingP2pPairCode?(): string | null;
 }
 
 const CLOUDFLARE_DEPLOY_URL = "https://deploy.workers.cloudflare.com/?url=https://github.com/kavinsood/yaos/tree/main/server";
@@ -484,11 +496,12 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 		if (isP2pCarrier(this.host.settings)) {
 			// P2P carrier mode (Phase 0 spike, plan §8): the carrier row on
 			// top (switching back is one tap away — a reload is needed, like
-			// every carrier change), then the beginner section (the pairing
-			// path, no scrolling past technical rows), then the navigable
-			// Advanced sub-page with the power controls. The Drive/CF-specific
-			// pages do not apply here: the P2P link carries no notes yet.
-			return [this.carrierRow(), this.p2pBeginnerGroup(), this.p2pAdvancedPage()];
+			// every carrier change), then the designed P2P home page (status
+			// card + pairing flow + peer line — the pairing path, no overlay),
+			// then the navigable Advanced sub-page with the power controls.
+			// The Drive/CF-specific pages do not apply here: the P2P link
+			// carries no notes yet.
+			return [this.carrierRow(), this.p2pHomePage(), this.p2pAdvancedPage()];
 		}
 		return this.withStatusRows(this.applyCarrierChoiceRows(definitions));
 	}
@@ -503,31 +516,19 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 	}
 
 	/**
-	 * Phase 0 P2P spike — the BEGINNER section. Shown ONLY when the P2P
-	 * carrier is selected (for every other carrier the whole P2P surface is
-	 * dormant). This is what a first-time user sees on the P2P screen: the
-	 * explanation, the pairing action, and the current link state — nothing
-	 * technical. The power controls live in the Advanced sub-page.
+	 * Phase 0 P2P spike — the P2P HOME page (Milestone B2). Shown ONLY when
+	 * the P2P carrier is selected (for every other carrier the whole P2P
+	 * surface is dormant). A custom, designed sub-page (status card +
+	 * pairing flow + peer line) instead of the .14 flat row group — the
+	 * pairing flow lives here, in the settings UI, not in an overlay.
+	 * Power controls live in the Advanced sub-page.
 	 */
-	private p2pBeginnerGroup(): SettingDefinitionGroup {
+	private p2pHomePage(): SettingDefinitionPage {
 		return {
-			type: "group",
-			heading: "P2P (experimental)",
-			items: [
-				{
-					name: "Direct P2P link",
-					desc: "Devices find each other with a pairing code or QR — nothing to deploy, nothing to sign up for. Test build for the feasibility check.",
-				},
-				{
-					name: "Pair another device (QR + code)",
-					desc: "Opens the P2P panel: generate a pairing code + QR here, or join with a code from another device.",
-					action: () => { this.host.openP2pPanel?.(); },
-				},
-				{
-					name: "This vault",
-					desc: this.host.getP2pPeerSummary?.() ?? "No P2P link yet.",
-				},
-			],
+			type: "page",
+			name: "P2P (experimental)",
+			desc: "Link devices directly — pair with a code or QR.",
+			page: () => new P2pHomeSettingPage(this.host),
 		};
 	}
 
@@ -561,9 +562,16 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 					control: { type: "text", key: "p2pTurnCredential" },
 				},
 				{
+					// A visible real button (the declarative action row looks
+					// like plain text at rest — users couldn't tell it was
+					// clickable, Milestone B2 complaint #1).
 					name: "P2P network check",
 					desc: "Reports the last gathered candidate types and the current link state.",
-					action: () => { this.host.runP2pNetworkCheck?.(); },
+					render: (setting) => {
+						setting.settingEl.createEl("button", { text: "Run check", cls: "yaos-p2p-btn" }).addEventListener("click", () => {
+							this.host.runP2pNetworkCheck?.();
+						});
+					},
 				},
 				{
 					name: "Debug mode",

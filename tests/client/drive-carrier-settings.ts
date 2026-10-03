@@ -6,6 +6,7 @@
 import {
 	App,
 	Plugin,
+	SettingPage,
 	type SettingDefinition,
 	type SettingDefinitionItem,
 } from "obsidian";
@@ -211,18 +212,22 @@ s.section("Test 4: choosing the carrier");
 	s.check(badPass, "a non-string passphrase is rejected");
 }
 
-s.section("Test 4b: the P2P carrier layout (section-based: beginner + Advanced page)");
+s.section("Test 4b: the P2P carrier layout (designed home page + Advanced page)");
 {
 	const p = makeFixture({ carrier: "p2p" });
 	const items = p.tab.getSettingDefinitions();
-	// Top level: the carrier row, the beginner group, the Advanced page —
+	// Top level: the carrier row, the P2P home page, the Advanced page —
 	// and nothing else (no Drive/CF leak).
-	s.check(items.length === 3, `top level is exactly row + group + page (${items.length})`);
+	s.check(items.length === 3, `top level is exactly row + home page + advanced page (${items.length})`);
 	s.check(!("type" in items[0]!) && items[0]!.name === "Sync carrier (experimental)", "the carrier row comes first, so switching back is one tap away");
-	s.check(groupHeadings(items).join() === "P2P (experimental)", `beginner group is the single group (${groupHeadings(items).join()})`);
-	s.check(pageNames(items).join() === "Advanced", `navigable Advanced sub-page (${pageNames(items).join()})`);
-	const beginner = groupItems(items, "P2P (experimental)");
-	s.check(beginner.join("|") === "Direct P2P link|Pair another device (QR + code)|This vault", `beginner section is the pairing path, no technical rows (${beginner.join("|")})`);
+	s.check(pageNames(items).join("|") === "P2P (experimental)|Advanced", `the two navigable pages (${pageNames(items).join(" / ")})`);
+	const home = items[1] as { type?: string; page?: () => unknown; desc?: string } | undefined;
+	s.check(home?.type === "page" && typeof home?.page === "function", "the P2P home is a custom page (factory), not a flat row group");
+	s.check(home?.page?.() instanceof SettingPage, "the home page factory constructs a SettingPage instance");
+	s.check(
+		home?.desc === "Link devices directly — pair with a code or QR.",
+		`the home page row invites pairing without jargon (${home?.desc ?? "—"})`,
+	);
 	const advanced: string[] = [];
 	for (const item of items) {
 		if ("type" in item && item.type === "page" && item.name === "Advanced") {
@@ -237,6 +242,7 @@ s.section("Test 4b: the P2P carrier layout (section-based: beginner + Advanced p
 	for (const other of [makeFixture(), makeFixture({ carrier: "drive" })]) {
 		const otherItems = other.tab.getSettingDefinitions();
 		const p2pLeak = groupHeadings(otherItems).includes("P2P (experimental)")
+			|| pageNames(otherItems).includes("P2P (experimental)")
 			|| flatten(otherItems).some((d) => String(d.name).includes("P2P") || /^TURN /u.test(String(d.name)));
 		s.check(!p2pLeak, `no P2P surface on the ${other.settings.carrier ?? "cloudflare"} layout`);
 	}

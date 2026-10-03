@@ -85,16 +85,21 @@ WebRTC on real devices — that is the runbook's job.
 
 ## 5. Documented gaps (by choice, not by accident)
 
-- **T1.3 settings surface (plan §8 shape, section-based, 2026-10-03):**
+- **T1.3 settings surface (plan §8 shape, redesigned, drive.15):**
   "P2P (experimental)" is a **carrier option** in the
   "Sync carrier (experimental)" dropdown. The P2P surface is visible
   **only while the P2P carrier is selected**: the tab is the carrier row,
-  a **beginner section** (plain explanation, *Pair another device (QR +
-  code)*, *This vault* status — the pairing path with no technical rows),
-  and a navigable **Advanced sub-page** (Backbone, TURN URL/username/
-  credential, P2P network check, Debug mode). With any other carrier the
-  whole P2P surface is dormant (no P2P screen, no status-bar item, pairing
-  links not accepted). TURN fields are fully functional and persisted. The
+  a navigable **"P2P (experimental)" home page** (a status card — link
+  state / RTT / last seen — plus the **pairing flow**: generate code + QR,
+  join with a code, disconnect, live status line, and the *This vault* peer
+  line — the pairing path, in the settings UI, no overlay) and a navigable
+  **Advanced sub-page** (Backbone, TURN URL/username/credential, P2P
+  network check as a visible *Run check* button, Debug mode). With any
+  other carrier the whole P2P surface is dormant (no P2P screen, no
+  status-bar item, pairing links not accepted). The pairing deep link
+  opens the home page with the join field pre-filled (fallback: the dev
+  panel, which is unchanged and keeps all dev controls — Live Yjs test, ICE
+  overrides, log). TURN fields are fully functional and persisted. The
   backbone options are **disabled placeholders** — the composite carrier
   (T1.2) and backbone adapters still belong to Phase 1 proper, after the
   gate. Cellular data saver (A4), secret rotation, and the wizard first

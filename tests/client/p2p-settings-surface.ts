@@ -1,14 +1,14 @@
 /**
- * Phase 0 P2P spike — settings surface ("P2P (experimental)" group).
+ * Phase 0 P2P spike — settings surface (Milestone B2 redesign).
  *
- * Verifies the plan §8 settings shape: the P2P surface is visible ONLY while
- * the P2P carrier is selected (dormant for every other carrier); the layout
- * is carrier row + beginner section (pairing path) + navigable Advanced
- * sub-page (technical controls); the TURN fields persist and push to the
- * spike host; the peer summary and action rows are wired; and the settings
- * keys have safe defaults.
+ * Verifies the plan §8 settings shape after the redesign: the P2P surface is
+ * visible ONLY while the P2P carrier is selected (dormant for every other
+ * carrier); the layout is carrier row + custom P2P home page (pairing path)
+ * + navigable Advanced sub-page (technical controls, buttonified network
+ * check); the TURN fields persist and push to the spike host; and the
+ * settings keys have safe defaults.
  */
-import { App, Plugin, type SettingDefinition, type SettingDefinitionItem } from "obsidian";
+import { App, Plugin, SettingPage, type SettingDefinition, type SettingDefinitionItem } from "obsidian";
 import {
 	DEFAULT_SETTINGS,
 	readVaultSyncSettings,
@@ -106,14 +106,17 @@ interface P2pRow {
 	name: string;
 	desc?: string;
 	action?: () => void;
+	/** Per-row DOM hook (the declarative API's buttonification mechanism). */
+	render?: (setting: { settingEl: { createEl(tag: string, opts?: { text?: string; cls?: string }): { addEventListener(ev: string, cb: () => void): void } } }) => void;
 	control?: { type: string; key: string };
 }
 
-function p2pGroup(tab: VaultSyncSettingTab): P2pRow[] | null {
+/** The custom "P2P (experimental)" home page (null when not on the P2P carrier). */
+function p2pHomePage(tab: VaultSyncSettingTab): { name: string; desc?: string; page?: () => unknown } | null {
 	const items = tab.getSettingDefinitions();
 	for (const item of items) {
-		if ("type" in item && item.heading === "P2P (experimental)" && item.items) {
-			return item.items as P2pRow[];
+		if ("type" in item && item.type === "page" && item.name === "P2P (experimental)") {
+			return item as { name: string; desc?: string; page?: () => unknown };
 		}
 	}
 	return null;
@@ -130,21 +133,19 @@ function p2pAdvancedRows(tab: VaultSyncSettingTab): P2pRow[] {
 	return [];
 }
 
-s.section("1: group visible only while the P2P carrier is selected");
+s.section("1: home page visible only while the P2P carrier is selected");
 {
-	// P2P carrier: carrier row + beginner group + navigable Advanced page.
+	// P2P carrier: carrier row + custom home page + navigable Advanced page.
 	const p2p = createFixture({ host: "https://x.example", token: "t" });
-	const group = p2pGroup(p2p.tab);
+	const home = p2pHomePage(p2p.tab);
 	const advanced = p2pAdvancedRows(p2p.tab);
-	s.check(group !== null, "beginner group present with the P2P carrier selected");
+	s.check(home !== null, "custom P2P home page present with the P2P carrier selected");
 	s.check(
 		p2p.tab.getSettingDefinitions().length === 3 && advanced.length === 6,
-		"the P2P tab is carrier row + beginner group + Advanced page",
+		"the P2P tab is carrier row + home page + Advanced page",
 	);
-	if (group) {
-		const names = group.map((g) => g.name);
-		s.check(names.join("|") === "Direct P2P link|Pair another device (QR + code)|This vault", `beginner section is the pairing path, nothing technical (${names.join("|")})`);
-	}
+	s.check(home?.type === "page" && typeof home?.page === "function", "the home page is a custom SettingPage (factory), not flat rows");
+	s.check(home?.page?.() instanceof SettingPage, "the home page factory constructs a SettingPage instance");
 	if (advanced.length) {
 		const names = advanced.map((g) => g.name);
 		s.check(names.includes("Backbone (optional)"), "backbone row present (Advanced)");
@@ -157,8 +158,8 @@ s.section("1: group visible only while the P2P carrier is selected");
 	}
 
 	// Every other carrier: the whole P2P surface is dormant.
-	s.check(p2pGroup(createFixture({ carrier: "cloudflare" }).tab) === null, "no P2P group on the Cloudflare (default) layout");
-	s.check(p2pGroup(createFixture({ host: "", token: "", carrier: "drive", driveClientId: "c" }).tab) === null, "no P2P group on the Drive layout");
+	s.check(p2pHomePage(createFixture({ carrier: "cloudflare" }).tab) === null, "no P2P home page on the Cloudflare (default) layout");
+	s.check(p2pHomePage(createFixture({ host: "", token: "", carrier: "drive", driveClientId: "c" }).tab) === null, "no P2P home page on the Drive layout");
 }
 
 s.section("2: TURN fields persist and push to the spike");
@@ -186,20 +187,29 @@ s.section("2: TURN fields persist and push to the spike");
 	});
 }
 
-s.section("3: action rows and peer summary wiring");
+s.section("3: buttonified network check and peer summary source");
 {
 	const { tab, p2pCalls } = createFixture();
-	const group = p2pGroup(tab);
+	const home = p2pHomePage(tab);
 	const advanced = p2pAdvancedRows(tab);
-	s.check(group !== null, "group present for wiring checks");
-	if (group) {
-		const peer = group.find((g) => g.name === "This vault");
-		s.check(peer?.desc === "1 peer — direct · last seen 10:00:00", "peer row shows the host summary");
-		group.find((g) => g.name === "Pair another device (QR + code)")?.action?.();
-		s.check(p2pCalls.filter((c) => c === "panel-opened").length === 1, "pair row opens the panel");
-	}
-	advanced.find((g) => g.name === "P2P network check")?.action?.();
-	s.check(p2pCalls.includes("network-check"), "check row (Advanced page) runs the network check");
+	s.check(home !== null, "home page present for wiring checks");
+	const checkRow = advanced.find((g) => g.name === "P2P network check");
+	s.check(typeof checkRow?.render === "function", "network check row uses the render hook (a visible button, not an action row)");
+	let click: (() => void) | null = null;
+	let buttonLabel: string | null = null;
+	checkRow?.render?.({
+		settingEl: {
+			createEl: (tag, opts) => {
+				if (tag === "button") buttonLabel = opts?.text ?? null;
+				return {
+					addEventListener: (_ev, cb) => { click = cb; },
+				};
+			},
+		},
+	});
+	s.check(buttonLabel === "Run check", `the render hook builds a labeled button (${buttonLabel ?? "none"})`);
+	click?.();
+	s.check(p2pCalls.includes("network-check"), "clicking the button runs the network check");
 }
 
 s.section("4: defaults and hosts without the spike");
@@ -210,7 +220,8 @@ s.section("4: defaults and hosts without the spike");
 	s.check(persisted.p2pTurnUrl === "turn:h:3478", "persisted TURN value survives the merge");
 
 	// A host without the P2P methods (e.g. future/other hosts) still renders
-	// the group (P2P carrier selected).
+	// the home page (P2P carrier selected) — the page factory must construct
+	// without spike access.
 	const base: VaultSyncSettings = { carrier: "p2p", ...DEFAULT_SETTINGS };
 	const host: VaultSyncSettingsHost = {
 		settings: base,
@@ -240,10 +251,9 @@ s.section("4: defaults and hosts without the spike");
 		buildRecoveryKitText: () => null,
 	};
 	const tab = new VaultSyncSettingTab(new App(), Object.create(Plugin.prototype) as Plugin, host);
-	const group = p2pGroup(tab);
-	s.check(group !== null, "group renders without spike host methods");
-	const peer = group?.find((g) => g.name === "This vault");
-	s.check(peer?.desc === "No P2P link yet.", "peer row falls back to the neutral text");
+	const home = p2pHomePage(tab);
+	s.check(home !== null, "home page renders without spike host methods");
+	s.check(home?.page?.() instanceof SettingPage, "home page constructs without spike host methods");
 }
 
 await s.done();

@@ -16,14 +16,18 @@ feasibility doc's documented gaps).
 4. **Both devices**: **Settings → YAOS → "Sync carrier (experimental)"** →
    select **P2P (experimental)** → **reload the plugin** (or restart
    Obsidian). The settings tab becomes the P2P screen: the carrier row on
-   top (switching back is one tap away), then the **"P2P (experimental)"**
-   section — *Direct P2P link* (what it is), **Pair another device
-   (QR + code)** (opens the spike panel), *This vault* (link status) — and
-   a navigable **Advanced** sub-page holding *Backbone* (Phase 1), the
-   *TURN* fields (the primary way to set a relay, T0.5), *P2P network
-   check*, and *Debug mode*. With any other carrier selected the P2P
-   surface is fully dormant (no P2P screen, no P2P status-bar item,
-   pairing links are not accepted).
+   top (switching back is one tap away), then a navigable
+   **"P2P (experimental)"** home page — a **status card** (dot + link state:
+   linked / awaiting / connecting / error / no link), a **Pair another
+   device** section (*Generate pairing code* → code textarea + *Copy code* +
+   a **QR** of the deep link; a join field + *Join* for codes from other
+   devices; *Disconnect* while linked; a live `phase · ice · RTT` line) and
+   a **This vault** peer line — plus a navigable **Advanced** sub-page
+   holding *Backbone* (Phase 1), the *TURN* fields (the primary way to set a
+   relay, T0.5), *P2P network check* (a real *Run check* button), and
+   *Debug mode*. With any other carrier selected the P2P surface is fully
+   dormant (no P2P screen, no P2P status-bar item, pairing links are not
+   accepted).
 5. **Optional, for the command palette + DevTools**: turn **Debug mode** on
    (Settings → YAOS → the P2P screen's **Advanced** sub-page) and restart
    Obsidian. With the P2P
@@ -34,6 +38,16 @@ feasibility doc's documented gaps).
    `clearTurn()`, `close()`). The phone has **no CDP** — the panel is its
    whole surface. While a link is active, the bottom status bar shows
    `P2P · linked` (+ RTT) / `P2P · awaiting pair` / `P2P · connecting`.
+
+### Where pairing lives (drive.15+)
+
+Pairing (generate / join / disconnect) is on the **P2P home page** (the
+user surface — settings UI, no overlay). The dev **panel** keeps the same
+pairing controls plus its dev-only sections (Live Yjs test, ICE overrides,
+log) and is reached via Debug mode → command palette. The pairing deep link
+opens the **P2P home page** with the join field pre-filled; on a build/Obsidian
+where the settings tab cannot be opened programmatically it falls back to the
+dev panel with the join pre-filled — record which one you see.
 
 ### Panel tour (both devices, identical)
 
@@ -61,8 +75,9 @@ strings.
 
 ## 1. Reset between legs
 
-*Close link* in the panel (or `__YAOS_P2P_DEBUG__.close()` on desktop),
-watch the phase return to `idle`/`closed`, then re-generate. Generating
+*Close link* in the panel (or *Disconnect* on the P2P home page, or
+`__YAOS_P2P_DEBUG__.close()` on desktop), watch the phase return to
+`idle`/`closed`, then re-generate. Generating
 re-gathers candidates, so a stale offer never leaks into the next leg.
 
 ## 2. Leg ordering (cheap → expensive)
@@ -86,10 +101,11 @@ that is T0.3 evidence either way.
 
 Goal: both Obsidian instances reach `channel: open` with no code changes.
 
-1. Desktop: panel → **Generate pairing code**. Note the size line.
+1. Desktop: **P2P home page** (Settings → YAOS → P2P (experimental); the dev
+   panel works too) → **Generate pairing code**. Note the size line.
 2. Android: copy the code (clipboard share, or retype the prefix + scan the
-   text off the desktop screen if clipboard sharing is flaky) → panel →
-   paste → **Join**.
+   text off the desktop screen if clipboard sharing is flaky) → P2P home
+   page (or dev panel) → paste → **Join**.
 3. Expected: joiner `phase: connecting` → `connected`; anchor the same;
    `ice: connected`, `channel: open` within seconds. Log shows gathered
    candidate types.
@@ -111,8 +127,10 @@ is actually scannable on the phone.
    link* disclosure and confirm the shape.
 3. Android (camera app, **not** Obsidian yet): point at the desktop screen's
    QR. Expected: the phone's browser/OS offers to open Obsidian → the
-   deep link fires → Obsidian opens with the **join view pre-filled** with
-   the code (the code is visible in section 2 of the panel).
+   deep link fires → Obsidian opens the **P2P home page** (Settings → YAOS →
+   P2P (experimental)) with the **join field pre-filled** with the code.
+   (Fallback build behavior: the dev panel opens with the join pre-filled —
+   record which.)
 4. Tap **Join** (or it joins straight through — record which).
 5. If the scan fails: note *why* (focus, screen size, Obsidian not
    foreground, `obsidian://` blocked by a browser) and use the paste
@@ -125,15 +143,16 @@ worked / degraded to paste + reason); code byte count recorded.
 
 ## 5. T0.3 — deep-link proof (Android)
 
-Goal: `QR → camera → obsidian://yaos?action=p2p-pair&code=… → join view`.
+Goal: `QR → camera → obsidian://yaos?action=p2p-pair&code=… → join field pre-filled on the P2P home page`.
 
 This is the same chain as §4 step 3–5, but judged separately:
 
-- **Handler fired** = Obsidian foregrounded with the join view open and the
-  code pre-filled. (A `Notice` "P2P pairing link is missing a code." means
+- **Handler fired** = Obsidian foregrounded on the P2P home page (or the
+  dev panel, fallback) with the join field pre-filled. (A `Notice` "P2P
+  pairing link is missing a code." means
   the handler fired but the param didn't survive — a real bug, file it.)
 - Record: cold start vs warm start of Obsidian, which intermediary the OS
-  used (direct intent / browser), time from scan to join view.
+  used (direct intent / browser), time from scan to pre-filled join field.
 - The plan doc's older form (`obsidian://yaos/p2p-pair?code=…`) is **wrong**;
   the handler is `action=p2p-pair` (feasibility doc §4.6). Do not test the
   old form.

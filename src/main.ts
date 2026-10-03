@@ -166,6 +166,8 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	private traceRuntime: TraceRuntimeController | null = null;
 	/** Phase 0 P2P spike host. UI-free; the modal + __YAOS_P2P_DEBUG__ are thin views. */
 	private p2pSpikeHost: P2pSpikeHost | null = null;
+	/** Pairing code handed over by the pairing deep link until the P2P home page consumes it. */
+	private pendingP2pPairCode: string | null = null;
 	/** P2P status-bar item (separate from the sync one; hidden when idle). */
 	private p2pStatusBarEl: HTMLElement | null = null;
 	private p2pStatusTimer: number | null = null;
@@ -503,7 +505,11 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 							new Notice("Select the P2P (experimental) carrier in Settings → YAOS to accept a pairing link.", 8000);
 							return;
 						}
-						this.openP2pSpikePanel(code);
+						// Hand the code to the P2P home page (settings UI, not
+						// an overlay): the page consumes it exactly once and
+						// pre-fills the join field.
+						this.pendingP2pPairCode = code;
+						this.openP2pSettingsTab();
 						return;
 					}
 			void this.setupLinkController?.handleSetupLink(params);
@@ -2588,6 +2594,38 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 
 	applyP2pTurn(): void {
 		this.applyP2pTurnOverrides();
+	}
+
+	/** The running spike host, for the P2P settings home page. */
+	getP2pSpikeHost(): P2pSpikeHost | null {
+		return this.p2pSpikeHost;
+	}
+
+	/** A pairing code handed over by the deep link — read and cleared once. */
+	takePendingP2pPairCode(): string | null {
+		const code = this.pendingP2pPairCode;
+		this.pendingP2pPairCode = null;
+		return code;
+	}
+
+	/**
+	 * Open the YAOS settings tab (the P2P home page). Setting#openSettingTab
+	 * is a runtime API missing from the vendored type stubs, so call it
+	 * defensively; when unavailable, fall back to the dev panel, which
+	 * pre-fills the join field the same way.
+	 */
+	private openP2pSettingsTab(): void {
+		const setting = (this.app as unknown as { setting?: { openSettingTab?: (tab: unknown) => void } }).setting;
+		if (setting && typeof setting.openSettingTab === "function") {
+			try {
+				setting.openSettingTab(this);
+				return;
+			} catch {
+				// fall through to the dev-panel fallback
+			}
+		}
+		const code = this.pendingP2pPairCode;
+		if (code) this.openP2pSpikePanel(code);
 	}
 
 	/** Concise, honest status-bar wording for the direct link (§4.10); hidden when idle. */

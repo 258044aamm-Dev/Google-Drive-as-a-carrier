@@ -2,8 +2,11 @@
 
 Date: 2026-10-03. Status: **Milestones A and B SHIPPED** — A (carrier-gated
 P2P settings, `2.1.1-drive.13`, commit `7789952`) and B (section-based P2P
-UI, `2.1.1-drive.14`, commit `d7ef1a8`), both verified Latest. **Milestone C
-(Phase 1 core) is next**, pending the Phase 0 gate legs on the `.14` build.
+UI, `2.1.1-drive.14`, commit `d7ef1a8`), both verified Latest. **Next:
+Milestone B2 (P2P settings UX rework → `.15`, manifest 2.1.15 — includes
+the BRAT version fix), then Milestone C (Phase 1 core → `.16`).** The
+Phase 0 gate legs (run on `.14`/`.15` per the user's schedule) feed the
+feasibility evidence + gate call before `.16` ships.
 This plan grew out of the maintainer's 2026-10-03 direction: *"The current
 P2P UI should be section-based, beginner-based, and advanced-based"* and
 *"Now implement the next phase."*
@@ -14,7 +17,7 @@ Decisions locked via interactive questions (2026-10-03, round 10):
 |---|---|
 | Structure | **Hybrid:** the beginner section sits directly on the P2P screen (immediate pairing path); the advanced section is a **navigable "Advanced" sub-page** (same page pattern the Cloudflare layout already uses). Carrier row stays on top of everything. |
 | Content split | **Beginner** = Direct P2P link (plain explanation), Pair another device (QR + code), This vault (peer status). **Advanced** = Backbone (optional), TURN URL/username/credential, P2P network check, Debug mode. |
-| Release strategy | **UI rework first as `2.1.1-drive.14`** (Latest) so the section design is verified on both devices; Phase 1 core then ships as **one final release `2.1.1-drive.15`** (Latest), same work stream. |
+| Release strategy | **UI rework first as `2.1.1-drive.14`** (Latest) so the section design is verified on both devices; Phase 1 core then ships as **one final release** (Latest), same work stream. (Superseded in round 12: the UX rework became Milestone B2 → `.15`; Phase 1 is now `.16`.) |
 | Phase 0 gate | User runs the device legs (T0.1–T0.5) on the **`.14`** build; feasibility §6 evidence + §7 gate call are written after that report and **before** `.15` is released. No-go on a platform ⇒ per the locked plan, that platform gets backbone-assisted mode + diagnostic row; architecture unchanged. |
 
 Zero-regression constraint in force: P2P-surface-only changes; Drive/CF
@@ -117,11 +120,177 @@ degraded / NO-GO per platform) — written **before** `.15` ships.
 
 ---
 
-## Milestone C — Phase 1: `P2pCarrier` core (T1.1–T1.7), one release at the end
+---
+
+## Release hygiene — manifest version scheme (fixes the BRAT warning), from `.15`
+
+**Problem (user report, 2026-10-03):** updating between test builds with BRAT
+(`.11→.12`, `.12→.13`) shows a version-mismatch **warning** (non-blocking).
+Root cause: every test release ships `manifest.json` with
+`version: "2.1.1"` — only the git tag changes — so BRAT sees no version
+change (the Obsidian convention is that the manifest version increases per
+release).
+
+**Decisions locked (user, 2026-10-03):**
+- Manifest version = **`2.1.<N>` for drive build `.N`**, starting at
+  **`.15` → `2.1.15`**, then `2.1.16`, … — the build number is readable off
+  the version; strictly increasing so git-based updaters see a clean
+  upgrade; sits in the 2.1.x line (no collision with upstream 2.1.1).
+- **Tag convention `2.1.1-drive.N` stays unchanged** — tags are the
+  human-readable series; the mapping is stated in each release body.
+
+**Execution (first step of the Milestone B2 release commit for `.15`):**
+1. `manifest.json` → `version: "2.1.15"`.
+2. Safety facts already verified: the plugin's update check nags only when
+   installed < upstream-latest (`compareSemver === -1`) — 2.1.15 is newer
+   than upstream, so no nag; **no test pins `"2.1.1"`**;
+   `manifest.version` is metadata only (telemetry header, status rows,
+   server ack tracking).
+3. `.15` release body documents: "manifest version now tracks the build
+   (2.1.N); earlier builds were all 2.1.1, which is why git-based updaters
+   showed a harmless mismatch warning — it no longer appears."
+4. Full regression gate as always (metadata-only change, but the 127+ suites
+   still gate the commit).
+
+**No patch release for `.14`** — the user is running the Phase 0 gate legs
+on it; the `.14 → .15` BRAT update (2.1.1 → 2.1.15) is the first clean bump.
+Scheme continues for all later test/phase releases.
+
+---
+
+## Milestone B2 — P2P settings UX rework, release `2.1.1-drive.15` (manifest 2.1.15) — **shipped (drive.15)**
+
+**User report (2026-10-03, round 12):** (1) rows don't show whether they are
+clickable; (2) "Pair another device (QR + code)" opens an **overlay** instead
+of a settings sub-page; (3) the page overall "is not user-friendly and does
+not look good."
+
+**Execution note (2026-10-03, round 14):** one deviation from the steps
+below — `P2pSpikeModal` was kept **unchanged** instead of being trimmed to
+dev-only: it is the deep-link fallback surface (when the settings tab cannot
+be opened programmatically) and the runbook's CDP/panel surface. The pairing
+flow on the home page and the panel share the same spike host, so both stay
+functional and honest.
+
+**Decisions locked via interactive questions (2026-10-03, round 12):**
+
+| Question | Decision |
+|---|---|
+| Pairing page scope | **Beginner pairing flow only**: generate code + QR, join with a code, live link status. Dev-only tools (live Yjs test, event log, ICE/TURN overrides) stay in the Debug-mode-gated panel. |
+| Build approach | **Custom-built P2P screens** (custom `SettingPage`s): the main P2P page is a designed page (status card, prominent pairing section, peer line); the **Advanced page stays native declarative** with buttonified rows. |
+| CSS | **Scoped CSS for the P2P surface only** — every rule under `.yaos-p2p-*` classes (lifts the earlier "no styles.css" deviation, strictly scoped; zero-regression constraint still applies). |
+| Release | **Redesign first as `.15`** (manifest `2.1.15` — the BRAT fix lands here), **Phase 1 as `.16`** (manifest `2.1.16`). |
+
+**API facts (recon-verified, obsidian.d.ts 1.13+):**
+- `SettingDefinitionPage.page?: () => SettingPage` — a custom imperative
+  sub-page; "called each time the page is opened." `SettingPage` has
+  `containerEl`, `display()` (clears + re-renders on open), `hide()`
+  (cleanup).
+- **No programmatic page-navigation API** → the pairing flow lives on the
+  **main P2P page** (not a separate nav entry); the pairing deep link opens
+  the settings tab and lands on that page with the code pre-filled.
+- `SettingDefinitionAction` is a whole-row click — it looks like plain text
+  at rest, which is exactly complaint (1). `SettingDefinition.render`
+  (per-row imperative DOM) and `desc: DocumentFragment` give real
+  affordances where rows stay declarative.
+
+**Target design (carrier = P2P selected):**
+
+```
+Settings > YAOS
+├─ [Sync carrier (experimental)]            (declarative row, on top)
+├─ P2P (experimental)     ← custom main page (navigable entry)
+│    ├─ status card: ● linked · 34 ms · last seen 10:21
+│    │               (also: awaiting a peer / connecting / no link yet)
+│    ├─ Pair another device  (collapsible pairing section — expanded by
+│    │   default while there is no link, collapsible once linked)
+│    │    ├─ [ Generate pairing code ]  →  code text · [Copy] · QR (canvas)
+│    │    ├─ join with a code: [ input ] [ Join ]
+│    │    └─ live line: phase · ICE · RTT   (+ [ Disconnect ] when linked)
+│    └─ This vault: peer summary line
+└─ Advanced                ← declarative page (rows unchanged)
+     ├─ Backbone (optional) · TURN URL / username / credential
+     ├─ P2P network check   → visible real button (render hook)
+     └─ Debug mode
+```
+
+- **Dev panel** (`P2pSpikeModal`): trimmed to the dev sections (live Yjs
+  test, event log, ICE/TURN overrides) — its pairing sections move to the
+  page. Still opened by the debug-gated command palette entry.
+- **Deep link** `p2p-pair&code=…`: set a pending code, open the YAOS
+  settings tab, main page picks the code up in `display()` → join input
+  pre-filled, pairing section expanded. Runtime API
+  `app.setting.openSettingTab` is not in the vendored d.ts → typed cast +
+  try/catch with a Notice fallback (deep link on the phone is a manual
+  verification item in the `.15` release check).
+- **Copy**: user-facing text drops "feasibility / test build" jargon.
+- **Clickability**: real `<button>`s on the page; the network-check row gets
+  a visible button; every remaining row is clearly a control, a button, or
+  informational text.
+
+**Implementation (all additive/rework within the P2P surface):**
+1. `src/settings/P2pPairingFlow.ts` (new) — controller: `generate()` →
+   code + QR text, `join(code)`, `disconnect()`, `state()` passthrough,
+   `render(container)` for the pairing DOM (extracted from
+   `P2pSpikeModal`, reusing the `qrcode` canvas rendering). Pure logic apart
+   from `render` → unit-testable without a DOM.
+2. `src/settings/P2pHomeSettingPage.ts` (new) — `SettingPage` shell:
+   `display()` renders the status card + pairing section + peer line under
+   `.yaos-p2p-*` classes, 1 s state poll while displayed, `hide()` cleanup,
+   `host.takePendingP2pPairCode()` pickup (exactly once).
+3. `src/settings/P2pSpikeModal.ts` — trim to the dev sections.
+4. `src/settings/settingsTab.ts` — p2p branch:
+   `[carrierRow(), p2pHomePageDef, p2pAdvancedPage]` (the main page def
+   carries `page: () => new P2pHomeSettingPage(host)`); network-check row →
+   render-hook button; copy fixes; host interface gains
+   `takePendingP2pPairCode()`.
+5. `src/main.ts` — deep link: pending code + open settings tab (fallback
+   Notice); dormant-carrier branch unchanged; dev command unchanged.
+6. `styles.css` — new `.yaos-p2p-*` block (status card, dots, buttons, QR
+   wrap, code, state colors). A guard check that every P2P selector is
+   scoped under `.yaos-p2p-` (added alongside the existing guard scripts).
+7. `tests/mocks/obsidian.ts` — add the `SettingPage` base class so page
+   shells can be constructed in tests.
+8. **Tests**: drive-carrier-settings Test 4b → top level = carrier row +
+   "P2P (experimental)" page (factory, no declarative items) + "Advanced"
+   page (items unchanged); dormancy unchanged. p2p-settings-surface adapted
+   (group → page factory; TURN/Advanced wiring kept). New
+   `tests/client/p2p-pairing-flow.ts`: controller logic (generate code/QR
+   text, join → host.join, state → card text mapping, pending-code pickup
+   exactly once, disconnect → host.close, no link → no QR). Full regression
+   gates the commit.
+9. **Docs**: runbook (the P2P page is the surface — the phone flow is now
+   settings-only, no CDP and no overlay; dev panel = debug tools only),
+   feasibility §5 layout note, this plan.
+
+**Gate + release:** tsc + full regression + build + 3 guards (+ scoped-CSS
+check) + `lint:changed` → commit → push → tag `2.1.1-drive.15` → release
+**Latest** (manual, PAT). Body notes: manifest version now `2.1.15`
+(the BRAT warning fix — earlier builds were all `2.1.1`) + the UX rework.
+Then: **user reviews the look on both devices** (desktop + Android).
+
+### Risks & mitigations
+
+| Risk | Mitigation |
+|---|---|
+| Custom page re-renders on every tab `update()` | `display()` is idempotent (clear + rebuild); the flow controller is stateless w.r.t. DOM; manual check covers the reload flow. |
+| `openSettingTab` not in the vendored d.ts | Typed cast + try/catch + Notice fallback; deep link verified manually on the phone in the `.15` release check. |
+| No DOM in the test environment | Controller logic is pure (unit-tested); DOM verified in the release check on both devices. |
+| CSS leak into the rest of the plugin | Strict `.yaos-p2p-*` scoping + a guard that enforces it; the 127+ suite regression gates everything else. |
+| User expectation on the visual design | Review on both devices before Phase 1 (`.16`) builds on top; copy/layout tweaks are cheap follow-ups within the same release scheme. |
+
+**Deviations updated:** "no styles.css changes" — **lifted for the P2P
+surface only** (scoped `.yaos-p2p-*`, user decision round 12). All other
+deviations unchanged.
+
+---
+
+## Milestone C — Phase 1: `P2pCarrier` core (T1.1–T1.7), one release at the end (`2.1.1-drive.16`, manifest 2.1.16)
 
 Same task set and build order as locked in the previous plan round; the
-Milestone-B layout is the substrate for its T1.3 settings completion.
-Full specs: `docs/p2p-plan.md` §9 Phase 1.
+Milestone B2 screens (custom P2P main page + Advanced page) are the
+substrate for its T1.3 settings completion. Full specs:
+`docs/p2p-plan.md` §9 Phase 1.
 
 1. **T1.1 frame protocol** — `src/p2p/frame.ts`: sync/awareness/control
    frames; blob & snapshot frames stubbed until Phase 3; pure codec,
@@ -133,7 +302,7 @@ Full specs: `docs/p2p-plan.md` §9 Phase 1.
    real carrier contract (`origin === "carrier"`, `status`/`synced`);
    backbone adapter `null | Drive | CF` live (A1/A2); new `p2pBackbone`
    store key; "P2P + None is a legal final state — vault created locally".
-4. **T1.3 settings completion** — on the Milestone-B layout:
+4. **T1.3 settings completion** — on the Milestone B2 screens:
    - **Advanced page**: Backbone row becomes the real control
      (None / Cloudflare Worker* / Google Drive, §8 copy, `*` recommended
      first per A1) → existing Drive/CF setup sections surface when chosen;
@@ -157,8 +326,9 @@ Full specs: `docs/p2p-plan.md` §9 Phase 1.
 **Exit (per plan):** two desktop instances sync live over a direct link
 with backbone `None`; backbone on ⇒ same scenarios pass with fallback;
 toggle matrix green. Plus: full regression (127 + new suites) green, tsc,
-build, 3 guards, `lint:changed` → commit → push → tag `2.1.1-drive.15` →
-release **Latest** (manual, PAT) → user re-tests on devices.
+build, 3 guards, `lint:changed` → commit (manifest `2.1.16` per the
+release-hygiene scheme) → push → tag `2.1.1-drive.16` → release **Latest**
+(manual, PAT) → user re-tests on devices.
 
 ### Risks & mitigations
 
