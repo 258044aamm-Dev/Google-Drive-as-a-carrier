@@ -315,10 +315,11 @@ textarea.yaos-wizard-input { min-height: 5em; font-family: var(--font-monospace)
 	word-break: break-word;
 }
 
-/* ── P2P settings pages (Milestone B2) — scoped under .yaos-p2p-*,
-     enforced by guard:p2p-css-scope ────────────────────────────── */
+/* ── P2P home page + pairing wizard (Milestones B2/B3) — scoped under
+     .yaos-p2p-*, enforced by guard:p2p-css-scope ───────────────── */
 .yaos-p2p-home {
 	display: block;
+	max-width: 640px;
 }
 
 .yaos-p2p-status-card {
@@ -356,35 +357,80 @@ textarea.yaos-wizard-input { min-height: 5em; font-family: var(--font-monospace)
 	font-size: var(--font-ui-small);
 }
 
-.yaos-p2p-pair-section {
-	margin-top: 6px;
-}
-
-.yaos-p2p-pair-heading {
-	font-weight: 600;
-	margin: 6px 0 2px;
-}
-
-.yaos-p2p-copy {
-	color: var(--text-muted);
+.yaos-p2p-error {
+	color: var(--color-red, #d04545);
 	font-size: var(--font-ui-small);
-	margin: 0 0 8px;
+	margin: 8px 0;
 }
 
-.yaos-p2p-sub {
-	color: var(--text-muted);
-	font-size: var(--font-ui-small);
-	margin: 10px 0 4px;
+/* Visibility is applied with this class (display:none !important) —
+   theme CSS can override a bare [hidden] attribute, which is what
+   left the Disconnect button visible in drive.15. */
+.yaos-p2p-hidden {
+	display: none !important;
 }
 
-.yaos-p2p-row {
-	display: flex;
+.yaos-p2p-wizard {
+	margin-top: 4px;
+}
+
+.yaos-p2p-role-grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
 	gap: 8px;
+	margin: 10px 0;
+}
+
+.yaos-p2p-role-btn {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 2px;
+	padding: 10px 12px;
+	text-align: left;
+}
+
+.yaos-p2p-role-btn--active {
+	border-color: var(--interactive-accent);
+}
+
+.yaos-p2p-role-btn-sub {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.yaos-p2p-step {
+	margin-bottom: 4px;
+}
+
+.yaos-p2p-label {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin: 8px 0 4px;
+}
+
+.yaos-p2p-hint {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	margin: 4px 0;
+}
+
+.yaos-p2p-panel {
 	margin: 6px 0;
 }
 
 .yaos-p2p-btn {
 	white-space: nowrap;
+}
+
+.yaos-p2p-btn--full {
+	width: 100%;
+	max-width: 520px;
+	margin: 6px 0;
+}
+
+.yaos-p2p-btn--subtle {
+	margin-top: 4px;
 }
 
 .yaos-p2p-code {
@@ -393,11 +439,14 @@ textarea.yaos-wizard-input { min-height: 5em; font-family: var(--font-monospace)
 	font-size: var(--font-ui-smaller);
 	word-break: break-all;
 	margin: 4px 0;
+	resize: none;
 }
 
-.yaos-p2p-qr-wrap {
+.yaos-p2p-qr-block {
 	display: flex;
-	justify-content: center;
+	flex-direction: column;
+	align-items: center;
+	gap: 6px;
 	padding: 10px;
 	margin: 8px 0;
 	background: var(--background-secondary);
@@ -405,21 +454,14 @@ textarea.yaos-wizard-input { min-height: 5em; font-family: var(--font-monospace)
 	border-radius: 10px;
 }
 
+.yaos-p2p-qr-caption {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	text-align: center;
+}
+
 .yaos-p2p-qr-canvas {
 	display: block;
 	max-width: 200px;
 	height: auto;
-}
-
-.yaos-p2p-live {
-	color: var(--text-muted);
-	font-size: var(--font-ui-smaller);
-	margin-top: 6px;
-	white-space: pre-wrap;
-}
-
-.yaos-p2p-peer-line {
-	margin-top: 12px;
-	font-size: var(--font-ui-small);
-	color: var(--text-muted);
 }

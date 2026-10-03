@@ -473,20 +473,13 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		// Phase 0 P2P spike. Only alive while the P2P carrier is selected —
 		// for every other carrier the P2P surface is fully dormant (no host,
 		// no status-bar item, no timer), so nothing about the other carriers
-		// changes. Carrier switches need a plugin reload, so this decision is
-		// made once here and never re-evaluated.
+		// changes. Started eagerly when the carrier was already selected at
+		// load; otherwise the same helper starts it on demand (see
+		// ensureP2pSpikeHost — no "reload the plugin" dead end after a
+		// carrier switch). A failure here can never abort the rest of
+		// onload: the helper catches and reports it.
 		if (isP2pCarrier(this.settings)) {
-			// Constructed eagerly (cheap, UI-free) so the pairing deep link
-			// can hand a code straight to the join view.
-			this.p2pSpikeHost = new P2pSpikeHost(() => this.settings.vaultId ?? "");
-			// Persisted TURN relay fields (Settings > YAOS > P2P) take effect
-			// now and on every later settings change; empty URL = STUN only.
-			this.applyP2pTurnOverrides();
-			// Separate status-bar item (the existing sync one is untouched):
-			// honest §4.10 wording for the direct link, hidden when idle.
-			this.p2pStatusBarEl = this.addStatusBarItem();
-			this.refreshP2pStatusBar();
-			this.p2pStatusTimer = window.setInterval(() => this.refreshP2pStatusBar(), 1000);
+			this.ensureP2pSpikeHost();
 		}
 
 		this.registerObsidianProtocolHandler("yaos", (params) => {
@@ -495,18 +488,23 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				// P2P pairing deep link (Phase 0 spike): the code was produced
 				// by another device's spike panel. Route to the join view.
 				const code = typeof params.code === "string" ? params.code.trim() : "";
-				if (!code) {
+						if (!code) {
 							new Notice("P2P pairing link is missing a code.", 8000);
 							return;
 						}
-						if (!this.p2pSpikeHost) {
+						if (!isP2pCarrier(this.settings)) {
 							// Dormant: the P2P carrier is not selected on this
 							// device, so no link can be accepted.
 							new Notice("Select the P2P (experimental) carrier in Settings → YAOS to accept a pairing link.", 8000);
 							return;
 						}
+						// The host starts on demand (carrier switch after
+						// load no longer needs a plugin reload); the getter
+						// reports a failed start with a Notice of its own.
+						if (!this.ensureP2pSpikeHost()) return;
 						// Hand the code to the P2P home page (settings UI, not
-						// an overlay): the page consumes it exactly once and
+						// an overlay): the page consumes it exactly once,
+						// switches the wizard to the join step, and
 						// pre-fills the join field.
 						this.pendingP2pPairCode = code;
 						this.openP2pSettingsTab();
@@ -2511,11 +2509,12 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	 * read from settings and written back when the panel applies an override.
 	 */
 	private openP2pSpikePanel(code: string | null): void {
-		if (!this.p2pSpikeHost) return;
+		const host = this.ensureP2pSpikeHost();
+		if (!host) return;
 		const s = this.settings;
 		new P2pSpikeModal(
 			this.app,
-			this.p2pSpikeHost,
+			host,
 			code,
 			{
 				url: s.p2pTurnUrl,
@@ -2576,9 +2575,9 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	}
 
 	async runP2pNetworkCheck(): Promise<void> {
-		const host = this.p2pSpikeHost;
+		const host = this.ensureP2pSpikeHost();
 		if (!host) {
-			new Notice("P2P spike not ready — reload the plugin.", 8000);
+			new Notice("P2P spike not ready on this device.", 8000);
 			return;
 		}
 		const s = host.state();
@@ -2593,12 +2592,53 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	}
 
 	applyP2pTurn(): void {
-		this.applyP2pTurnOverrides();
+		// The host starts on demand (carrier switch after load); the
+		// overrides push only when the host exists.
+		if (this.ensureP2pSpikeHost()) this.applyP2pTurnOverrides();
 	}
 
-	/** The running spike host, for the P2P settings home page. */
+	/**
+	 * The running spike host, for the P2P settings home page — starts it on
+	 * demand when the P2P carrier is selected, so a carrier switch made
+	 * after load never strands the page on a "reload the plugin" message.
+	 */
 	getP2pSpikeHost(): P2pSpikeHost | null {
-		return this.p2pSpikeHost;
+		return this.ensureP2pSpikeHost();
+	}
+
+	/**
+	 * Lazily ensure the Phase 0 P2P spike host exists (Milestone B3).
+	 * Carrier-gated: for every non-P2P carrier nothing is created, so the
+	 * other carriers stay byte-identical. Idempotent. A start failure is
+	 * reported visibly (Notice + plugin log) and remembered — it never
+	 * throws into the caller (the eager onload path relies on that).
+	 */
+	private ensureP2pSpikeHost(): P2pSpikeHost | null {
+		if (this.p2pSpikeHost) return this.p2pSpikeHost;
+		if (!isP2pCarrier(this.settings)) return null;
+		try {
+			// Constructed cheap and UI-free: pairing works the moment the
+			// host exists, deep link included.
+			this.p2pSpikeHost = new P2pSpikeHost(() => this.settings.vaultId ?? "");
+			// Persisted TURN relay fields (Settings > YAOS > P2P) take
+			// effect now and on every later settings change; empty URL =
+			// STUN only.
+			this.applyP2pTurnOverrides();
+			// Separate status-bar item (the existing sync one is
+			// untouched): honest §4.10 wording for the direct link, hidden
+			// when idle. addStatusBarItem is safe after onload.
+			if (!this.p2pStatusBarEl) {
+				this.p2pStatusBarEl = this.addStatusBarItem();
+				this.refreshP2pStatusBar();
+				this.p2pStatusTimer = window.setInterval(() => this.refreshP2pStatusBar(), 1000);
+			}
+			this.log("P2P spike host started (carrier: p2p).");
+			return this.p2pSpikeHost;
+		} catch (err) {
+			this.log(`P2P spike host failed to start: ${formatUnknown(err)}`);
+			new Notice("The P2P link could not be started — see the developer console.", 8000);
+			return null;
+		}
 	}
 
 	/** A pairing code handed over by the deep link — read and cleared once. */

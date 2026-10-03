@@ -85,25 +85,30 @@ WebRTC on real devices — that is the runbook's job.
 
 ## 5. Documented gaps (by choice, not by accident)
 
-- **T1.3 settings surface (plan §8 shape, redesigned, drive.15):**
+- **T1.3 settings surface (plan §8 shape, wizard, drive.16):**
   "P2P (experimental)" is a **carrier option** in the
   "Sync carrier (experimental)" dropdown. The P2P surface is visible
   **only while the P2P carrier is selected**: the tab is the carrier row,
-  a navigable **"P2P (experimental)" home page** (a status card — link
-  state / RTT / last seen — plus the **pairing flow**: generate code + QR,
-  join with a code, disconnect, live status line, and the *This vault* peer
-  line — the pairing path, in the settings UI, no overlay) and a navigable
-  **Advanced sub-page** (Backbone, TURN URL/username/credential, P2P
-  network check as a visible *Run check* button, Debug mode). With any
-  other carrier the whole P2P surface is dormant (no P2P screen, no
-  status-bar item, pairing links not accepted). The pairing deep link
-  opens the home page with the join field pre-filled (fallback: the dev
-  panel, which is unchanged and keeps all dev controls — Live Yjs test, ICE
-  overrides, log). TURN fields are fully functional and persisted. The
-  backbone options are **disabled placeholders** — the composite carrier
-  (T1.2) and backbone adapters still belong to Phase 1 proper, after the
-  gate. Cellular data saver (A4), secret rotation, and the wizard first
-  screen are not included.
+  a navigable **"P2P (experimental)" home page** (a status card — the
+  single source of link state: dot + one line, RTT / last seen when linked
+  — plus the **pairing wizard**: role buttons *Create a pairing code* /
+  *Join with a code*, only the selected step visible; Create = generate
+  code + labeled box + copy + QR block (appears once rendered), Join =
+  labeled field + join; *Disconnect* only while linked — the pairing path,
+  in the settings UI, no overlay) and a navigable **Advanced sub-page**
+  (Backbone, TURN URL/username/credential, P2P network check as a visible
+  *Run check* button, Debug mode). With any other carrier the whole P2P
+  surface is dormant (no P2P screen, no status-bar item, pairing links not
+  accepted). The P2P engine **starts on demand** (drive.16: a carrier
+  switch no longer needs a plugin reload for the P2P surface — the sync
+  runtime still does). The pairing deep link opens the home page on the
+  Join step with the field pre-filled (fallback: the dev panel, which is
+  unchanged and keeps all dev controls — Live Yjs test, ICE overrides,
+  log). TURN fields are fully functional and persisted. The backbone
+  options are **disabled placeholders** — the composite carrier (T1.2) and
+  backbone adapters still belong to Phase 1 proper, after the gate.
+  Cellular data saver (A4), secret rotation, and the wizard first screen
+  are not included.
 - **No CDP on phones**: the panel is the mobile control surface; DevTools
   (`__YAOS_P2P_DEBUG__`) is desktop-only.
 - **One data channel only**, mid fixed by the code; no renegotiation.

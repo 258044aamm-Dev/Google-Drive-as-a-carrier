@@ -1,11 +1,14 @@
 /**
- * P2P settings home page (Milestone B2) — the custom sub-page that replaces
- * the flat beginner group: a status card (link state, RTT, last seen), the
- * pairing flow (P2pPairingFlow) and the "This vault" peer line.
+ * P2P settings home page (Milestone B3) — the custom sub-page: a status
+ * card (the single source of link state — dot + one line, RTT and last
+ * seen when linked) and the pairing wizard (P2pPairingFlow).
  *
  * Rendered imperatively via the declarative page's `page` factory; Obsidian
- * calls display() when the page opens and hide() when it is left. All DOM
- * classes are scoped under .yaos-p2p-*.
+ * calls display() when the page opens and hide() when it is left.
+ *
+ * Hardening (drive.16): display() is idempotent (safe against re-entry) and
+ * catches its own render errors into a visible in-page line — the page can
+ * never be a silent blank. All DOM classes are scoped under .yaos-p2p-*.
  */
 
 import { SettingPage } from "obsidian";
@@ -21,50 +24,60 @@ export class P2pHomeSettingPage extends SettingPage {
 	private refreshTimer: number | null = null;
 	private cardDot: HTMLSpanElement | null = null;
 	private cardText: HTMLSpanElement | null = null;
-	private peerLine: HTMLDivElement | null = null;
 
 	constructor(private readonly settingsHost: VaultSyncSettingsHost) {
 		super();
 	}
 
 	display(): void {
+		// Idempotent: Obsidian may re-enter display(); never leak a timer
+		// or a mounted flow from a previous entry.
+		this.teardown();
 		const c = this.containerEl;
 		c.empty();
 		c.addClass("yaos-p2p-home");
+		try {
+			const card = c.createDiv({ cls: "yaos-p2p-status-card" });
+			this.cardDot = card.createSpan({ cls: "yaos-p2p-dot" });
+			this.cardText = card.createSpan({ cls: "yaos-p2p-status-text" });
 
-		const card = c.createDiv({ cls: "yaos-p2p-status-card" });
-		this.cardDot = card.createSpan({ cls: "yaos-p2p-dot" });
-		this.cardText = card.createSpan({ cls: "yaos-p2p-status-text" });
+			const pairBody = c.createDiv();
+			const spikeHost = this.settingsHost.getP2pSpikeHost?.() ?? null;
+			if (spikeHost) {
+				this.flow = new P2pPairingFlow(spikeHost);
+				this.unmountFlow = this.flow.mount(pairBody);
+				// A pairing deep link may have handed a code over — the page
+				// consumes it exactly once, switches the wizard to the join
+				// step, and pre-fills the field.
+				const pending = this.settingsHost.takePendingP2pPairCode?.() ?? null;
+				if (pending) this.flow.prefillJoin(pending);
+			} else {
+				// The host only stays null for non-P2P carriers (the page
+				// itself is dormant then) or a failed on-demand start — the
+				// plugin already surfaced that failure with a Notice.
+				pairBody.createEl("div", {
+					text: "The P2P link could not be started on this device. Check the developer console for details.",
+					cls: "yaos-p2p-error",
+				});
+			}
 
-		const pairWrap = c.createDiv({ cls: "yaos-p2p-pair-section" });
-		pairWrap.createEl("div", { text: "Pair another device", cls: "yaos-p2p-pair-heading" });
-		pairWrap.createEl("div", {
-			text: "Devices find each other with a pairing code or QR — nothing to deploy, nothing to sign up for.",
-			cls: "yaos-p2p-copy",
-		});
-		const pairBody = pairWrap.createDiv();
-		const spikeHost = this.settingsHost.getP2pSpikeHost?.() ?? null;
-		if (spikeHost) {
-			this.flow = new P2pPairingFlow(spikeHost);
-			this.unmountFlow = this.flow.mount(pairBody);
-			// A pairing deep link may have handed a code over — the page
-			// consumes it exactly once and pre-fills the join field.
-			const pending = this.settingsHost.takePendingP2pPairCode?.() ?? null;
-			if (pending) this.flow.prefillJoin(pending);
-		} else {
-			pairBody.createEl("div", {
-				text: "The P2P link is not ready — reload the plugin.",
-				cls: "yaos-p2p-copy",
+			this.refresh();
+			this.refreshTimer = window.setInterval(() => this.refresh(), 1000);
+		} catch (err) {
+			console.error("[yaos] P2P home page render failed:", err);
+			c.empty();
+			c.createDiv({
+				text: `The P2P page could not be rendered: ${err instanceof Error ? err.message : String(err)}`,
+				cls: "yaos-p2p-error",
 			});
 		}
-
-		this.peerLine = c.createDiv({ cls: "yaos-p2p-peer-line" });
-
-		this.refresh();
-		this.refreshTimer = window.setInterval(() => this.refresh(), 1000);
 	}
 
 	hide(): void {
+		this.teardown();
+	}
+
+	private teardown(): void {
 		if (this.refreshTimer !== null) {
 			window.clearInterval(this.refreshTimer);
 			this.refreshTimer = null;
@@ -76,7 +89,6 @@ export class P2pHomeSettingPage extends SettingPage {
 		this.flow = null;
 		this.cardDot = null;
 		this.cardText = null;
-		this.peerLine = null;
 	}
 
 	private refresh(): void {
@@ -88,12 +100,8 @@ export class P2pHomeSettingPage extends SettingPage {
 				this.cardText.setText(p2pCardText(s));
 			} else {
 				this.cardDot.className = "yaos-p2p-dot";
-				this.cardText.setText("The P2P link is not ready — reload the plugin.");
+				this.cardText.setText("The P2P link could not be started on this device.");
 			}
-		}
-		if (this.peerLine) {
-			const summary = this.settingsHost.getP2pPeerSummary?.() ?? "No P2P link yet.";
-			this.peerLine.setText(`This vault — ${summary}`);
 		}
 		this.flow?.update();
 	}
@@ -114,7 +122,7 @@ function p2pCardText(s: SpikeState): string {
 			return `Linked${rtt}${seen}`;
 		}
 		case "awaiting-peer":
-			return "Waiting for a device to join — share the pairing code or QR.";
+			return "Waiting for a device to join — share the code or scan the QR below.";
 		case "connecting":
 			return "Connecting…";
 		case "error":

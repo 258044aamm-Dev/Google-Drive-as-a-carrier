@@ -1,12 +1,14 @@
 # Next-phase plan — section-based P2P UI (Milestone B) + Phase 1 core (Milestone C)
 
-Date: 2026-10-03. Status: **Milestones A and B SHIPPED** — A (carrier-gated
-P2P settings, `2.1.1-drive.13`, commit `7789952`) and B (section-based P2P
-UI, `2.1.1-drive.14`, commit `d7ef1a8`), both verified Latest. **Next:
-Milestone B2 (P2P settings UX rework → `.15`, manifest 2.1.15 — includes
-the BRAT version fix), then Milestone C (Phase 1 core → `.16`).** The
-Phase 0 gate legs (run on `.14`/`.15` per the user's schedule) feed the
-feasibility evidence + gate call before `.16` ships.
+Date: 2026-10-03. Status: **Milestones A, B and B2 SHIPPED** — A
+(carrier-gated P2P settings, `2.1.1-drive.13`, commit `7789952`), B
+(section-based P2P UI, `2.1.1-drive.14`, commit `d7ef1a8`) and B2 (P2P
+settings redesign, `2.1.1-drive.15`, commit `1fdaeaa` — includes the BRAT
+version fix, manifest 2.1.15), all verified Latest. **Next: Milestone B3
+(P2P page wizard redesign + desktop "not ready" fix → `.16`, manifest
+2.1.16), then Milestone C (Phase 1 core → `.17`, manifest 2.1.17).** The
+Phase 0 gate legs (run on `.15`/`.16` per the user's schedule) feed the
+feasibility evidence + gate call before `.17` ships.
 This plan grew out of the maintainer's 2026-10-03 direction: *"The current
 P2P UI should be section-based, beginner-based, and advanced-based"* and
 *"Now implement the next phase."*
@@ -179,7 +181,7 @@ functional and honest.
 | Pairing page scope | **Beginner pairing flow only**: generate code + QR, join with a code, live link status. Dev-only tools (live Yjs test, event log, ICE/TURN overrides) stay in the Debug-mode-gated panel. |
 | Build approach | **Custom-built P2P screens** (custom `SettingPage`s): the main P2P page is a designed page (status card, prominent pairing section, peer line); the **Advanced page stays native declarative** with buttonified rows. |
 | CSS | **Scoped CSS for the P2P surface only** — every rule under `.yaos-p2p-*` classes (lifts the earlier "no styles.css" deviation, strictly scoped; zero-regression constraint still applies). |
-| Release | **Redesign first as `.15`** (manifest `2.1.15` — the BRAT fix lands here), **Phase 1 as `.16`** (manifest `2.1.16`). |
+| Release | **Redesign first as `.15`** (manifest `2.1.15` — the BRAT fix lands here), **Phase 1 as `.16`** (manifest `2.1.16`). (Superseded in round 15: the B2 visual review produced Milestone B3 → `.16`; Phase 1 is now `.17`, manifest `2.1.17`.) |
 
 **API facts (recon-verified, obsidian.d.ts 1.13+):**
 - `SettingDefinitionPage.page?: () => SettingPage` — a custom imperative
@@ -285,10 +287,206 @@ deviations unchanged.
 
 ---
 
-## Milestone C — Phase 1: `P2pCarrier` core (T1.1–T1.7), one release at the end (`2.1.1-drive.16`, manifest 2.1.16)
+## Milestone B3 — P2P page wizard redesign + desktop "not ready" fix, release `2.1.1-drive.16` (manifest 2.1.16) — **shipped (drive.16)**
+
+**Execution notes (2026-10-03, round 16):** (a) the release gate also
+required restoring two dev-only dependencies that the regression gate
+depends on but that were never declared — `tsx` (root devDependency, used
+by `tests/server/snapshot-r2-runner.ts` via `npx --no-install tsx`) and
+`server/node_modules` (miniflare via wrangler) — so a clean checkout's
+gate is green without manual installs; (b) contract parity (the
+`release-compatibility-matrix` suite pins package.json === manifest
+version + a versions.json entry) is now maintained by bumping
+**package.json together with the manifest** (`2.1.16`) and adding the
+released `2.1.15` + current `2.1.16` entries to `versions.json` — the
+`.15` commit had bumped only the manifest, which that suite only catches
+when the gate runs *after* the bump.
+
+**User report (2026-10-03, round 15):** screenshot of the `.15` page on the
+phone + "redesign this screen with user-friendly and better UI/UX" and
+"this screen content is not showing on desktop".
+
+Screenshot defects identified (all in the B2 page):
+- **Disconnect visible while not linked** — bug: the button is hidden via
+  the `hidden` attribute, which theme CSS can override (any author
+  `display` rule beats the UA `[hidden]` rule). Must be shown only when
+  `connected`.
+- **Empty mystery boxes** — the QR container (bordered rounded box) renders
+  even when no QR exists; the code/join textareas have no labels and their
+  placeholders are nearly invisible; both show resize grips.
+- **Copy code enabled with no code** — clicking does nothing silently.
+- **Redundant wording** — the status card and the "This vault" line repeat
+  the same "awaiting a peer" message.
+- **Jargon on a beginner page** — the `phase: … · ice: … · RTT: …` line at
+  the bottom.
+- Small left-aligned pill buttons (hard to tap on the phone).
+
+**Desktop root cause (verified in code, round 15):** the desktop shows the
+page stuck on *"The P2P link is not ready — reload the plugin."* even after
+"reloading".
+- The spike host is created **once, in `onload()`**, and **only if the P2P
+  carrier was already selected when the plugin loaded**
+  (`if (isP2pCarrier(this.settings)) new P2pSpikeHost(...)`).
+- Switching the carrier in the dropdown **only persists the value** + a
+  "Reload the plugin …" notice (the carrier `setControlValue` handler) — it
+  never creates the host. The tab re-renders live, so the P2P page
+  *appears*, but `getP2pSpikeHost()` returns `null` → the fallback text.
+- Repro chain: desktop updated to `.15` (BRAT reload happened while the
+  *old* carrier was selected) → user selects the P2P carrier → page
+  appears, host dormant → any "reload" that is not a real plugin reload
+  (reopening the settings tab) can never fix it. Dead end.
+- **Fix: lazy spike host.** `getP2pSpikeHost()` creates the host on demand
+  when the P2P carrier is selected (idempotent; also starts the status-bar
+  item + 1 s timer lazily). The pairing deep-link handler uses the same
+  getter, so the QR chain works without a reload. Eager `onload` creation
+  stays. No more "reload the plugin" dead end on the P2P surface. The
+  sync-runtime carrier switch still requires a reload (unchanged; the
+  carrier row desc already says so).
+- **Hardening (same milestone):** the `onload()` P2P block is wrapped in
+  try/catch (visible Notice + log; a P2P failure must not abort the rest of
+  `onload()` — the protocol-handler registration comes after it); the page
+  `display()` becomes idempotent (clears any prior timer on re-entry) and
+  catches its own render errors into a visible in-page line (never a silent
+  blank); the misleading "reload the plugin" text is gone.
+- **Diagnostic (non-blocking, ask the user):** one desktop DevTools console
+  screenshot to rule out an `onload` exception *before* the P2P block as an
+  alternative cause. The lazy host makes the page work regardless.
+
+**Decision locked (ask_user, round 15):** **role-based wizard** — first pick
+"Create a pairing code" or "Join with a code", then only that flow is shown.
+
+### Target design (carrier = P2P, page open)
+
+```
+┌ P2P (experimental) ──────────────────────────────────────────┐
+│ ● No P2P link yet. Pair a device below to get started.       │ ← status card
+│   (when linked: ● Linked · 24 ms · last seen 13:41:02)        │   dot + one line
+│                                                               │
+│  ┌─────────────────────────┐ ┌───────────────────────────┐   │
+│  │ Create a pairing code   │ │ Join with a code          │   │ ← role picker:
+│  │ (on this device)        │ │ (from the other device)   │   │   two big tap
+│  └─────────────────────────┘ └───────────────────────────┘   │   targets
+│                                                               │
+│  ┌ only the selected step is visible ──────────────────────┐ │
+│  │ CREATE:                                                  │ │
+│  │  [ Generate pairing code ]          full-width button   │ │
+│  │  (before generation: nothing else is shown)             │ │
+│  │  Pairing code                      after generation:    │ │
+│  │  ┌────────────────────────────────┐                     │ │
+│  │  │ YAOS-P2P1:… (read-only,        │                     │ │
+│  │  │ no resize grip)                │                     │ │
+│  │  └────────────────────────────────┘                     │ │
+│  │  [ Copy code ]   enabled only while a code exists       │ │
+│  │  ┌───────────┐   Scan this with the other device's      │ │
+│  │  │    QR     │   camera app — + small [Copy deep link]  │ │
+│  │  └───────────┘   (QR block hidden until the QR is ready)│ │
+│  │                                                          │ │
+│  │ JOIN:                                                    │ │
+│  │  Pairing code from the other device                      │ │
+│  │  ┌────────────────────────────────┐                     │ │
+│  │  │ YAOS-P2P1:…                    │                     │ │
+│  │  └────────────────────────────────┘                     │ │
+│  │  [ Join ]   disabled until the field is non-empty       │ │
+│  └──────────────────────────────────────────────────────────┘ │
+│                                                               │
+│  (when linked: [ Disconnect ] appears below the status card)  │
+└───────────────────────────────────────────────────────────────┘
+```
+
+Behaviour notes:
+- **Wizard role is page-local state** on the flow controller: default
+  "create"; a pairing deep link forces "join" + pre-fills the field (the
+  T0.3 chain lands directly on the Join step). The 1 s refresh must never
+  reset the role.
+- **Visibility is a pure, DOM-free function** —
+  `flow.view(state) → P2pWizardViewModel` decides: active role; Disconnect
+  visible (only `connected`); code panel visible (only after generation);
+  QR visible (only once rendered); Copy enabled (code exists); Join enabled
+  (field non-empty). Unit-tested without a DOM.
+- **All show/hide via a scoped `.yaos-p2p-hidden { display: none !important; }`
+  class** (plus the `hidden` attribute, plus `disabled` on buttons) — the
+  B2 `[hidden]`-override bug class is structurally impossible now.
+- **Removed from the user page:** the technical `phase · ice · RTT` line
+  (still in the dev panel + status bar) and the standalone "This vault"
+  line (the card is the single source of state; the peer summary merges
+  into the card when linked).
+- **While linked, generating a new code ends the current link** (existing
+  reset behaviour) — a small hint under the Generate button says so.
+- **CSS:** replace the B2 page block with the wizard classes
+  (`.yaos-p2p-wizard/-role-grid/-role-btn(.active)/-step/-label/-btn--full/
+  -qr-caption/-hint/-hidden`); full-width buttons capped ~520 px and
+  centered; `resize: none` on the code textareas; 2-column role grid that
+  collapses to 1 column on narrow screens. All under `.yaos-p2p-*` (the
+  scoping guard stays green).
+
+### Implementation steps
+1. `src/p2p/spikeHost.ts` — unchanged.
+2. `src/settings/P2pPairingFlow.ts` (v2): role state (`setRole`;
+   prefill → role "join"); pure `view(): P2pWizardViewModel`; `mount()` v2
+   renders the wizard per view model (role grid, both steps, Disconnect
+   slot, QR caption); `update()` applies the view model (class toggles +
+   `disabled`); Copy/Join disabled states; QR wrap hidden until the canvas
+   is ready; keeps `lastGeneratedCode/DeepLink`, `consumeJoinPrefill`,
+   `disconnect`, the unmount-safe contract, and all existing behaviour
+   tests.
+3. `src/settings/P2pHomeSettingPage.ts` (v2): status card updated (linked
+   text merges the peer summary); hosts the wizard; **no** standalone peer
+   line, **no** technical live line; `display()` idempotent (clears any
+   prior timer first) and wrapped in try/catch that renders a visible
+   error line (never a silent blank); the "reload the plugin" text is gone.
+4. `src/main.ts`: **`ensureP2pSpikeHost()`** — carrier-gated lazy creation
+   (host + status-bar item + 1 s timer; idempotent; try/catch → visible
+   Notice + plugin log, error remembered); `getP2pSpikeHost()` delegates to
+   it (returns null only when the carrier is not P2P or creation failed);
+   the deep-link handler uses the lazy getter (dormant branch only for
+   non-P2P carriers); the existing eager `onload()` P2P block is wrapped in
+   try/catch so a P2P failure cannot abort the rest of `onload()`.
+5. `styles.css`: B2 page block replaced by the wizard block (all
+   `.yaos-p2p-*`); guard unchanged.
+6. `src/settings/settingsTab.ts`: no shape change (same page factory; the
+   carrier-switch notice stays — the sync runtime still needs a reload).
+7. `tests/client/p2p-pairing-flow.ts` (v2): keep the behaviour tests
+   (generate records code/deep link; join trims; blank join no-op; prefill
+   exactly once + switches role to "join"; disconnect clears; unmount-safe
+   update) + new view-model tests (Disconnect only when connected; code
+   panel hidden before generation; QR hidden until ready; Copy disabled
+   before a code; Join disabled when empty; role survives `update()`).
+8. `tests/client/p2p-settings-surface.ts` + `drive-carrier-settings.ts`:
+   layout shape unchanged (verify); add a factory check that the page
+   renders the (now-unreachable-in-practice) no-host branch without
+   throwing.
+9. `main.ts` lazy-host logic stays ~15 lines (no main.ts unit harness
+   exists — verified via the device-leg round trip; risk row below).
+10. Docs: runbook (page = wizard; **no reload needed** to use the page;
+    T0.3 deep link lands on the Join step with the code filled in; dev
+    panel unchanged), feasibility §5 (page description + lazy host), this
+    plan (C renumbered below), release body.
+11. Full gate → **release `.16`** (manifest `2.1.16`, tag
+    `2.1.1-drive.16`, 4 assets, Latest, API-verified).
+
+### Version renumbering (consequence of inserting B3)
+`.16` was reserved for Milestone C (Phase 1) → **Milestone C now ships as
+`.17` (manifest 2.1.17)**. The Milestone C section below is updated
+accordingly. Mechanical — the BRAT scheme is just monotonic `2.1.<N>`.
+
+### Risks
+| Risk | Mitigation |
+|---|---|
+| Lazy host vs the "decided once at onload" dormancy contract | Creation is strictly carrier-gated (`isP2pCarrier`); other carriers byte-identical; the sync-runtime decision stays onload-only. |
+| `onload` throws before the P2P block on the desktop (unruled-out alternate cause) | try/catch makes a P2P failure visible; user provides a one-time desktop DevTools console screenshot; the lazy host makes the *page* work regardless. |
+| Wizard role state across Obsidian page re-entry | Role lives on the flow controller; `display()` idempotent; a prefill deterministically re-forces the "join" role. |
+| Theme CSS overrides (the B2 `[hidden]` bug class) | Visibility via scoped `.yaos-p2p-hidden` `display:none !important` + `disabled` attributes; the view model is unit-tested. |
+| No unit harness for `main.ts` lazy creation | Kept ~15 lines; verified in the `.16` device round trip (page works after a fresh carrier switch, without reload). |
+| User expectation on the visual design | Review on both devices after `.16`; copy/layout tweaks are cheap follow-ups within the scheme. |
+
+**Deviations:** unchanged from B2 (scoped CSS allowed; dev panel unchanged).
+
+---
+
+## Milestone C — Phase 1: `P2pCarrier` core (T1.1–T1.7), one release at the end (`2.1.1-drive.17`, manifest 2.1.17)
 
 Same task set and build order as locked in the previous plan round; the
-Milestone B2 screens (custom P2P main page + Advanced page) are the
+Milestone B2/B3 screens (custom P2P main page + Advanced page) are the
 substrate for its T1.3 settings completion. Full specs:
 `docs/p2p-plan.md` §9 Phase 1.
 
@@ -302,7 +500,7 @@ substrate for its T1.3 settings completion. Full specs:
    real carrier contract (`origin === "carrier"`, `status`/`synced`);
    backbone adapter `null | Drive | CF` live (A1/A2); new `p2pBackbone`
    store key; "P2P + None is a legal final state — vault created locally".
-4. **T1.3 settings completion** — on the Milestone B2 screens:
+4. **T1.3 settings completion** — on the Milestone B2/B3 screens:
    - **Advanced page**: Backbone row becomes the real control
      (None / Cloudflare Worker* / Google Drive, §8 copy, `*` recommended
      first per A1) → existing Drive/CF setup sections surface when chosen;
@@ -325,9 +523,9 @@ substrate for its T1.3 settings completion. Full specs:
 
 **Exit (per plan):** two desktop instances sync live over a direct link
 with backbone `None`; backbone on ⇒ same scenarios pass with fallback;
-toggle matrix green. Plus: full regression (127 + new suites) green, tsc,
-build, 3 guards, `lint:changed` → commit (manifest `2.1.16` per the
-release-hygiene scheme) → push → tag `2.1.1-drive.16` → release **Latest**
+toggle matrix green. Plus: full regression (128 + new suites) green, tsc,
+build, 4 guards, `lint:changed` → commit (manifest `2.1.17` per the
+release-hygiene scheme) → push → tag `2.1.1-drive.17` → release **Latest**
 (manual, PAT) → user re-tests on devices.
 
 ### Risks & mitigations
