@@ -1,11 +1,12 @@
 /**
  * Phase 0 P2P spike — settings surface ("P2P (experimental)" group).
  *
- * Verifies the plan §8 settings shape: the group is visible ONLY while the
- * P2P carrier is selected (dormant for every other carrier), the carrier
- * row leads the group, the TURN fields persist and push to the spike host,
- * the peer summary and action rows are wired, and the settings keys have
- * safe defaults.
+ * Verifies the plan §8 settings shape: the P2P surface is visible ONLY while
+ * the P2P carrier is selected (dormant for every other carrier); the layout
+ * is carrier row + beginner section (pairing path) + navigable Advanced
+ * sub-page (technical controls); the TURN fields persist and push to the
+ * spike host; the peer summary and action rows are wired; and the settings
+ * keys have safe defaults.
  */
 import { App, Plugin, type SettingDefinition, type SettingDefinitionItem } from "obsidian";
 import {
@@ -118,29 +119,41 @@ function p2pGroup(tab: VaultSyncSettingTab): P2pRow[] | null {
 	return null;
 }
 
+/** The rows of the navigable "Advanced" sub-page (empty when not on the P2P carrier). */
+function p2pAdvancedRows(tab: VaultSyncSettingTab): P2pRow[] {
+	const items = tab.getSettingDefinitions();
+	for (const item of items) {
+		if ("type" in item && item.type === "page" && item.name === "Advanced" && item.items) {
+			return item.items as P2pRow[];
+		}
+	}
+	return [];
+}
+
 s.section("1: group visible only while the P2P carrier is selected");
 {
-	// P2P carrier: the tab is exactly the P2P group, carrier row first.
+	// P2P carrier: carrier row + beginner group + navigable Advanced page.
 	const p2p = createFixture({ host: "https://x.example", token: "t" });
 	const group = p2pGroup(p2p.tab);
-	s.check(group !== null, "P2P group present with the P2P carrier selected");
+	const advanced = p2pAdvancedRows(p2p.tab);
+	s.check(group !== null, "beginner group present with the P2P carrier selected");
 	s.check(
-		p2p.tab.getSettingDefinitions().length === 1
-			&& p2p.tab.getSettingDefinitions()[0]!.heading === "P2P (experimental)",
-		"the P2P tab contains nothing but the P2P group",
+		p2p.tab.getSettingDefinitions().length === 3 && advanced.length === 6,
+		"the P2P tab is carrier row + beginner group + Advanced page",
 	);
 	if (group) {
 		const names = group.map((g) => g.name);
-		s.check(names[0] === "Sync carrier (experimental)", "carrier row leads the group, so switching back is one tap away");
-		s.check(names.includes("Direct P2P link"), "direct link row present");
-		s.check(names.includes("This vault"), "peer row present");
-		s.check(names.includes("Backbone (optional)"), "backbone row present");
+		s.check(names.join("|") === "Direct P2P link|Pair another device (QR + code)|This vault", `beginner section is the pairing path, nothing technical (${names.join("|")})`);
+	}
+	if (advanced.length) {
+		const names = advanced.map((g) => g.name);
+		s.check(names.includes("Backbone (optional)"), "backbone row present (Advanced)");
 		s.check(
-			group.some((g) => g.name === "Backbone (optional)" && /Phase 1/.test(g.desc ?? "")),
+			advanced.some((g) => g.name === "Backbone (optional)" && /Phase 1/.test(g.desc ?? "")),
 			"backbone row honestly marks Phase 1 options",
 		);
-		s.check(names.includes("Pair another device (QR + code)"), "pair action present");
-		s.check(names.includes("P2P network check"), "network check present");
+		s.check(names.includes("P2P network check"), "network check present (Advanced)");
+		s.check(names.includes("Debug mode"), "debug toggle present (Advanced)");
 	}
 
 	// Every other carrier: the whole P2P surface is dormant.
@@ -177,15 +190,16 @@ s.section("3: action rows and peer summary wiring");
 {
 	const { tab, p2pCalls } = createFixture();
 	const group = p2pGroup(tab);
+	const advanced = p2pAdvancedRows(tab);
 	s.check(group !== null, "group present for wiring checks");
 	if (group) {
 		const peer = group.find((g) => g.name === "This vault");
 		s.check(peer?.desc === "1 peer — direct · last seen 10:00:00", "peer row shows the host summary");
 		group.find((g) => g.name === "Pair another device (QR + code)")?.action?.();
 		s.check(p2pCalls.filter((c) => c === "panel-opened").length === 1, "pair row opens the panel");
-		group.find((g) => g.name === "P2P network check")?.action?.();
-		s.check(p2pCalls.includes("network-check"), "check row runs the network check");
 	}
+	advanced.find((g) => g.name === "P2P network check")?.action?.();
+	s.check(p2pCalls.includes("network-check"), "check row (Advanced page) runs the network check");
 }
 
 s.section("4: defaults and hosts without the spike");

@@ -211,18 +211,25 @@ s.section("Test 4: choosing the carrier");
 	s.check(badPass, "a non-string passphrase is rejected");
 }
 
-s.section("Test 4b: the P2P carrier layout (plan §8 shape)");
+s.section("Test 4b: the P2P carrier layout (section-based: beginner + Advanced page)");
 {
 	const p = makeFixture({ carrier: "p2p" });
 	const items = p.tab.getSettingDefinitions();
-	// The tab IS the P2P group: nothing from the other carriers leaks in.
-	s.check(groupHeadings(items).join() === "P2P (experimental)", `p2p layout is the single P2P group (${groupHeadings(items).join()})`);
-	s.check(pageNames(items).join() === "", "no Drive/CF pages in the P2P layout");
-	const names = groupItems(items, "P2P (experimental)");
-	s.check(names[0] === "Sync carrier (experimental)", "the carrier row comes first, so switching back is one tap away");
-	for (const expected of ["Direct P2P link", "This vault", "Backbone (optional)", "TURN URL (advanced)", "TURN username (optional)", "TURN credential (optional)", "Pair another device (QR + code)", "P2P network check", "Debug mode"]) {
-		s.check(names.includes(expected), `P2P row present: ${expected}`);
+	// Top level: the carrier row, the beginner group, the Advanced page —
+	// and nothing else (no Drive/CF leak).
+	s.check(items.length === 3, `top level is exactly row + group + page (${items.length})`);
+	s.check(!("type" in items[0]!) && items[0]!.name === "Sync carrier (experimental)", "the carrier row comes first, so switching back is one tap away");
+	s.check(groupHeadings(items).join() === "P2P (experimental)", `beginner group is the single group (${groupHeadings(items).join()})`);
+	s.check(pageNames(items).join() === "Advanced", `navigable Advanced sub-page (${pageNames(items).join()})`);
+	const beginner = groupItems(items, "P2P (experimental)");
+	s.check(beginner.join("|") === "Direct P2P link|Pair another device (QR + code)|This vault", `beginner section is the pairing path, no technical rows (${beginner.join("|")})`);
+	const advanced: string[] = [];
+	for (const item of items) {
+		if ("type" in item && item.type === "page" && item.name === "Advanced") {
+			advanced.push(...(item.items ?? []).map((i) => ("name" in i ? String(i.name) : "")));
+		}
 	}
+	s.check(advanced.join("|") === "Backbone (optional)|TURN URL (advanced)|TURN username (optional)|TURN credential (optional)|P2P network check|Debug mode", `Advanced page holds the technical controls (${advanced.join("|")})`);
 	const control = flatten(items).find((d) => d.name === "Sync carrier (experimental)")?.control as { type?: string; options?: Record<string, string> } | undefined;
 	const opts = control && control.type === "dropdown" ? Object.values(control.options ?? {}) : [];
 	s.check(opts.length === 3 && opts.includes("P2P (experimental)"), `dropdown offers all three carriers (${opts.join(" / ")})`);

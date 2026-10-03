@@ -15,17 +15,18 @@ feasibility doc's documented gaps).
    Obsidian).
 4. **Both devices**: **Settings → YAOS → "Sync carrier (experimental)"** →
    select **P2P (experimental)** → **reload the plugin** (or restart
-   Obsidian). The whole settings tab becomes the **"P2P (experimental)"**
-   group (the carrier row stays at the top, so switching back is one tap
-   away). With the P2P carrier selected, the *"Pair another device
-   (QR + code)"* row opens the spike panel, and the *TURN* fields here are
-   the primary way to set a relay (T0.5). With any other carrier selected
-   the P2P surface is fully dormant (no group, no P2P status-bar item,
+   Obsidian). The settings tab becomes the P2P screen: the carrier row on
+   top (switching back is one tap away), then the **"P2P (experimental)"**
+   section — *Direct P2P link* (what it is), **Pair another device
+   (QR + code)** (opens the spike panel), *This vault* (link status) — and
+   a navigable **Advanced** sub-page holding *Backbone* (Phase 1), the
+   *TURN* fields (the primary way to set a relay, T0.5), *P2P network
+   check*, and *Debug mode*. With any other carrier selected the P2P
+   surface is fully dormant (no P2P screen, no P2P status-bar item,
    pairing links are not accepted).
 5. **Optional, for the command palette + DevTools**: turn **Debug mode** on
-   (Settings → YAOS — the last row of the P2P group when the P2P carrier is
-   selected, the Advanced page otherwise) and restart Obsidian. With the P2P
-   carrier + debug mode, the
+   (Settings → YAOS → the P2P screen's **Advanced** sub-page) and restart
+   Obsidian. With the P2P
    command palette offers **"P2P spike panel (dev)"** (command id
    `p2p-spike-panel`) and the desktop DevTools console exposes
    `window.__YAOS_P2P_DEBUG__` (`generate()`, `join(code)`, `state()`,
@@ -193,10 +194,10 @@ If a STUN-only attempt fails (phase `connecting` stuck, `ice: failed`):
 
 1. Record the exact failure (log lines, ice state).
 2. Retry **with a TURN override**: enter URL/username/credential in the
-   **Settings → P2P (experimental) → TURN** fields (persisted; takes effect
-   on the next pairing — the panel's *Apply TURN* writes the same fields) →
-   re-generate on the anchor → re-join. Relay candidates then appear
-   (`relay N > 0` in the size line).
+   **Settings → P2P screen → Advanced sub-page → TURN** fields (persisted;
+   takes effect on the next pairing — the panel's *Apply TURN* writes the
+   same fields) → re-generate on the anchor → re-join. Relay candidates
+   then appear (`relay N > 0` in the size line).
 3. A success **only with relay** = "degraded" for that network pair — this
    is the planned outcome that motivates the backbone fallback; it is not a
    no-go.

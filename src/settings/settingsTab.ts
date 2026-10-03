@@ -482,12 +482,13 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 	 */
 	private applyCarrierChoice(definitions: SettingDefinitionItem[]): SettingDefinitionItem[] {
 		if (isP2pCarrier(this.host.settings)) {
-			// P2P carrier mode (Phase 0 spike, plan §8): the tab IS the P2P
-			// group — the carrier row comes first so switching back to
-			// another carrier is one tap away (a reload is needed, like every
-			// carrier change). The Drive/CF-specific pages do not apply here:
-			// the P2P link carries no notes yet.
-			return [this.p2pGroup(this.carrierRow())];
+			// P2P carrier mode (Phase 0 spike, plan §8): the carrier row on
+			// top (switching back is one tap away — a reload is needed, like
+			// every carrier change), then the beginner section (the pairing
+			// path, no scrolling past technical rows), then the navigable
+			// Advanced sub-page with the power controls. The Drive/CF-specific
+			// pages do not apply here: the P2P link carries no notes yet.
+			return [this.carrierRow(), this.p2pBeginnerGroup(), this.p2pAdvancedPage()];
 		}
 		return this.withStatusRows(this.applyCarrierChoiceRows(definitions));
 	}
@@ -502,25 +503,46 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 	}
 
 	/**
-	 * Phase 0 P2P spike — the "P2P (experimental)" group. Shown ONLY when
-	 * the P2P carrier is selected; for every other carrier the whole P2P
-	 * surface is dormant. The dev-only command-palette entry stays
-	 * debug-gated as well.
+	 * Phase 0 P2P spike — the BEGINNER section. Shown ONLY when the P2P
+	 * carrier is selected (for every other carrier the whole P2P surface is
+	 * dormant). This is what a first-time user sees on the P2P screen: the
+	 * explanation, the pairing action, and the current link state — nothing
+	 * technical. The power controls live in the Advanced sub-page.
 	 */
-	private p2pGroup(carrierRow: SettingDefinition): SettingDefinitionItem {
+	private p2pBeginnerGroup(): SettingDefinitionGroup {
 		return {
 			type: "group",
 			heading: "P2P (experimental)",
 			items: [
-				carrierRow,
 				{
 					name: "Direct P2P link",
-					desc: "Devices find each other with a pairing code or QR — nothing to deploy, nothing to sign up for. Test build for the feasibility check; pair from the panel below.",
+					desc: "Devices find each other with a pairing code or QR — nothing to deploy, nothing to sign up for. Test build for the feasibility check.",
+				},
+				{
+					name: "Pair another device (QR + code)",
+					desc: "Opens the P2P panel: generate a pairing code + QR here, or join with a code from another device.",
+					action: () => { this.host.openP2pPanel?.(); },
 				},
 				{
 					name: "This vault",
 					desc: this.host.getP2pPeerSummary?.() ?? "No P2P link yet.",
 				},
+			],
+		};
+	}
+
+	/**
+	 * Phase 0 P2P spike — the ADVANCED sub-page: optional relays, the
+	 * (Phase 1) backbone, diagnostics, and the dev toggle. Shown ONLY with
+	 * the P2P carrier selected, as a navigable entry under the beginner
+	 * section — same page pattern the Cloudflare layout uses.
+	 */
+	private p2pAdvancedPage(): SettingDefinitionPage {
+		return {
+			type: "page",
+			name: "Advanced",
+			desc: "Optional relay (TURN), backbone, diagnostics, and development tools.",
+			items: [
 				{
 					name: "Backbone (optional)",
 					desc: "None (default) — direct link only. Optional backbone options arrive in Phase 1 and are disabled here.",
@@ -539,19 +561,11 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 					control: { type: "text", key: "p2pTurnCredential" },
 				},
 				{
-					name: "Pair another device (QR + code)",
-					desc: "Opens the P2P panel: generate a pairing code + QR here, or join with a code from another device.",
-					action: () => { this.host.openP2pPanel?.(); },
-				},
-				{
 					name: "P2P network check",
 					desc: "Reports the last gathered candidate types and the current link state.",
 					action: () => { this.host.runP2pNetworkCheck?.(); },
 				},
 				{
-					// The P2P layout has no Advanced page, so the dev toggle
-					// lives here — otherwise debug mode would be unreachable
-					// while the P2P carrier is selected.
 					name: "Debug mode",
 					desc: "Record detailed sync events for an exportable diagnostics trace. Leave off for everyday use.",
 					control: { type: "toggle", key: "debug" },

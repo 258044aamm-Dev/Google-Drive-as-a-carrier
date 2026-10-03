@@ -85,16 +85,20 @@ WebRTC on real devices — that is the runbook's job.
 
 ## 5. Documented gaps (by choice, not by accident)
 
-- **T1.3 settings surface (restored to plan §8 shape, 2026-10-03):**
+- **T1.3 settings surface (plan §8 shape, section-based, 2026-10-03):**
   "P2P (experimental)" is a **carrier option** in the
-  "Sync carrier (experimental)" dropdown. The P2P settings group is visible
-  **only while the P2P carrier is selected** (the tab is exactly that group,
-  carrier row first); with any other carrier the whole P2P surface is
-  dormant (no group, no status-bar item, pairing links not accepted). TURN
-  fields are fully functional and persisted. The backbone options are
-  **disabled placeholders** — the composite carrier (T1.2) and backbone
-  adapters still belong to Phase 1 proper, after the gate. Cellular data
-  saver (A4), secret rotation, and the wizard first screen are not included.
+  "Sync carrier (experimental)" dropdown. The P2P surface is visible
+  **only while the P2P carrier is selected**: the tab is the carrier row,
+  a **beginner section** (plain explanation, *Pair another device (QR +
+  code)*, *This vault* status — the pairing path with no technical rows),
+  and a navigable **Advanced sub-page** (Backbone, TURN URL/username/
+  credential, P2P network check, Debug mode). With any other carrier the
+  whole P2P surface is dormant (no P2P screen, no status-bar item, pairing
+  links not accepted). TURN fields are fully functional and persisted. The
+  backbone options are **disabled placeholders** — the composite carrier
+  (T1.2) and backbone adapters still belong to Phase 1 proper, after the
+  gate. Cellular data saver (A4), secret rotation, and the wizard first
+  screen are not included.
 - **No CDP on phones**: the panel is the mobile control surface; DevTools
   (`__YAOS_P2P_DEBUG__`) is desktop-only.
 - **One data channel only**, mid fixed by the code; no renegotiation.
