@@ -102,7 +102,7 @@ carrier, or press **Set up Google Drive** in the Google Drive section, or run
 the command **YAOS: Set up Google Drive**. A short wizard walks you through:
 
 1. **Start a new vault** or **Join my existing vault** (a second device).
-2. **How to sign in.** Three choices:
+2. **How to sign in.** Two choices (three if a built-in Google client is ever added to a build):
    - **Easy sign-in (recommended).** You open a sign-in page, sign in with
      Google, copy the code it shows and paste it into the wizard. No Google
      Cloud project is needed. The page and a small token service are run by the
@@ -113,12 +113,12 @@ the command **YAOS: Set up Google Drive**. A short wizard walks you through:
      Your notes never pass through it: Drive requests go from your device
      straight to Google. Because the service takes part in signing in,
      **turn encryption on**.
-   - **Private sign-in.** The Google client built into the plugin; nothing goes
-     through anyone else's service. Shown as "coming soon" until a built-in
-     client is added to this build.
-   - **My own Google client (advanced).** The wizard shows each Google Cloud
-     page with a button and asks for the client ID and secret (the same five
-     steps as "Setup" below).
+   - **Private sign-in (your own Google client).** The wizard shows each
+     Google Cloud page with a button and asks for the client ID and secret you
+     create (the same five steps as "Setup" below). You make the Google project
+     and keep its details; nothing goes through anyone else's service. If a
+     build ever contains a built-in client, a separate "built-in connection"
+     choice appears next to it.
 3. **Sign in with Google** (private and own-client paths): a code appears;
    open google.com/device on any device and enter it. On the easy path this
    step only checks the pasted code with the service.

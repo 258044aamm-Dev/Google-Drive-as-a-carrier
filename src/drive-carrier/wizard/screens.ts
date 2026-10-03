@@ -121,17 +121,25 @@ export function buildScreen(c: WizardController): Screen {
 				{ kind: "p", text: "YAOS needs to sign in to your Google account to reach your Drive. Pick the way that suits you." },
 				{ kind: "steps", items: [
 					"Easy sign-in (recommended): a short sign-in on a web page, then paste one code. No Google Cloud setup. A sign-in service run by someone else (the author of the Obsidian Google Drive plugin) exchanges your sign-in for access. It never receives your notes.",
-					c.bundledAvailable
-						? "Private sign-in: the built-in connection. Nothing goes through anyone else's service."
-						: "Private sign-in: nothing goes through anyone else's service. Coming soon, it is not in this version yet.",
-					"Your own Google client (advanced): you create a free Google Cloud project once. Nothing goes through anyone else's service. About ten minutes on a computer.",
+					...(c.bundledAvailable
+						? [
+							"Private sign-in: the built-in connection. Nothing goes through anyone else's service.",
+							"Your own Google client (advanced): you create a free Google Cloud project once. Nothing goes through anyone else's service. About ten minutes on a computer.",
+						]
+						: [
+							"Private sign-in (your own Google client): you create a free Google Cloud project once and enter its client ID and secret yourself. Nothing goes through anyone else's service, and the details stay yours. About ten minutes on a computer.",
+						]),
 				] },
 				{ kind: "note", tone: "warn", text: "Choose one and keep it. A vault made with one way of signing in cannot be opened with another, because Google lets each connection see only the files it made." },
 			];
 			screen.buttons = [
 				{ label: "Easy sign-in (recommended)", action: "client-hosted", kind: "primary" },
-				{ label: c.bundledAvailable ? "Private sign-in (built-in connection)" : "Private sign-in (coming soon)", action: "client-bundled", kind: "secondary", disabled: !c.bundledAvailable },
-				{ label: "Use my own Google client (advanced)", action: "client-own", kind: "secondary" },
+				...(c.bundledAvailable
+					? [
+						{ label: "Private sign-in (built-in connection)", action: "client-bundled" as const, kind: "secondary" as const },
+						{ label: "Use my own Google client (advanced)", action: "client-own" as const, kind: "secondary" as const },
+					]
+					: [{ label: "Private sign-in (your own Google client)", action: "client-own" as const, kind: "secondary" as const }]),
 				cancel,
 				back,
 			];

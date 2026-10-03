@@ -8,6 +8,13 @@ Version numbers like `2.1.1-drive.3` exist only in each release's `manifest.json
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
+## Unreleased - 2.1.1-drive.9 (committed locally, not published)
+
+### Changed (setup guide, Google Drive only)
+- **"Private sign-in (coming soon)" is gone.** The disabled placeholder is removed. The guide now offers two ways to sign in: Easy sign-in, and **Private sign-in (your own Google client)**, which is the old "Use my own Google client (advanced)" path under a clearer name. The screen says that the user creates the Google project and enters its client ID and secret, that the details stay theirs, and that nothing goes through anyone else's service. The steps themselves are unchanged. The built-in-client code stays in place and unused: if a build ever contains one, the guide shows the old three-choice layout again.
+- Code: `src/drive-carrier/wizard/screens.ts` only (plus `docs/drive-carrier.md`).
+- Existing test changed on purpose: the one `drive-carrier-wizard-flow` check that asserted the "coming soon" placeholder now asserts its absence and the new wording. Nothing else in the wizard flow tests changed (200 checks pass).
+
 ## 2.1.1-drive.8 - 2026-10-03
 
 ### Fixed (engine, every carrier including Cloudflare)

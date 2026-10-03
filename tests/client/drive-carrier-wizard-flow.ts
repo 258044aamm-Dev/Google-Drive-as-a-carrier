@@ -595,9 +595,13 @@ s.section("Test 14: the easy sign-in, new vault");
 	s.check(rig.c.state.step === "client", "the way to sign in is asked first");
 	const primaries = screen.buttons.filter((b) => b.kind === "primary");
 	s.check(primaries.length === 1 && primaries[0]?.action === "client-hosted", "the easy sign-in is the one highlighted choice");
-	const priv = screen.buttons.find((b) => b.action === "client-bundled");
-	s.check(!!priv && priv.disabled === true && /coming soon/i.test(priv.label), "without a built-in client, 'Private' is shown as coming soon and cannot be pressed");
-	s.check(screen.buttons.some((b) => b.action === "client-own" && b.disabled !== true), "the own-client path is still there");
+	// Changed on purpose (2.1.1-drive.9): "Private sign-in" is the user's own Google client, not a "coming soon" placeholder.
+	s.check(!screen.buttons.some((b) => b.action === "client-bundled"), "without a built-in client there is no disabled 'Private' placeholder");
+	s.check(!/coming soon/i.test(JSON.stringify(screen)), "'coming soon' appears nowhere on the screen");
+	const priv = screen.buttons.find((b) => b.action === "client-own");
+	s.check(!!priv && priv.disabled !== true && /^Private sign-in \(your own Google client\)$/.test(priv.label), "'Private sign-in (your own Google client)' is a normal, pressable choice");
+	s.check(screen.buttons.filter((b) => b.action === "client-hosted" || b.action === "client-own").length === 2, "exactly two ways to sign in are offered");
+	s.check(/you create .*enter its client ID and secret yourself/i.test(JSON.stringify(screen.body)) && /details stay yours/.test(JSON.stringify(screen.body)), "the screen says the details are the user's own");
 	s.check(/someone else|run by/i.test(JSON.stringify(screen.body)) && /never receives your notes/.test(JSON.stringify(screen.body)), "the screen says a third party is involved and that it never gets the notes");
 	rig.c.chooseClient("hosted");
 	await tick();
