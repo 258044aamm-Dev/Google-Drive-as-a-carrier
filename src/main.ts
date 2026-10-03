@@ -1,4 +1,4 @@
-import { MarkdownView, Notice, Plugin, TFile, arrayBufferToHex } from "obsidian";
+import { MarkdownView, Menu, Notice, Platform, Plugin, TFile, addIcon, arrayBufferToHex, setIcon } from "obsidian";
 import {
 	DEFAULT_SETTINGS,
 	VaultSyncSettingTab,
@@ -6,6 +6,10 @@ import {
 	type VaultSyncSettings,
 } from "./settings";
 import { SettingsStore } from "./settings/settingsStore";
+import { resolveCloudflareBatchMs } from "./settings/syncPace";
+import { HeaderStatusIcons } from "./status/headerStatusIcons";
+import { registerStatusIcons } from "./status/statusIcons";
+import { clearSimpleStatusClasses, isDetailedStatusShown, isStatusIconShown, renderSimpleStatusBar, toSimpleStatus, type SimpleStatus } from "./status/simpleStatus";
 import { VaultSync, type ReconcileMode } from "./sync/vaultSync";
 import { SCHEMA_VERSION } from "./sync/vaultSync";
 import { EditorBindingManager } from "./sync/editorBinding";
@@ -69,6 +73,8 @@ import {
 import {
 	ReconciliationController,
 } from "./runtime/reconciliationController";
+import { waitForLayoutReady } from "./runtime/waitForLayoutReady";
+import { shouldRecordMarkdownDelete } from "./runtime/reconcile/conflictNotePolicy";
 import { AttachmentOrchestrator } from "./runtime/attachmentOrchestrator";
 import {
 	RuntimeTeardownCoordinator,
@@ -79,6 +85,7 @@ import { SetupLinkController } from "./runtime/setupLinkController";
 import { TraceRuntimeController } from "./runtime/traceRuntimeController";
 import { registerCommands } from "./commands";
 import {
+	getLabelFromConnectionState,
 	getSyncStatusLabel,
 	renderConnectionState,
 	renderSyncStatus,
@@ -87,6 +94,27 @@ import {
 import { CoalescedStatusRefresh } from "./status/coalescedStatusRefresh";
 import { formatUnknown, yTextToString } from "./utils/format";
 import { randomId } from "./utils/randomId";
+import {
+	isDriveCarrier,
+	isDriveSignedIn,
+	isLanCarrier,
+	isHostedSignIn,
+	newDriveDeviceId,
+} from "./drive-carrier/carrierSettings";
+import { createDriveCarrier, type DriveCarrier } from "./drive-carrier/driveCarrierRuntime";
+import { createLanCarrier, type LanCarrier } from "./lan-carrier/lanCarrierRuntime";
+import { AdapterFileStore } from "./lan-carrier/lanFileStore";
+import { isLanSupported } from "./lan-carrier/lanNode";
+import { ensureLanIdentity, lanSetupCodeOf } from "./lan-carrier/lanSettings";
+import type { LanSettingsHost } from "./lan-carrier/lanSettingsRows";
+import { generateLanKey } from "./lan-carrier/lanAuth";
+import { DriveSignInModal } from "./drive-carrier/DriveSignInModal";
+import { DriveSetupWizard } from "./drive-carrier/wizard/DriveSetupWizard";
+import { BUNDLED_GOOGLE_CLIENT } from "./drive-carrier/wizard/bundledClient";
+import type { FinishResult, WizardSettingsPatch } from "./drive-carrier/wizard/wizardController";
+import { GoogleAuthError } from "./drive-carrier/googleAuth";
+import { obsidianDriveHttp } from "./drive-carrier/obsidianDriveHttp";
+import { signInWithGoogle } from "./drive-carrier/signIn";
 import { ConfirmModal } from "./ui/ConfirmModal";
 import { runSchemaMigrationToV2 } from "./migrations/schemaV2";
 import { installTelemetryRuntime, type TelemetryRuntimeHandle } from "./telemetry/installTelemetryRuntime";
@@ -134,6 +162,9 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	private editorBindings: EditorBindingManager | null = null;
 	private diskMirror: DiskMirror | null = null;
 	private attachmentOrchestrator: AttachmentOrchestrator | null = null;
+	private driveCarrier: DriveCarrier | null = null;
+	private lanCarrier: LanCarrier | null = null;
+	private lanHost: LanSettingsHost | null = null;
 	private editorWorkspace: EditorWorkspaceOrchestrator | null = null;
 	private snapshotService: SnapshotService | null = null;
 	private reconciliationController!: ReconciliationController;
@@ -182,6 +213,8 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	/** Domain-level trace sink. Routes to the debug runtime when active, noop otherwise. */
 	private traceSink: TraceSink = new NoopTraceSink();
 	private statusBarEl: HTMLElement | null = null;
+	private headerStatusIcons: HeaderStatusIcons | null = null;
+	private lastSimpleStatus: SimpleStatus | null = null;
 	private statusInterval: number | null = null;
 	private readonly receiptStatusRefresh = new CoalescedStatusRefresh(() => {
 		if (!this.teardownLifecycle.isClosing) this.refreshStatusBar();
@@ -418,6 +451,13 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			getDiskMirror: () => this.diskMirror,
 			getBlobSync: () => this.getBlobSync(),
 			getServerSupportsSnapshots: () => this.serverSupportsSnapshots,
+			getSnapshotBackend: () => this.getDriveCarrier()?.snapshotBackend(
+				this.settings.vaultId,
+				() => this.vaultSync?.ydoc ?? null,
+			) ?? this.getLanCarrier()?.snapshotBackend(
+				this.settings.vaultId,
+				() => this.vaultSync?.ydoc ?? null,
+			) ?? null,
 			log: (message) => this.log(message),
 			onEditorsNeedReconcile: (reason) => this.editorWorkspace?.onReconciled(reason),
 		});
@@ -557,6 +597,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			getVaultSync: () => this.vaultSync,
 			getRuntimeConfig: () => this.getRuntimeConfig(),
 			getServerSupportsAttachments: () => this.serverSupportsAttachments,
+			getBlobStore: () => this.getDriveCarrier()?.blobStore(this.settings.vaultId) ?? this.getLanCarrier()?.blobStore(this.settings.vaultId) ?? null,
 			getTraceHttpContext: () => this.getTraceHttpContext(),
 			getBlobHashCache: () => this.blobHashCache,
 			getExcludePatterns: () => this.excludePatterns,
@@ -576,8 +617,19 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		}
 
 		this.addSettingTab(new VaultSyncSettingTab(this.app, this, this));
+		// Google Drive setup wizard command: listed only while the Drive carrier is chosen.
+		this.addCommand({
+			id: "drive-setup-wizard",
+			name: "Set up Google Drive",
+			checkCallback: (checking: boolean) => {
+				if (!isDriveCarrier(this.settings)) return false;
+				if (!checking) this.openDriveWizard();
+				return true;
+			},
+		});
 
 		this.statusBarEl = this.addStatusBarItem();
+		this.setupHeaderStatusIcons();
 		this.updateStatusBar("disconnected");
 
 		const finishOnload = (outcome: string): void => {
@@ -590,6 +642,50 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			});
 			this.log(`Startup onload complete (${outcome}) in ${durationMs}ms`);
 		};
+
+		// Google Drive carrier (opt-in). Everything below this block is the
+		// Cloudflare path and is not reached when the Drive carrier is chosen.
+		if (isDriveCarrier(this.settings)) {
+			if (!isDriveSignedIn(this.settings)) {
+				this.log("Google Drive carrier selected but not signed in — sync disabled");
+				new Notice("YAOS: Google Drive is not set up yet. Open the YAOS settings and press \"Set up Google Drive\".", 10000);
+				finishOnload("drive-not-signed-in");
+				return;
+			}
+			if (!this.settings.driveDeviceId) {
+				await this.updateSettings((settings) => {
+					settings.driveDeviceId = newDriveDeviceId(randomId);
+				}, "settings:drive-device-id");
+			}
+			this.applyRuntimeSettings("onload-pre-sync");
+			void this.initSync().then(() => {
+				if (!this.teardownLifecycle.isClosing) this.mountQaDebugApi();
+			}).catch((error: unknown) => {
+				console.error("[yaos] Startup sync continuation failed:", error);
+			});
+			finishOnload("drive-sync-started");
+			return;
+		}
+
+		// Local network carrier (opt-in, desktop only). Like the Drive block above, everything
+		// below it is the Cloudflare path and is not reached when this carrier is chosen.
+		if (isLanCarrier(this.settings)) {
+			if (!this.lanAvailable()) {
+				this.log("Local network carrier selected on a device that cannot run it — sync disabled");
+				new Notice("YAOS: The Local network carrier needs the desktop app. Choose another sync carrier in the YAOS settings on this device.", 12000);
+				finishOnload("lan-unsupported");
+				return;
+			}
+			await this.prepareLanIdentity();
+			this.applyRuntimeSettings("onload-pre-sync");
+			void this.initSync().then(() => {
+				if (!this.teardownLifecycle.isClosing) this.mountQaDebugApi();
+			}).catch((error: unknown) => {
+				console.error("[yaos] Startup sync continuation failed:", error);
+			});
+			finishOnload("lan-sync-started");
+			return;
+		}
 
 		if (this.settings.host) {
 			void this.refreshServerCapabilities("startup-background");
@@ -683,7 +779,9 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				onFlightEvent: (event) => this.recordFlightEvent(event as FlightEventInput),
 				onFlightPathEvent: (event) => this.recordFlightPathEvent(event),
 				onServerReceiptStatusChanged: () => this.queueReceiptStatusRefresh(),
-				getSocketTicket: (() => {
+				transportFactory: this.getDriveCarrier()?.transportFactory ?? this.getLanCarrier()?.transportFactory,
+				getOutgoingBatchMs: () => resolveCloudflareBatchMs(this.settings),
+				getSocketTicket: isDriveCarrier(this.settings) || isLanCarrier(this.settings) ? undefined : (() => {
 				// Each VaultSync instance gets its own ticket cache.  The cache
 				// is discarded when VaultSync is torn down and recreated.
 				const ticketCache = createSocketTicketCache();
@@ -812,6 +910,11 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 					this.diskIndex[path] = { mtime: 0, size: 0, contentHash };
 				}
 			});
+			// A remote delete needs the last synced content hash to tell an
+			// untouched file from an edited one (see DiskMirror).
+			this.diskMirror.setRemoteDeleteBaselineProvider(
+				(path) => this.diskIndex[path]?.contentHash ?? null,
+			);
 
 			// 4b. BlobSyncManager (if attachment sync is enabled)
 			this.attachmentOrchestrator?.start("startup", false);
@@ -929,6 +1032,8 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 					clearLocalServerReceiptState: () => this.clearLocalServerReceiptState(),
 					resetLocalCache: () => this.resetLocalCache(),
 					nuclearReset: () => this.nuclearReset(),
+					isDriveCarrier: () => isDriveCarrier(this.settings),
+					isLanCarrier: () => isLanCarrier(this.settings),
 				});
 				// Debug-runtime commands are registered separately by the debug runtime.
 				this.lab?.registerCommands(this);
@@ -1040,6 +1145,15 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				this.updateStatusBar(this.vaultSync.fatalAuthCode === "update_required" ? "error" : "unauthorized");
 				this.showFatalSyncNotice();
 				return;
+			}
+
+			// Open notes are placeholder tabs until the layout is restored, and the
+			// first reconcile must see them as open (upstream issue #77).
+			const layoutOutcome = await waitForLayoutReady(this.app.workspace);
+			if (abortIfStale("workspace layout")) return;
+			if (layoutOutcome !== "already-ready") {
+				this.log(`Startup reconcile waited for workspace layout: ${layoutOutcome}`);
+				this.trace("trace", "startup-layout-wait", { outcome: layoutOutcome });
 			}
 
 			const mode = this.vaultSync.getSafeReconcileMode();
@@ -1340,7 +1454,11 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				if (!this.reconciliationController.isReconciled) return;
 				if (!(file instanceof TFile)) return;
 
-				if (this.isMarkdownPathSyncable(file.path)) {
+				if (shouldRecordMarkdownDelete({
+					path: file.path,
+					syncable: this.isMarkdownPathSyncable(file.path),
+					activeInSharedDoc: this.vaultSync?.getFileId(file.path) !== undefined,
+				})) {
 					const opId = this.newOpId();
 					if (this.diskMirror?.consumeDeleteSuppression(file.path)) {
 						this.log(`Suppressed delete event for "${file.path}"`);
@@ -1530,8 +1648,14 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		new ConfirmModal(
 			this.app,
 			"Reset local cache",
-			"This will clear the local IndexedDB cache and re-sync from the server. " +
-			"Your disk files and server state are not affected. Continue?",
+			isLanCarrier(this.settings)
+				? "This will clear the local IndexedDB cache and re-sync from your other devices on the local network. " +
+					"Your disk files are not affected. Continue?"
+				: isDriveCarrier(this.settings)
+				? "This will clear the local IndexedDB cache and re-sync from Google Drive. " +
+					"Your disk files and your notes on Drive are not affected. Continue?"
+				: "This will clear the local IndexedDB cache and re-sync from the server. " +
+					"Your disk files and server state are not affected. Continue?",
 			async () => {
 				this.log("Reset cache: starting");
 				new Notice("Clearing cache and syncing again...");
@@ -1568,7 +1692,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		new ConfirmModal(
 			this.app,
 			"Nuclear reset",
-			`This will wipe all CRDT state (${pathCount} files) on both this device and the server, ` +
+			`This will wipe all CRDT state (${pathCount} files) on both this device and ${isLanCarrier(this.settings) ? "your linked devices" : isDriveCarrier(this.settings) ? "Google Drive" : "the server"}, ` +
 			`clear the local cache, then re-seed everything from your current disk files. ` +
 			`Other connected devices will also see the reset. This cannot be undone. Continue?`,
 			async () => {
@@ -1785,11 +1909,80 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			serverPersistenceDegraded: vaultSync.serverPersistenceDegraded,
 		} : null;
 		this.noticeServerPersistenceHealth(vaultSync?.serverPersistenceDegraded ?? false);
-		if (connectionState) {
-			renderConnectionState(this.statusBarEl, connectionState, transferStatus, serverReceipt, attentionCount);
-		} else {
-			renderSyncStatus(this.statusBarEl, _coarseState, transferStatus, attentionCount);
+		const simple = toSimpleStatus({
+			state: connectionState,
+			coarse: _coarseState,
+			attentionCount,
+			transferStatus,
+			receipt: serverReceipt,
+		});
+		this.lastSimpleStatus = simple;
+		this.headerStatusIcons?.update(simple);
+		if (isDetailedStatusShown(this.settings)) {
+			// The long technical text, unchanged, for people who want it.
+			clearSimpleStatusClasses(this.statusBarEl);
+			if (connectionState) {
+				renderConnectionState(this.statusBarEl, connectionState, transferStatus, serverReceipt, attentionCount);
+			} else {
+				renderSyncStatus(this.statusBarEl, _coarseState, transferStatus, attentionCount);
+			}
+			return;
 		}
+		// The short text. The long one is still in the tooltip.
+		const detailed = connectionState
+			? getLabelFromConnectionState(connectionState, transferStatus, serverReceipt, attentionCount)
+			: getSyncStatusLabel(_coarseState);
+		renderSimpleStatusBar(this.statusBarEl, simple, detailed);
+	}
+
+	/** The header icon: one small button per open note, plus a menu with the status and a retry. */
+	private setupHeaderStatusIcons(): void {
+		registerStatusIcons(addIcon);
+		const icons = new HeaderStatusIcons({
+			setIcon: (el, icon) => { setIcon(el as HTMLElement, icon); },
+			onClick: (evt) => this.showStatusMenu(evt),
+		});
+		this.headerStatusIcons = icons;
+		icons.setEnabled(isStatusIconShown(this.settings));
+		const refresh = () => this.syncHeaderStatusIcons();
+		this.registerEvent(this.app.workspace.on("layout-change", refresh));
+		this.registerEvent(this.app.workspace.on("active-leaf-change", refresh));
+		this.registerEvent(this.app.workspace.on("file-open", refresh));
+		this.app.workspace.onLayoutReady(refresh);
+		this.register(() => { icons.dispose(); });
+	}
+
+	private syncHeaderStatusIcons(): void {
+		const icons = this.headerStatusIcons;
+		if (!icons) return;
+		const views: MarkdownView[] = [];
+		this.app.workspace.iterateAllLeaves((leaf) => {
+			if (leaf.view instanceof MarkdownView) views.push(leaf.view);
+		});
+		icons.sync(views);
+	}
+
+	private showStatusMenu(evt: MouseEvent): void {
+		const status = this.lastSimpleStatus;
+		const menu = new Menu();
+		if (status) {
+			menu.addItem((item) => item.setTitle(`YAOS: ${status.text}`).setIcon("info").setDisabled(true));
+			menu.addItem((item) => item.setTitle(status.detail).setDisabled(true));
+			menu.addSeparator();
+		}
+		const retry = isDriveCarrier(this.settings) ? "Retry syncing with Google Drive" : isLanCarrier(this.settings) ? "Look for my other devices again" : "Retry syncing now";
+		menu.addItem((item) => item
+			.setTitle(retry)
+			.setIcon("refresh-cw")
+			.onClick(() => { this.connectionController?.reconnect("manual-command"); }));
+		menu.showAtMouseEvent(evt);
+	}
+
+	/** The status display settings changed: redraw the bottom bar and add or remove the header icons. */
+	applyStatusDisplay(): void {
+		this.headerStatusIcons?.setEnabled(isStatusIconShown(this.settings));
+		this.syncHeaderStatusIcons();
+		if (this.lastSimpleStatus) this.updateStatusBar(this.computeSyncStatus());
 	}
 
 	/**
@@ -2098,6 +2291,105 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		await this.saveSettings(reason);
 	}
 
+	/** Google Drive carrier: show the sign-in code and store the refresh token when the user approves. */
+	async signInToDrive(): Promise<void> {
+		const clientId = this.settings.driveClientId?.trim() ?? "";
+		const clientSecret = this.settings.driveClientSecret?.trim() ?? "";
+		if (!clientId || !clientSecret) {
+			new Notice("Enter the Google client ID and client secret first.", 8000);
+			return;
+		}
+		const modal = new DriveSignInModal(this.app, () => undefined);
+		modal.open();
+		try {
+			const result = await signInWithGoogle({ clientId, clientSecret }, modal, {
+				http: obsidianDriveHttp,
+				sleep: (ms) => new Promise<void>((resolve) => { window.setTimeout(resolve, ms); }),
+			});
+			await this.updateSettings((settings) => {
+				settings.driveRefreshToken = result.refreshToken;
+			}, "settings:drive-sign-in");
+			modal.close();
+			new Notice("Signed in to Google. Reload the plugin (or restart Obsidian) to start syncing.", 12000);
+		} catch (error: unknown) {
+			modal.close();
+			if (error instanceof GoogleAuthError && error.code === "cancelled") return;
+			new Notice(`YAOS: ${error instanceof Error ? error.message : String(error)}`, 12000);
+		}
+	}
+
+	/** The "sync speed" setting changed: let the running carrier pick it up without a restart. */
+	applySyncPace(): void {
+		this.driveCarrier?.applyPace();
+		this.vaultSync?.applyOutgoingBatchPace();
+	}
+
+	/** Google Drive carrier: the step-by-step setup wizard. */
+	openDriveWizard(): void {
+		new DriveSetupWizard(this.app, {
+			http: obsidianDriveHttp,
+			sleep: (ms) => new Promise<void>((resolve) => { window.setTimeout(resolve, ms); }),
+			getSettings: () => this.settings,
+			applySettings: (patch) => this.applyDriveWizardSettings(patch),
+			newVaultId: generateVaultId,
+			bundledClient: BUNDLED_GOOGLE_CLIENT,
+			copyText: (text) => navigator.clipboard.writeText(text),
+			openUrl: (url) => { window.open(url, "_blank", "noopener"); },
+			finishSetup: () => this.finishDriveSetup(),
+			reloadApp: () => {
+				// Not in Obsidian's public typings, so check what is there before using it.
+				const commands: unknown = Reflect.get(this.app, "commands");
+				if (typeof commands === "object" && commands !== null && "executeCommandById" in commands && typeof commands.executeCommandById === "function") {
+					Reflect.apply(commands.executeCommandById, commands, ["app:reload"]);
+				}
+			},
+		}).open();
+	}
+
+	private async applyDriveWizardSettings(patch: WizardSettingsPatch): Promise<void> {
+		await this.updateSettings((settings) => {
+			settings.carrier = patch.carrier;
+			settings.vaultId = patch.vaultId;
+			settings.driveClientId = patch.driveClientId;
+			settings.driveClientSecret = patch.driveClientSecret;
+			settings.driveRefreshToken = patch.driveRefreshToken;
+			settings.driveEncryptionPassphrase = patch.driveEncryptionPassphrase;
+			// Only the easy sign-in sets this key; the other two paths clear it, so it never lingers.
+			if (patch.driveAuthMode) settings.driveAuthMode = patch.driveAuthMode;
+			else delete settings.driveAuthMode;
+		}, "settings:drive-wizard");
+	}
+
+	/**
+	 * After the wizard: start syncing now when nothing is running yet (the same
+	 * start the Cloudflare setup link uses), otherwise ask for a reload so a
+	 * running sync is never switched under its feet.
+	 */
+	private async finishDriveSetup(): Promise<FinishResult> {
+		if (!isDriveCarrier(this.settings) || !isDriveSignedIn(this.settings)) return "reload";
+		if (this.vaultSync) return "reload";
+		if (!this.settings.driveDeviceId) {
+			await this.updateSettings((settings) => {
+				settings.driveDeviceId = newDriveDeviceId(randomId);
+			}, "settings:drive-device-id");
+		}
+		this.driveCarrier = null;
+		this.applyRuntimeSettings("drive-wizard");
+		await this.initSync();
+		if (!this.vaultSync) return "reload";
+		if (!this.teardownLifecycle.isClosing) this.mountQaDebugApi();
+		return "started";
+	}
+
+	async signOutOfDrive(): Promise<void> {
+		await this.updateSettings((settings) => {
+			settings.driveRefreshToken = "";
+			// After signing out of the easy sign-in, the screen returns to the normal Drive rows.
+			if (settings.driveAuthMode === "hosted") delete settings.driveAuthMode;
+		}, "settings:drive-sign-out");
+		new Notice("Signed out of Google on this device. Reload the plugin to stop syncing.", 8000);
+	}
+
 	private applyRuntimeSettings(reason: string): void {
 		this.runtimeConfig = buildRuntimeConfig(this.settings, this.app.vault.configDir);
 		this.excludePatterns = this.runtimeConfig.excludePatterns;
@@ -2119,11 +2411,115 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		return this.capabilityUpdateService?.authMode ?? "unknown";
 	}
 
+	/** True where the Local network carrier can run: the desktop app, with Node's network modules. */
+	private lanAvailable(): boolean {
+		return Platform.isDesktopApp && isLanSupported();
+	}
+
+	/** Makes this device's id, pairing key and certificate the first time the carrier is used. */
+	private async prepareLanIdentity(): Promise<void> {
+		// Looked at on a copy first: nothing is saved when the identity already exists.
+		if (!ensureLanIdentity({ ...this.settings }, this.settings.deviceName, randomId)) return;
+		await this.updateSettings((settings) => {
+			ensureLanIdentity(settings, settings.deviceName, randomId);
+		}, "settings:lan-identity");
+		this.log("Local network carrier: created this device's identity");
+	}
+
+	/** The Local network carrier, or null unless the user chose it (and the device can run it). Created once. */
+	private getLanCarrier(): LanCarrier | null {
+		if (!isLanCarrier(this.settings) || !this.lanAvailable()) return null;
+		this.lanCarrier ??= createLanCarrier({
+			getSettings: () => this.settings,
+			updateSettings: (mutator, reason) => this.updateSettings(mutator, reason),
+			filesFor: (folder) => new AdapterFileStore(
+				this.app.vault.adapter,
+				`${this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`}/lan/${folder}`,
+			),
+			log: (message) => this.log(message),
+			onProblem: (message) => {
+				new Notice(`YAOS: Local network sync cannot start. ${message}`, 15000);
+			},
+		});
+		return this.lanCarrier;
+	}
+
+	/** What the settings screen uses for the Local network carrier. Undefined where the carrier cannot run. */
+	get lan(): LanSettingsHost | undefined {
+		if (!this.lanAvailable()) return undefined;
+		this.lanHost ??= {
+			available: true,
+			prepare: () => this.prepareLanIdentity(),
+			status: () => this.getLanCarrier()?.status() ?? {
+				running: false, listening: false, port: null, error: null, discoveryRunning: false,
+				fingerprint: "", linked: [], seen: [], refusals: [],
+			},
+			copySetupCode: () => {
+				const code = lanSetupCodeOf(this.settings);
+				if (!code) {
+					new Notice("There is no pairing key yet. Reload the plugin once so it can be created.", 8000);
+					return;
+				}
+				void navigator.clipboard.writeText(code).then(
+					() => { new Notice("Setup code copied. Paste it on your other computer.", 6000); },
+					() => { new Notice("Could not copy. Select the code in the YAOS settings and copy it by hand.", 8000); },
+				);
+			},
+			regenerateKey: async () => {
+				await this.updateSettings((settings) => {
+					settings.lanKey = generateLanKey();
+					delete settings.lanPins;
+				}, "settings:lan-new-key");
+				new Notice("New pairing key created. Reload the plugin, then join again on your other devices with the new setup code.", 12000);
+			},
+			forgetDevice: async (deviceId) => {
+				await this.updateSettings((settings) => {
+					if (!settings.lanPins) return;
+					const kept = { ...settings.lanPins };
+					delete kept[deviceId];
+					settings.lanPins = kept;
+				}, "settings:lan-forget-device");
+			},
+			applyManualPeers: () => this.lanCarrier?.applyManualPeers(),
+		};
+		return this.lanHost;
+	}
+
+	/** The Google Drive carrier, or null unless the user chose it. Created once, so every part shares one sign-in. */
+	private getDriveCarrier(): DriveCarrier | null {
+		if (!isDriveCarrier(this.settings)) return null;
+		this.driveCarrier ??= createDriveCarrier({
+			getSettings: () => this.settings,
+			http: obsidianDriveHttp,
+			log: (message) => this.log(message),
+			onSignInLost: () => {
+				new Notice(
+					isHostedSignIn(this.settings)
+						? "YAOS: Your sign-in was lost. Sign in again at the sign-in page and paste the new code in the YAOS settings."
+						: "YAOS: Google access was lost. Sign in again in the YAOS settings.",
+					12000,
+				);
+			},
+			onFatal: (message) => {
+				new Notice(`YAOS: Google Drive sync stopped. ${message}`, 15000);
+			},
+			isMobile: () => Platform.isMobile,
+		});
+		return this.driveCarrier;
+	}
+
 	get serverSupportsAttachments(): boolean {
+		// Drive stores attachments itself, so this is true there.
+		if (isDriveCarrier(this.settings)) return true;
+		// The Local network carrier keeps attachments on the devices themselves.
+		if (isLanCarrier(this.settings)) return true;
 		return this.capabilityUpdateService?.supportsAttachments ?? true;
 	}
 
 	get serverSupportsSnapshots(): boolean {
+		// Likewise for restore points.
+		if (isDriveCarrier(this.settings)) return true;
+		if (isLanCarrier(this.settings)) return true;
 		return this.capabilityUpdateService?.supportsSnapshots ?? true;
 	}
 

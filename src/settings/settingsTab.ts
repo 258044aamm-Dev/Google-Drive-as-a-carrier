@@ -4,8 +4,25 @@ import {
 	Plugin,
 	PluginSettingTab,
 	type SettingDefinition,
+	type SettingDefinitionGroup,
 	type SettingDefinitionItem,
+	type SettingDefinitionPage,
 } from "obsidian";
+import {
+	currentCarrier,
+	driveFolderLabel,
+	isCarrierKind,
+	isDriveCarrier,
+	isDriveSignedIn,
+	isHostedSignIn,
+	isLanCarrier,
+	type CarrierKind,
+} from "../drive-carrier/carrierSettings";
+import { lanLayout, type LanSettingsHost } from "../lan-carrier/lanSettingsRows";
+import { applyLanSetupCode, readLanSetting, writeLanSetting, type LanSettingKey } from "../lan-carrier/lanSettings";
+import { checkHostedToken, normalizeHostedToken } from "../drive-carrier/wizard/validate";
+import { isDetailedStatusShown, isStatusIconShown } from "../status/simpleStatus";
+import { CUSTOM_LIMITS, currentSyncPace, isSyncPaceProfile, resolveCloudflareBatchMs, resolveDrivePace, type SyncPaceCustom, type SyncPaceProfile } from "./syncPace";
 import { PairDeviceModal } from "./PairDeviceModal";
 import { RecoveryKitModal } from "./RecoveryKitModal";
 import {
@@ -32,7 +49,22 @@ type DeclarativeSettingKey =
 	| "updateRepoBranch"
 	| "externalEditPolicy"
 	| "frontmatterGuardEnabled"
-	| "debug";
+	| "debug"
+	| "carrier"
+	| "syncPace"
+	| "drivePaceActive"
+	| "drivePaceIdle"
+	| "drivePaceHidden"
+	| "drivePaceBatch"
+	| "drivePaceFullCheck"
+	| "cloudflarePaceBatch"
+	| "showStatusIcon"
+	| "detailedStatus"
+	| "driveClientId"
+	| "driveClientSecret"
+	| "driveHostedToken"
+	| "driveEncryptionPassphrase"
+	| LanSettingKey;
 
 interface SettingsUpdateState {
 	serverVersion: string | null;
@@ -62,10 +94,39 @@ export interface VaultSyncSettingsHost {
 	buildSetupDeepLink(): string | null;
 	buildMobileSetupUrl(): string | null;
 	buildRecoveryKitText(): string | null;
+	/** Google Drive carrier only. Absent on hosts that do not offer it. */
+	signInToDrive?(): Promise<void>;
+	signOutOfDrive?(): Promise<void>;
+	/** Opens the step-by-step Google Drive setup wizard. */
+	openDriveWizard?(): void;
+	/** Tells the running carrier to use the new "sync speed" setting right away. */
+	applySyncPace?(): void;
+	/** Redraws the status bar and adds or removes the header icons after a status display setting changed. */
+	applyStatusDisplay?(): void;
+	/** Local network carrier (desktop only). Absent on hosts that do not offer it. */
+	lan?: LanSettingsHost;
 }
 
 const CLOUDFLARE_DEPLOY_URL = "https://deploy.workers.cloudflare.com/?url=https://github.com/kavinsood/yaos/tree/main/server";
 const ATTACHMENT_SETUP_VIDEO_URL = "https://youtu.be/Z7xCMEYfdFM";
+const CARRIER_OPTIONS: Record<CarrierKind, string> = {
+	cloudflare: "Cloudflare Worker (default)",
+	drive: "Google Drive (experimental)",
+	lan: "Local network (experimental, desktop only)",
+};
+const SYNC_PACE_OPTIONS: Record<SyncPaceProfile, string> = {
+	normal: "Normal (default)",
+	gentle: "Gentle (fewer requests)",
+	minimal: "Minimal (fewest requests)",
+	custom: "Custom",
+};
+const DRIVE_PACE_KEYS = {
+	drivePaceActive: "driveActiveSec",
+	drivePaceIdle: "driveIdleSec",
+	drivePaceHidden: "driveHiddenSec",
+	drivePaceBatch: "driveBatchSec",
+	drivePaceFullCheck: "driveFullCheckMin",
+} as const satisfies Record<string, keyof SyncPaceCustom>;
 const EXTERNAL_EDIT_OPTIONS: Record<ExternalEditPolicy, string> = {
 	always: "Always import",
 	"closed-only": "Only when file is closed",
@@ -82,6 +143,14 @@ function isInsecureRemoteHost(host: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+function isPageDefinition(item: SettingDefinitionItem): item is SettingDefinitionPage {
+	return "type" in item && item.type === "page";
+}
+
+function isGroupDefinition(item: SettingDefinitionItem): item is SettingDefinitionGroup {
+	return "type" in item && item.type === "group";
 }
 
 function shortenMiddle(value: string, maxLength = 36): string {
@@ -390,7 +459,319 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			},
 		);
 
-		return definitions;
+		return this.applyCarrierChoice(definitions);
+	}
+
+	/**
+	 * The carrier choice is added to the finished list instead of being woven
+	 * into it, so the Cloudflare screens above stay as they were. It shows up
+	 * where the user is deciding how to sync:
+	 *  - before a server is set up: in the Setup group, right above "Deploy your server";
+	 *  - with the Drive carrier: in the Drive group, so it is easy to switch back;
+	 *  - with a configured server: in Advanced (nobody is choosing anymore).
+	 * With the Drive carrier the server-only screens are replaced by the Drive one.
+	 */
+	private applyCarrierChoice(definitions: SettingDefinitionItem[]): SettingDefinitionItem[] {
+		if (isLanCarrier(this.host.settings) && this.host.lan) {
+			// Local network carrier: its own rows come first, the Cloudflare-only rows are removed.
+			return this.withStatusRows(lanLayout(definitions, {
+				settings: this.host.settings,
+				lan: this.host.lan,
+				carrierRow: this.carrierRow(),
+				update: () => this.update(),
+			}));
+		}
+		return this.withStatusRows(this.applyCarrierChoiceRows(definitions));
+	}
+
+	/** The "Sync carrier (experimental)" row, wherever the user decides how to sync. */
+	private carrierRow(): SettingDefinition {
+		return {
+			name: "Sync carrier (experimental)",
+			desc: "Where your notes are exchanged between devices. Changing it needs a reload of the plugin. Google Drive needs no server, but changes arrive in a few seconds instead of instantly.",
+			control: { type: "dropdown", key: "carrier", options: this.carrierOptions() },
+		};
+	}
+
+	/** The Local network option is only offered where it can run (the desktop app), or when it is already chosen. */
+	private carrierOptions(): Record<string, string> {
+		if (this.host.lan?.available === true || isLanCarrier(this.host.settings)) return CARRIER_OPTIONS;
+		return Object.fromEntries(Object.entries(CARRIER_OPTIONS).filter(([kind]) => kind !== "lan"));
+	}
+
+	/** Two switches for the status display, in Advanced for every carrier, just above the "Reload required" note. */
+	private withStatusRows(definitions: SettingDefinitionItem[]): SettingDefinitionItem[] {
+		const rows: SettingDefinition[] = [
+			{
+				name: "Status icon in the note header",
+				desc: "A small icon at the top of each note that shows whether syncing is working. Also available on phones. Click it for details.",
+				control: { type: "toggle", key: "showStatusIcon" },
+			},
+			{
+				name: "Detailed status text",
+				desc: "Show the long technical text in the bottom bar instead of a few simple words. The details are always available when you hover over the status.",
+				control: { type: "toggle", key: "detailedStatus" },
+			},
+		];
+		return definitions.map((item) => {
+			if (!isPageDefinition(item) || item.name !== "Advanced" || !item.items) return item;
+			const items = [...item.items];
+			const note = items.findIndex((entry) => "name" in entry && entry.name === "Reload required");
+			items.splice(note >= 0 ? note : items.length, 0, ...rows);
+			return { ...item, items };
+		});
+	}
+
+	private applyCarrierChoiceRows(definitions: SettingDefinitionItem[]): SettingDefinitionItem[] {
+		const carrierRow: SettingDefinition = {
+			name: "Sync carrier (experimental)",
+			desc: "Where your notes are exchanged between devices. Changing it needs a reload of the plugin. Google Drive needs no server, but changes arrive in a few seconds instead of instantly.",
+			control: { type: "dropdown", key: "carrier", options: this.carrierOptions() },
+		};
+		const drive = isDriveCarrier(this.host.settings);
+		const isSetupGroup = (item: SettingDefinitionItem): item is SettingDefinitionGroup =>
+			isGroupDefinition(item) && item.heading === "Setup";
+		const carrierInAdvanced = (item: SettingDefinitionItem): SettingDefinitionItem => {
+			if (!isPageDefinition(item) || item.name !== "Advanced" || !item.items) return item;
+			// A configured server only: the speed rows go just above the "Reload required" note.
+			const items = [carrierRow, ...item.items];
+			const note = items.findIndex((entry) => "name" in entry && entry.name === "Reload required");
+			items.splice(note >= 0 ? note : items.length, 0, ...this.cloudflarePaceRows());
+			return { ...item, items };
+		};
+		const carrierInSetup = (item: SettingDefinitionItem): SettingDefinitionItem => {
+			if (!isSetupGroup(item)) return item;
+			const items = [...(item.items ?? [])];
+			const deploy = items.findIndex((entry) => "name" in entry && entry.name === "Deploy your server");
+			items.splice(deploy >= 0 ? deploy : items.length, 0, carrierRow);
+			return { ...item, items };
+		};
+		if (!drive) {
+			return definitions.map(definitions.some(isSetupGroup) ? carrierInSetup : carrierInAdvanced);
+		}
+
+		const withoutServerRows = (item: SettingDefinitionItem): SettingDefinitionItem => {
+			if (!isPageDefinition(item) || item.name !== "Advanced" || !item.items) return item;
+			// "Vault ID" moved to the manual setup page, so it is not shown twice.
+			const serverOnly = new Set(["Deployment repository URL", "Deployment default branch", "Vault ID"]);
+			const items = item.items
+				.filter((entry) => !("name" in entry && typeof entry.name === "string" && serverOnly.has(entry.name)))
+				.map((entry) => "name" in entry && entry.name === "Reload required" && !("items" in entry)
+					? { ...entry, desc: "Changing the sync carrier, the vault ID, or the encryption passphrase requires reloading the plugin." }
+					: entry);
+			return { ...item, desc: "External edits, safety checks and diagnostics.", items };
+		};
+		// "This device" only holds the device name, which is shown in live cursors; Drive mode has none.
+		const serverOnlyGroups = new Set(["Setup", "Sync status", "Updates", "Collaboration", "This device"]);
+		const kept = definitions.filter((item) => {
+			if (isGroupDefinition(item) && typeof item.heading === "string") {
+				return !serverOnlyGroups.has(item.heading);
+			}
+			if (isPageDefinition(item) && item.name === "Manual connection") return false;
+			return true;
+		});
+		const rest = kept.map(withoutServerRows).map((item) => this.withDriveAttachmentText(item));
+		const advanced = rest.findIndex((item) => isPageDefinition(item) && item.name === "Advanced");
+		rest.splice(advanced >= 0 ? advanced : rest.length, 0, this.driveManualPage());
+		return [...this.driveDefinitions(carrierRow), ...rest];
+	}
+
+	/** Attachments and snapshots live on Drive: the server wording is replaced and the server-only rows are removed. */
+	private withDriveAttachmentText(item: SettingDefinitionItem): SettingDefinitionItem {
+		if (!isGroupDefinition(item) || item.heading !== "Attachments") return item;
+		const folder = `YAOS ${this.host.settings.vaultId || "..."} blobs`;
+		const serverRows = new Set(["Refresh attachment capability", "Set up attachment storage"]);
+		const items = (item.items ?? []).filter((entry) => !("name" in entry && typeof entry.name === "string" && serverRows.has(entry.name))).map((entry) => {
+			if ("name" in entry && entry.name === "Attachment storage" && !("items" in entry)) {
+				return { ...entry, desc: `Stored in your Google Drive (folder "${folder}"). Snapshots are kept there too.` };
+			}
+			return entry;
+		});
+		return { ...item, items };
+	}
+
+	private async runDriveAction(action: () => Promise<void> | undefined): Promise<void> {
+		await action();
+		this.update();
+	}
+
+	/**
+	 * The Drive screen for beginners: status, the way of syncing, the guided
+	 * setup and sign out. Everything that has to be typed by hand lives on the
+	 * "Manual setup (advanced)" page (see `driveManualPage`).
+	 */
+	private driveDefinitions(carrierRow: SettingDefinition): SettingDefinitionItem[] {
+		const settings = this.host.settings;
+		const signedIn = isDriveSignedIn(settings);
+		const status = this.host.getSettingsStatusSummary();
+		return [
+			{
+				type: "group",
+				heading: "Google Drive carrier",
+				items: [
+					{
+						name: "Status",
+						desc: signedIn
+							? status.label + (isHostedSignIn(settings) ? " Signed in with the easy sign-in." : "")
+							: "Not signed in. Press \"Set up Google Drive\" below for a step-by-step guide. To enter the details by hand, open \"Manual setup (advanced)\".",
+					},
+					carrierRow,
+					{
+						name: "Set up Google Drive",
+						desc: "A short step-by-step guide: connect to Google, choose encryption, then create your vault or join one you already have.",
+						visible: () => typeof this.host.openDriveWizard === "function",
+						action: () => { this.host.openDriveWizard?.(); },
+					},
+					{
+						name: "Sign out",
+						desc: "Forget the Google sign-in on this device. Your notes on Drive stay where they are.",
+						visible: () => isDriveSignedIn(this.host.settings),
+						action: () => { void this.runDriveAction(() => this.host.signOutOfDrive?.()); },
+					},
+				],
+			},
+			{
+				type: "group",
+				heading: "Sync speed (Google Drive)",
+				items: [
+					{
+						name: "Sync speed",
+						desc: "How often YAOS asks Google Drive for changes. Normal is the default. If Google reports too many requests, choose Gentle or Minimal: changes then arrive a little later, and nothing else changes.",
+						control: { type: "dropdown", key: "syncPace", options: SYNC_PACE_OPTIONS },
+					},
+					{
+						name: "Current speed",
+						desc: this.describeDrivePace(),
+						visible: () => currentSyncPace(this.host.settings) !== "custom",
+					},
+					...this.drivePaceCustomRows(),
+				],
+			},
+		];
+	}
+
+	/** Cloudflare has a live connection (nothing to poll), so its only speed control is how long edits are gathered before sending. */
+	private cloudflarePaceRows(): SettingDefinition[] {
+		const ms = resolveCloudflareBatchMs(this.host.settings);
+		const now = ms === 0 ? "Every edit is sent at once." : `Edits are gathered for ${ms / 1000} s and sent together.`;
+		const limit = CUSTOM_LIMITS.cloudflareBatchSec;
+		return [
+			{
+				name: "Sync speed (Cloudflare)",
+				desc: `Normal sends every edit at once (default). If your Cloudflare plan reports too many requests, choose Gentle or Minimal to send your edits in groups: a few seconds later for other devices, far fewer messages. Receiving is not affected. ${now}`,
+				control: { type: "dropdown", key: "syncPace", options: SYNC_PACE_OPTIONS },
+			},
+			{
+				name: "Group edits for (seconds)",
+				desc: `Custom only. Allowed: 0 (send at once) or ${limit.min} to ${limit.max}.`,
+				visible: () => currentSyncPace(this.host.settings) === "custom",
+				control: {
+					type: "number",
+					key: "cloudflarePaceBatch",
+					min: 0,
+					step: 1,
+					validate: (value) => {
+						if (!Number.isInteger(value)) return "Enter a whole number.";
+						if (value !== 0 && (value < limit.min || value > limit.max)) return `Enter 0 or a number from ${limit.min} to ${limit.max}.`;
+						return undefined;
+					},
+				},
+			},
+		];
+	}
+
+	/** One plain sentence about the speed that is in effect now. */
+	private describeDrivePace(): string {
+		const pace = resolveDrivePace(this.host.settings, false);
+		const s = (ms: number) => `${Math.round(ms / 1000)} s`;
+		const hidden = pace.backgroundPollIntervalMs === 0 ? "paused while hidden" : `every ${s(pace.backgroundPollIntervalMs)} while hidden`;
+		return `Checks Drive every ${s(pace.pollIntervalMs)} while you work, every ${s(pace.idlePollIntervalMs)} when idle, ${hidden}. Edits are uploaded in groups every ${s(pace.batchMs)}. On a phone, checks pause while the app is in the background.`;
+	}
+
+	private drivePaceCustomRows(): SettingDefinition[] {
+		const custom = () => currentSyncPace(this.host.settings) === "custom";
+		const row = (
+			name: string,
+			desc: string,
+			key: keyof typeof DRIVE_PACE_KEYS,
+			limit: { min: number; max: number },
+			allowZero = false,
+		): SettingDefinition => ({
+			name,
+			desc: `${desc} Allowed: ${allowZero ? "0 or " : ""}${limit.min} to ${limit.max}. Smaller values are not allowed, because that would be faster than the default.`,
+			visible: custom,
+			control: {
+				type: "number",
+				key,
+				min: allowZero ? 0 : limit.min,
+				step: 1,
+				validate: (value) => {
+					if (!Number.isInteger(value)) return "Enter a whole number.";
+					if (allowZero && value === 0) return undefined;
+					if (value < limit.min || value > limit.max) return `Enter ${allowZero ? "0 or " : ""}a number from ${limit.min} to ${limit.max}.`;
+					return undefined;
+				},
+			},
+		});
+		return [
+			row("Check while working (seconds)", "How often to ask Drive for changes while you are using Obsidian. Default 3.", "drivePaceActive", CUSTOM_LIMITS.driveActiveSec),
+			row("Check when idle (seconds)", "How often to ask after a minute without activity. Default 30.", "drivePaceIdle", CUSTOM_LIMITS.driveIdleSec),
+			row("Check while hidden (seconds)", "How often to ask while the window is hidden. 0 pauses until you come back. Default 120 on a computer; phones always pause.", "drivePaceHidden", CUSTOM_LIMITS.driveHiddenSec, true),
+			row("Group edits for (seconds)", "Your edits are gathered for this long and uploaded together. Default 2.", "drivePaceBatch", CUSTOM_LIMITS.driveBatchSec),
+			row("Full check every (minutes)", "How often to compare everything with Drive, as a safety net. Default 5.", "drivePaceFullCheck", CUSTOM_LIMITS.driveFullCheckMin),
+		];
+	}
+
+	/** Everything the wizard fills in, for people who join by hand or need to repair a sign-in. */
+	private driveManualPage(): SettingDefinitionPage {
+		const settings = this.host.settings;
+		const signedIn = isDriveSignedIn(settings);
+		return {
+			type: "page",
+			name: "Manual setup (advanced)",
+			desc: "The details the setup guide fills in for you: vault ID, Google sign-in and encryption passphrase. Only needed to join by hand or to repair a sign-in.",
+			displayValue: () => (isDriveSignedIn(this.host.settings) ? "Signed in" : "Not signed in"),
+			status: () => (isDriveSignedIn(this.host.settings) ? null : "warning"),
+			items: [
+				{
+					name: "Vault ID",
+					desc: `Every device that syncs this vault must use exactly this ID. Your notes are in the Google Drive folder "${driveFolderLabel(settings.vaultId || "Not set")}". Reload the plugin after changing it.`,
+					control: { type: "text", key: "vaultId", placeholder: "Generated automatically" },
+				},
+				{
+					name: "Google client ID",
+					desc: "From your own Google Cloud project: an OAuth client of type \"TVs and limited-input devices\".",
+					control: { type: "text", key: "driveClientId", placeholder: "Paste the client ID" },
+					visible: () => !isHostedSignIn(this.host.settings),
+				},
+				{
+					name: "Google client secret",
+					desc: "From the same OAuth client. Stored only in this vault's plugin data.",
+					control: { type: "text", key: "driveClientSecret", placeholder: "Paste the client secret" },
+					visible: () => !isHostedSignIn(this.host.settings),
+				},
+				{
+					name: "Sign-in code (easy sign-in)",
+					desc: "Only shown for the easy sign-in. If sync says access was lost, sign in again at https://ogd.richardxiong.com and paste the new code here, then reload the plugin.",
+					visible: () => isHostedSignIn(this.host.settings),
+					control: { type: "text", key: "driveHostedToken", placeholder: "Paste the sign-in code" },
+				},
+				{
+					name: "Encryption passphrase",
+					desc: "Optional. Encrypts everything YAOS stores on Drive. Set it before the first sync of a new vault and use the same passphrase on every device; it cannot be added to a vault that already exists on Drive, and a lost passphrase cannot be recovered. Reload the plugin after changing it.",
+					control: { type: "text", key: "driveEncryptionPassphrase", placeholder: "Leave empty for no encryption" },
+				},
+				{
+					name: signedIn ? "Signed in to Google" : "Sign in with Google",
+					desc: signedIn
+						? "Sign in again if sync reports that access was lost."
+						: "Shows a short code to enter at google.com/device. Only files created by YAOS are accessible.",
+					// The easy sign-in is renewed with the sign-in code above; this button only does Google's own sign-in.
+					visible: () => !isHostedSignIn(this.host.settings),
+					action: () => { void this.runDriveAction(() => this.host.signInToDrive?.()); },
+				},
+			],
+		};
 	}
 
 	getControlValue(key: string): unknown {
@@ -410,6 +791,36 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			case "externalEditPolicy": return this.host.settings.externalEditPolicy;
 			case "frontmatterGuardEnabled": return this.host.settings.frontmatterGuardEnabled;
 			case "debug": return this.host.settings.debug;
+			case "carrier": return currentCarrier(this.host.settings);
+			case "syncPace": return currentSyncPace(this.host.settings);
+			case "cloudflarePaceBatch": return this.host.settings.syncPaceCustom?.cloudflareBatchSec ?? 0;
+			case "showStatusIcon": return isStatusIconShown(this.host.settings);
+			case "detailedStatus": return isDetailedStatusShown(this.host.settings);
+			case "drivePaceActive":
+			case "drivePaceIdle":
+			case "drivePaceHidden":
+			case "drivePaceBatch":
+			case "drivePaceFullCheck": {
+				// Show the number that is in effect, so switching to Custom starts from the current speed.
+				const pace = resolveDrivePace({ syncPace: "custom", syncPaceCustom: this.host.settings.syncPaceCustom }, false);
+				const shown = {
+					drivePaceActive: pace.pollIntervalMs / 1000,
+					drivePaceIdle: pace.idlePollIntervalMs / 1000,
+					drivePaceHidden: pace.backgroundPollIntervalMs / 1000,
+					drivePaceBatch: pace.batchMs / 1000,
+					drivePaceFullCheck: pace.reconcileIntervalMs / 60_000,
+				};
+				return shown[key as keyof typeof shown];
+			}
+			case "driveClientId": return this.host.settings.driveClientId ?? "";
+			case "driveClientSecret": return this.host.settings.driveClientSecret ?? "";
+			case "driveHostedToken": return this.host.settings.driveRefreshToken ?? "";
+			case "driveEncryptionPassphrase": return this.host.settings.driveEncryptionPassphrase ?? "";
+			case "lanJoinCode":
+			case "lanManualPeers":
+			case "lanPort":
+			case "lanDiscoveryPort":
+			case "lanDiscovery": return readLanSetting(this.host.settings, key as LanSettingKey);
 			default: throw new Error(`Unknown Yaos setting: ${key}`);
 		}
 	}
@@ -497,6 +908,124 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 				await this.host.updateSettings((settings) => {
 					settings.debug = expectBooleanValue(key, value);
 				}, "settings:debug");
+				return;
+			case "lanJoinCode": {
+				const code = expectStringValue(key, value);
+				if (code.trim() === "") return;
+				// Checked on a copy first, so a bad code never reaches the saved settings.
+				const problem = applyLanSetupCode({ ...this.host.settings }, code);
+				if (problem) throw new RangeError(problem);
+				await this.host.updateSettings((settings) => { applyLanSetupCode(settings, code); }, "settings:lan-join");
+				new Notice("Setup code accepted. Reload the plugin (or restart Obsidian) to start syncing with your other devices.", 10000);
+				this.update();
+				return;
+			}
+			case "lanManualPeers":
+			case "lanPort":
+			case "lanDiscoveryPort":
+			case "lanDiscovery": {
+				const lanKey = key as Exclude<LanSettingKey, "lanJoinCode">;
+				// Checked before saving, so a rejected value never reaches the saved settings.
+				writeLanSetting({ ...this.host.settings }, lanKey, value);
+				await this.host.updateSettings((settings) => { writeLanSetting(settings, lanKey, value); }, "settings:lan");
+				if (key === "lanManualPeers") this.host.lan?.applyManualPeers();
+				return;
+			}
+			case "carrier": {
+				const nextValue = expectStringValue(key, value);
+				if (!isCarrierKind(nextValue)) throw new RangeError(`Unsupported sync carrier: ${nextValue}`);
+				await this.host.updateSettings((settings) => { settings.carrier = nextValue; }, "settings:carrier");
+				// Choosing Local network: make this device's key and certificate now, so the setup code can be copied before the reload.
+				if (nextValue === "lan") await this.host.lan?.prepare();
+				new Notice("Reload the plugin (or restart Obsidian) to switch the sync carrier.", 8000);
+				this.update();
+				// Choosing Drive for the first time: walk the user through the rest.
+				if (nextValue === "drive" && !isDriveSignedIn(this.host.settings)) this.host.openDriveWizard?.();
+				return;
+			}
+			case "syncPace": {
+				const nextValue = expectStringValue(key, value);
+				if (!isSyncPaceProfile(nextValue)) throw new RangeError(`Unsupported sync speed: ${nextValue}`);
+				await this.host.updateSettings((settings) => {
+					// "normal" is stored as "nothing set", exactly like a vault that never touched this.
+					if (nextValue === "normal") delete settings.syncPace;
+					else settings.syncPace = nextValue;
+				}, "settings:sync-pace");
+				this.host.applySyncPace?.();
+				this.update();
+				return;
+			}
+			case "showStatusIcon": {
+				const on = expectBooleanValue(key, value);
+				// On is the default, so it is stored as "nothing set".
+				await this.host.updateSettings((settings) => {
+					if (on) delete settings.showStatusIcon;
+					else settings.showStatusIcon = false;
+				}, "settings:status-icon");
+				this.host.applyStatusDisplay?.();
+				return;
+			}
+			case "detailedStatus": {
+				const on = expectBooleanValue(key, value);
+				await this.host.updateSettings((settings) => {
+					if (on) settings.detailedStatus = true;
+					else delete settings.detailedStatus;
+				}, "settings:detailed-status");
+				this.host.applyStatusDisplay?.();
+				return;
+			}
+			case "cloudflarePaceBatch": {
+				const nextValue = expectFiniteNumber(key, value);
+				const limit = CUSTOM_LIMITS.cloudflareBatchSec;
+				if (!Number.isInteger(nextValue) || !(nextValue === 0 || (nextValue >= limit.min && nextValue <= limit.max))) {
+					throw new RangeError(`cloudflareBatchSec must be 0 or a whole number from ${limit.min} to ${limit.max}`);
+				}
+				await this.host.updateSettings((settings) => {
+					settings.syncPaceCustom = { ...settings.syncPaceCustom, cloudflareBatchSec: nextValue };
+				}, "settings:sync-pace-custom");
+				this.host.applySyncPace?.();
+				this.update();
+				return;
+			}
+			case "drivePaceActive":
+			case "drivePaceIdle":
+			case "drivePaceHidden":
+			case "drivePaceBatch":
+			case "drivePaceFullCheck": {
+				const nextValue = expectFiniteNumber(key, value);
+				const field = DRIVE_PACE_KEYS[key as keyof typeof DRIVE_PACE_KEYS];
+				const limit = CUSTOM_LIMITS[field];
+				const zeroOk = field === "driveHiddenSec";
+				if (!Number.isInteger(nextValue) || !((zeroOk && nextValue === 0) || (nextValue >= limit.min && nextValue <= limit.max))) {
+					throw new RangeError(`${field} must be ${zeroOk ? "0 or " : ""}a whole number from ${limit.min} to ${limit.max}`);
+				}
+				await this.host.updateSettings((settings) => {
+					settings.syncPaceCustom = { ...settings.syncPaceCustom, [field]: nextValue };
+				}, "settings:sync-pace-custom");
+				this.host.applySyncPace?.();
+				return;
+			}
+			case "driveClientId":
+				await this.host.updateSettings((settings) => { settings.driveClientId = expectStringValue(key, value).trim(); }, "settings:drive-client-id");
+				this.update();
+				return;
+			case "driveClientSecret":
+				await this.host.updateSettings((settings) => { settings.driveClientSecret = expectStringValue(key, value).trim(); }, "settings:drive-client-secret");
+				this.update();
+				return;
+			case "driveHostedToken": {
+				const pasted = normalizeHostedToken(expectStringValue(key, value));
+				if (pasted && checkHostedToken(pasted)) {
+					new Notice("That does not look like a sign-in code. Copy all of it from the sign-in page.", 8000);
+					return;
+				}
+				await this.host.updateSettings((settings) => { settings.driveRefreshToken = pasted; }, "settings:drive-hosted-token");
+				this.update();
+				return;
+			}
+			case "driveEncryptionPassphrase":
+				await this.host.updateSettings((settings) => { settings.driveEncryptionPassphrase = expectStringValue(key, value); }, "settings:drive-encryption-passphrase");
+				this.update();
 				return;
 			default:
 				throw new Error(`Unknown Yaos setting: ${key}`);
