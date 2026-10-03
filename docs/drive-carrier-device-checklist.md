@@ -147,3 +147,10 @@ What the trace shows for a note `X`:
 - [ ] **Status bar (#68).** With Cloudflare, type continuously for 30 s. The receipt text does not say "local state not yet received by server"; at worst it says "latest edit awaiting server confirmation", and it goes back to "server saved latest local state" a moment after you stop.
 - [ ] **Snapshot list (#78).** Take a snapshot of a vault with notes. The list shows the real note count, not 0.
 - [ ] Nothing else looks different: sync, delete, rename, attachments, conflict notes behave as in sections 1-14.
+
+## 16. Deleted conflict note stays deleted (two devices)
+
+- [ ] You have a `... (YAOS conflict ...)` note on both devices (or only on one; both cases count). Delete it on device 1. Fully close and reopen Obsidian on BOTH devices: it does not come back on either. With debug mode on, the trace shows `disk.delete.observed` on device 1 if the note was a shared entry.
+- [ ] Delete another conflict note while Obsidian is closed on that device, then reopen: it is not re-created there.
+- [ ] If a deleted conflict note returns with a NEW timestamp in its name, send the debug trace (Export debug trace): that is a different cause (a fresh conflict copy each start).
+- [ ] An ordinary note you delete is still gone on both devices, and a note deleted while YAOS was off still follows the section 14 rules.

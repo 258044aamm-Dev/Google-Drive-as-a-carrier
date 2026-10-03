@@ -8,7 +8,7 @@ Version numbers like `2.1.1-drive.3` exist only in each release's `manifest.json
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
-## Unreleased - 2.1.1-drive.8 (committed locally, not published)
+## 2.1.1-drive.8 - 2026-10-03
 
 ### Fixed (engine, every carrier including Cloudflare)
 - **A deleted "(YAOS conflict ...)" note no longer comes back after reopening, on both devices.** Conflict notes are meant to stay on one device, but a vault can still hold some as active shared entries (they synced in 2.1.0 and an older device can still send them; upstream issue #78's log shows the same notes being written back). Two things made the delete fail: the delete event ignored them because they are not syncable paths, so nothing was recorded and the other device never heard of it; and the full reconcile wrote every active shared entry that was not found on disk back to disk, which for these notes was always. Now (1) deleting a conflict note that is an active shared entry is recorded like any note's delete, so both devices drop it and it stays gone; (2) the full reconcile never writes a conflict note from the shared document to disk. A conflict note that is not a shared entry (the normal case) is still ignored, and every other note is handled exactly as before.
