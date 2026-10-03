@@ -1,11 +1,12 @@
 # Next-phase plan — section-based P2P UI (Milestone B) + Phase 1 core (Milestone C)
 
-Date: 2026-10-03. Status: **PLAN ONLY — nothing implemented yet.**
-Milestone A (carrier-gated P2P settings, release `2.1.1-drive.13`) is
-**SHIPPED** (commit `7789952`, verified Latest). This plan covers what comes
-next, per the maintainer's 2026-10-03 direction: *"The current P2P UI should
-be section-based, beginner-based, and advanced-based"* and *"Now implement
-the next phase."*
+Date: 2026-10-03. Status: **Milestones A and B SHIPPED** — A (carrier-gated
+P2P settings, `2.1.1-drive.13`, commit `7789952`) and B (section-based P2P
+UI, `2.1.1-drive.14`, commit `d7ef1a8`), both verified Latest. **Milestone C
+(Phase 1 core) is next**, pending the Phase 0 gate legs on the `.14` build.
+This plan grew out of the maintainer's 2026-10-03 direction: *"The current
+P2P UI should be section-based, beginner-based, and advanced-based"* and
+*"Now implement the next phase."*
 
 Decisions locked via interactive questions (2026-10-03, round 10):
 
