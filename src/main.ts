@@ -1,3 +1,5 @@
+import type { Doc } from "yjs";
+import { ConfigSyncPreview } from "./config-sync/preview";
 import { MarkdownView, Menu, Notice, Platform, Plugin, TFile, addIcon, arrayBufferToHex, setIcon } from "obsidian";
 import {
 	DEFAULT_SETTINGS,
@@ -95,6 +97,7 @@ import { CoalescedStatusRefresh } from "./status/coalescedStatusRefresh";
 import { formatUnknown, yTextToString } from "./utils/format";
 import { randomId } from "./utils/randomId";
 import {
+	currentCarrier,
 	isDriveCarrier,
 	isDriveSignedIn,
 	isLanCarrier,
@@ -258,6 +261,10 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	private idbDegradedHandled = false;
 	private frontmatterGuardCoordinator!: FrontmatterGuardCoordinator;
 	private frontmatterQuarantineEntries: FrontmatterQuarantineEntry[] = [];
+	private configPreview: ConfigSyncPreview | null = null;
+	private configRuntimeBinding: { doc: Doc; scope: string } | null = null;
+	private configPreviewBinding: { doc: Doc; vault: string; root: string } | null = null;
+	private configPreviewBlocked: string | null = null;
 	private readonly teardownLifecycle = new RuntimeTeardownCoordinator();
 
 	/**
@@ -841,6 +848,10 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			})(),
 			});
 
+			// Bind configuration capture to the identity used to construct this runtime.
+			// Editing connection settings must not relabel an old document as a new vault.
+			this.configRuntimeBinding = { doc: this.vaultSync.ydoc, scope: this.configScope() };
+
 			// 2. EditorBindingManager
 			const bindingPropagationGate: BindingPropagationGate = {
 				isPaused: (path) => {
@@ -915,6 +926,9 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			this.diskMirror.setRemoteDeleteBaselineProvider(
 				(path) => this.diskIndex[path]?.contentHash ?? null,
 			);
+
+			// Independent, default-off preview; never routes config through DiskMirror.
+			this.refreshConfigSyncPreview();
 
 			// 4b. BlobSyncManager (if attachment sync is enabled)
 			this.attachmentOrchestrator?.start("startup", false);
@@ -1569,6 +1583,10 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 
 	private async runTeardownSync(): Promise<void> {
 		this.log("teardownSync: tearing down all sync state");
+		this.configPreview?.destroy();
+		this.configPreview = null;
+		this.configPreviewBinding = null;
+		this.configRuntimeBinding = null;
 
 		await runTeardownStages([
 			// Safe baseline order: flush callbacks update memory, then persist the
@@ -2390,7 +2408,57 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 		new Notice("Signed out of Google on this device. Reload the plugin to stop syncing.", 8000);
 	}
 
+	private configScope(): string {
+		return JSON.stringify([this.settings.vaultId, this.app.vault.configDir, currentCarrier(this.settings), this.settings.host]);
+	}
+
+	getConfigSyncStatus(): string {
+		if (this.settings.configSyncPreview !== true) return "Off. Existing notes and attachment sync are unchanged.";
+		return this.configPreview?.status ?? this.configPreviewBlocked ?? "Waiting for the sync runtime. No configuration is applied.";
+	}
+
+	private refreshConfigSyncPreview(): void {
+		const vs = this.vaultSync;
+		const vault = this.settings.vaultId;
+		const root = this.app.vault.configDir;
+		const binding = this.configPreviewBinding;
+		const runtime = this.configRuntimeBinding;
+		const scopeMatches = runtime?.doc === vs?.ydoc && runtime?.scope === this.configScope();
+		if (scopeMatches && this.settings.configSyncPreview === true && vs && binding?.doc === vs.ydoc && binding.vault === vault && binding.root === root) return;
+		this.configPreview?.destroy();
+		this.configPreview = null;
+		this.configPreviewBinding = null;
+		this.configPreviewBlocked = null;
+		if (this.settings.configSyncPreview !== true || !vs || this.teardownLifecycle.isClosing) return;
+		if (!scopeMatches || !runtime) {
+			this.configPreviewBlocked = "Configuration preview is paused until the runtime is reloaded with the current vault, carrier and configuration directory.";
+			return;
+		}
+		const current = (): boolean => !this.teardownLifecycle.isClosing && this.settings.configSyncPreview === true
+			&& this.vaultSync === vs && this.settings.vaultId === vault && this.app.vault.configDir === root
+			&& this.configScope() === runtime.scope;
+		try {
+			this.configPreviewBinding = { doc: vs.ydoc, vault, root };
+			this.configPreview = new ConfigSyncPreview({
+				doc: vs.ydoc, vault, root,
+				ready: () => current() && vs.localReady && vs.provider.synced && !vs.idbError,
+				stat: (path) => this.app.vault.adapter.stat(path),
+				read: (path) => this.app.vault.adapter.read(path),
+				checkpoint: this.settings.configSyncPreviewCheckpoint,
+				saveCheckpoint: async (checkpoint) => {
+					if (!current()) throw new Error("Configuration session ended");
+					await this.updateSettings((settings) => { settings.configSyncPreviewCheckpoint = checkpoint; }, "config-preview-checkpoint");
+				},
+			});
+			this.configPreview.start();
+		} catch {
+			this.configPreviewBinding = null;
+			this.configPreviewBlocked = "Configuration preview is blocked by an invalid directory or identity. Live configuration is unchanged.";
+		}
+	}
+
 	private applyRuntimeSettings(reason: string): void {
+		this.refreshConfigSyncPreview();
 		this.runtimeConfig = buildRuntimeConfig(this.settings, this.app.vault.configDir);
 		this.excludePatterns = this.runtimeConfig.excludePatterns;
 		this.maxFileSize = this.runtimeConfig.maxFileSizeBytes;

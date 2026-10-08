@@ -35,6 +35,7 @@ type SettingsAuthMode = "env" | "claim" | "unclaimed" | "unknown";
 type SettingsStatusState = "disconnected" | "loading" | "syncing" | "connected" | "offline" | "error" | "unauthorized";
 
 type DeclarativeSettingKey =
+	| "configSyncPreview"
 	| "deviceName"
 	| "excludePatterns"
 	| "maxFileSizeKB"
@@ -82,6 +83,7 @@ interface SettingsUpdateState {
 
 export interface VaultSyncSettingsHost {
 	settings: VaultSyncSettings;
+	getConfigSyncStatus?(): string;
 	serverAuthMode: SettingsAuthMode;
 	serverSupportsAttachments: boolean;
 	serverMaxBlobUploadBytes: number | null;
@@ -459,7 +461,19 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			},
 		);
 
-		return this.applyCarrierChoice(definitions);
+		const result = this.applyCarrierChoice(definitions);
+		if (this.host.getConfigSyncStatus) result.push({
+			type: "group", heading: "Configuration sync (safety preview)", items: [
+				{
+					name: "Stage reviewed configuration",
+					desc: "Off by default. Automatically shares reviewed app, appearance and hotkey JSON projections through the selected carrier. They remain staged in the local sync database: this build never applies them, even after restart. Existing carrier encryption settings apply; this does not add encryption.",
+					control: { type: "toggle", key: "configSyncPreview" },
+				},
+				{ name: "Configuration status", desc: this.host.getConfigSyncStatus() },
+				{ name: "Safety gates", desc: "Plugin code/settings, themes, snippets, workspaces and deletion are blocked pending their safety tests. Credentials and sync internals are excluded. This is not full configuration mirroring. Disabling the preview stops capture, but does not erase already-shared history." },
+			],
+		});
+		return result;
 	}
 
 	/**
@@ -776,6 +790,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 
 	getControlValue(key: string): unknown {
 		switch (key as DeclarativeSettingKey) {
+			case "configSyncPreview": return this.host.settings.configSyncPreview === true;
 			case "deviceName": return this.host.settings.deviceName;
 			case "excludePatterns": return this.host.settings.excludePatterns;
 			case "maxFileSizeKB": return this.host.settings.maxFileSizeKB;
@@ -827,6 +842,10 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 
 	async setControlValue(key: string, value: unknown): Promise<void> {
 		switch (key as DeclarativeSettingKey) {
+			case "configSyncPreview":
+				await this.host.updateSettings((settings) => { settings.configSyncPreview = expectBooleanValue(key, value); }, "settings:config-preview");
+				this.update();
+				return;
 			case "deviceName":
 				await this.host.updateSettings((settings) => {
 					settings.deviceName = expectStringValue(key, value).trim();

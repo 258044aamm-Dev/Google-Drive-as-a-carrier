@@ -271,3 +271,10 @@ them; use [drive-carrier-device-checklist.md](drive-carrier-device-checklist.md)
 - Hosted token refresh errors keep their safe configuration/network/rate-limit/
   service classification throughout vault access. No raw response body or
   credential is included in the new hosted error diagnostics.
+
+## Configuration staging preview (2.1.22)
+
+The default-off [configuration safety preview](config-sync-preview.md) uses the
+shared coordinator across all three carriers. It exchanges only reviewed JSON
+projections and does **not** apply them to live configuration, including after
+restart. The ordinary configuration-directory exclusion remains unchanged.

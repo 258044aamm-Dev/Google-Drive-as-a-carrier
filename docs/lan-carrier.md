@@ -92,3 +92,10 @@ Tests: `tests/client/lan-*.ts` and `tests/mocks/lanRig.ts`.
   vault-size cap.
   Restoring a renamed historical note makes a separate identity rather than
   modifying the current note at its new path.
+
+## Configuration staging preview (2.1.22)
+
+The default-off [configuration safety preview](config-sync-preview.md) uses the
+shared coordinator across all three carriers. It exchanges only reviewed JSON
+projections and does **not** apply them to live configuration, including after
+restart. The ordinary configuration-directory exclusion remains unchanged.

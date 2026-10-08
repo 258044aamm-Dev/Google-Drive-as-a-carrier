@@ -1,3 +1,4 @@
+import type { ConfigPreviewCheckpoint } from "../config-sync/preview";
 import { randomId } from "../utils/randomId";
 import type { DriveCarrierSettings } from "../drive-carrier/carrierSettings";
 import type { LanCarrierSettings } from "../lan-carrier/lanSettings";
@@ -20,6 +21,10 @@ export function attachmentSizeCapKB(serverMaxBlobUploadBytes?: number | null): n
 }
 
 export interface VaultSyncSettings extends DriveCarrierSettings, LanCarrierSettings, SyncPaceSettings, StatusDisplaySettings {
+	/** Default-off, projection staging only. Never activates live configuration. */
+	configSyncPreview?: boolean;
+	/** Local source hashes only; never placed in shared config metadata. */
+	configSyncPreviewCheckpoint?: ConfigPreviewCheckpoint;
 	/** Cloudflare Worker host, e.g. "https://sync.yourdomain.com" */
 	host: string;
 	/** Shared secret token for auth. */

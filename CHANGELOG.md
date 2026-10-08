@@ -8,6 +8,23 @@ Up to `2.1.1-drive.10` the version number (like `2.1.1-drive.3`) existed only in
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
+## 2.1.22 - 2026-10-08 - TEST RELEASE: configuration-sync staging preview
+
+### Added — gated first increment, not full configuration mirroring
+- Default-off configuration staging through Cloudflare Worker, Google Drive and Local network using one shared coordinator.
+- Capture only reviewed projections of `app.json`, `appearance.json` and `hotkeys.json` below the active configuration directory. Unknown app/appearance fields and all arbitrary plugin files stay outside this policy.
+- Immutable hash-checked revision history, deterministic per-file conflict winners, retained alternatives, baseline election, source checkpoints, bounded reads/retries and late-operation fencing.
+- Settings show the scope, encryption disclosure and staging/blocking status. Vault/carrier/server/config-directory changes require runtime reload before capture continues.
+- Validation passed: all 134 regression suites, local Worker integration, production/server-release builds, plugin/tests/QA/server type checks and production/generated-artifact/no-any guards. Full lint: 0 errors and the same 28 existing warnings.
+- 31 focused regression cases plus an actual local Worker integration case; encrypted Drive transport uses FakeDrive and LAN uses real loopback TLS.
+- Full implementation plan and all 122 scenario IDs are recorded with partial/open coverage, rather than claimed complete.
+
+### Safety limits
+- **No live configuration application, including after restart.** Plugin packages/settings, themes, snippets, workspaces and deletion are blocked pending their qualification gates. This does not yet reproduce an Obsidian setup on another device.
+- No change to normal note/attachment configuration-directory exclusions, CRDT schema version or Worker implementation. Feature-off installs do not scan configuration or publish preview metadata.
+- Preview limits: 32 KiB per source file, 128 revisions, 512 KiB history; reaching a limit pauses capture rather than pruning recovery history.
+- Real Obsidian/Android/iOS activation and physical multi-PC LAN tests have not been performed. See `docs/config-sync-preview.md` and `docs/config-sync-coverage.md`.
+
 ## 2.1.21 - 2026-10-08 - TEST RELEASE: restore and carrier safety fixes
 
 ### Fixed

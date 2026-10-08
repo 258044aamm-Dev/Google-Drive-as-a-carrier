@@ -4,6 +4,7 @@
 		"tests/live/run-live.ts": "Integration driver, not a suite. Boots `wrangler dev` and spawns the live-worker suites against it. Owned by `npm run test:integration:worker`."
 	},
 	"skip": {
+		"tests/live/config-sync-preview.ts": "Executed by tests/live/run-live.ts in test:ci, not skipped from CI. Requires the real local Worker and SYNC_TOKEN; verifies configuration projections and ordinary notes across three clients.",
 		"tests/contracts/server-update-local.ts": "Owned by `npm run test:server-update-local`, which runs `build:server-release` first. Needs dist/release-assets/yaos-server.zip on disk and shells out to git in a temp clone.",
 		"tests/live/schema-guard.ts": "Live-worker suite. Spawned by tests/live/run-live.ts; needs a running server on 127.0.0.1:8787 and SYNC_TOKEN.",
 		"tests/live/provider-manual-connect.ts": "Live-worker suite. Spawned by tests/live/run-live.ts; exits non-zero without SYNC_TOKEN.",
