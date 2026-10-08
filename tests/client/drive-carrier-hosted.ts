@@ -4,13 +4,13 @@
  */
 
 import { GoogleAuthError, GoogleTokenManager, GOOGLE_TOKEN_URL } from "../../src/drive-carrier/googleAuth";
-import { HOSTED_TOKEN_URL, HOSTED_SIGNIN_URL, HostedTokenManager } from "../../src/drive-carrier/hostedAuth";
+import { HOSTED_TOKEN_URL, HOSTED_SIGNIN_URL, HostedTokenManager, HostedAuthError, resolveHostedTokenUrl } from "../../src/drive-carrier/hostedAuth";
 import { isDriveSignedIn, isHostedSignIn, type DriveCarrierSettings } from "../../src/drive-carrier/carrierSettings";
 import { createDriveCarrier } from "../../src/drive-carrier/driveCarrierRuntime";
 import type { DriveHttp, DriveHttpRequest } from "../../src/drive-carrier/googleDriveRest";
 import { decodeSetupCode, encodeSetupCode, HOSTED_SETUP_CODE_PREFIX, SETUP_CODE_PREFIX } from "../../src/drive-carrier/wizard/setupCode";
 import { checkHostedToken, normalizeHostedToken } from "../../src/drive-carrier/wizard/validate";
-import { explainHostedSignInError } from "../../src/drive-carrier/wizard/explainError";
+import { explainHostedSignInError, explainSetupError } from "../../src/drive-carrier/wizard/explainError";
 import { suite } from "../harness.ts";
 
 const s = suite("drive-carrier-hosted");
@@ -76,13 +76,13 @@ s.section("Test 3: when the service says no");
 	const { http, calls } = fakeHttp(() => ({ status: 400, json: { error: "invalid_grant", error_description: "Bad Request" } }));
 	const tm = new HostedTokenManager(http, HOSTED_TOKEN_URL, TOKEN, undefined, () => { lost++; });
 	const err = await failure(() => tm.provider());
-	s.check(err?.code === "invalid_grant" && err.needsSignIn && tm.revoked && lost === 1, "400 means the code is no longer accepted: sign in again, reported once");
+	s.check(err?.code === "invalid_grant" && err.needsSignIn && tm.revoked && lost === 1, "explicit invalid_grant means sign in again, reported once");
 	const again = await failure(() => tm.provider());
 	s.check(again?.code === "invalid_grant" && calls.length === 1 && lost === 1, "afterwards no more requests are sent");
 	for (const status of [401, 403]) {
-		const t = new HostedTokenManager(fakeHttp(() => ({ status })).http, HOSTED_TOKEN_URL, TOKEN);
+		const t = new HostedTokenManager(fakeHttp(() => ({ status, json: { error: "invalid_grant" } })).http, HOSTED_TOKEN_URL, TOKEN);
 		const e = await failure(() => t.provider());
-		s.check(e?.needsSignIn === true && t.revoked, `${status} is treated the same way`);
+		s.check(e?.needsSignIn === true && t.revoked, `${status} with explicit invalid_grant is treated the same way`);
 	}
 	const temp = fakeHttp((_r, n) => (n === 1 ? { status: 503, raw: "<html>bad gateway</html>" } : { status: 200, json: { access_token: "ok", expires_in: 3600 } }));
 	const t2 = new HostedTokenManager(temp.http, HOSTED_TOKEN_URL, TOKEN);
@@ -191,6 +191,48 @@ s.section("Test 7: checking what the user pastes");
 	s.check(explainHostedSignInError(new GoogleAuthError("x", "network", false)).includes("No connection"), "no connection is explained");
 	s.check(explainHostedSignInError(new GoogleAuthError("x", "http_502", false)).includes("temporary"), "a server problem is called temporary");
 	s.check(explainHostedSignInError(new Error("odd")) === "odd", "anything else keeps its own words");
+}
+
+s.section("Test 8: service failures never falsely revoke or leak credentials");
+{
+	const cases: { reply: Reply; code: string; kind: string; hint: string }[] = [
+		{ reply: { status: 400, json: { error: "invalid_client", error_description: TOKEN } }, code: "invalid_client", kind: "oauth-json", hint: "configuration problem" },
+		{ reply: { status: 401, json: { error: "unauthorized_client" } }, code: "unauthorized_client", kind: "oauth-json", hint: "configuration problem" },
+		{ reply: { status: 400, json: { error: "invalid_request" } }, code: "invalid_request", kind: "oauth-json", hint: "does not confirm" },
+		{ reply: { status: 403, raw: `<html>Access denied ${TOKEN}</html>` }, code: "http_403", kind: "non-json", hint: "does not confirm" },
+		{ reply: { status: 400, json: { error: TOKEN } }, code: "http_400", kind: "other-json", hint: "does not confirm" },
+		{ reply: { status: 401, json: {} }, code: "http_401", kind: "other-json", hint: "does not confirm" },
+		{ reply: { status: 429, json: { error: "invalid_grant" } }, code: "http_429", kind: "oauth-json", hint: "rate limiting" },
+		{ reply: { status: 503, json: { error: "invalid_grant" } }, code: "http_503", kind: "oauth-json", hint: "temporary problem" },
+		{ reply: { status: 200, json: { error: "invalid_grant" } }, code: "http_200", kind: "oauth-json", hint: "unexpected response" },
+		{ reply: { status: 200, json: { access_token: "   " } }, code: "http_200", kind: "other-json", hint: "unexpected response" },
+		{ reply: { status: 200, json: { access_token: "unused", error: "invalid_client" } }, code: "http_200", kind: "oauth-json", hint: "unexpected response" },
+		{ reply: { status: 200, raw: "not json" }, code: "http_200", kind: "non-json", hint: "unexpected response" },
+		{ reply: { status: 403, json: ["invalid_grant"] }, code: "http_403", kind: "other-json", hint: "does not confirm" },
+		{ reply: { status: 400, json: null }, code: "http_400", kind: "other-json", hint: "does not confirm" },
+	];
+	for (const { reply, code, kind, hint } of cases) {
+		let lost = 0;
+		const { http, calls } = fakeHttp((_req, n) => n === 1 ? reply : { status: 200, json: { access_token: "recovered" } });
+		const manager = new HostedTokenManager(http, HOSTED_TOKEN_URL, TOKEN, undefined, () => { lost++; });
+		const err = await failure(() => manager.provider());
+		s.check(err instanceof HostedAuthError && err.code === code && err.status === reply.status && err.responseKind === kind, `safe classification: ${reply.status} ${code} ${kind}`);
+		s.check(!manager.revoked && lost === 0 && err?.needsSignIn === false, "service failure preserves sign-in");
+		const text = explainHostedSignInError(err);
+		s.check(text.includes(hint) && text.includes(`HTTP ${reply.status}`), "actionable message keeps safe status");
+		s.check(!JSON.stringify(err).includes(TOKEN) && !String(err).includes(TOKEN) && !text.includes(TOKEN), "raw errors and UI never expose echoed token");
+		s.check(explainSetupError(err) === text, "vault setup uses hosted guidance, not private-client guidance");
+		s.check(await manager.provider() === "recovered" && calls.length === 2, "same manager can recover without another sign-in");
+	}
+	const { http } = fakeHttp((_req, n) => n === 1
+		? { status: 200, json: { access_token: "cached" } }
+		: n === 2 ? { status: 403, raw: "blocked" } : { status: 200, json: { access_token: "fresh" } });
+	const manager = new HostedTokenManager(http, HOSTED_TOKEN_URL, TOKEN);
+	await manager.provider();
+	await failure(() => manager.provider(true));
+	s.check(await manager.provider() === "fresh", "failed forced refresh clears cached access and permits recovery");
+	s.check(resolveHostedTokenUrl(undefined) === HOSTED_TOKEN_URL && resolveHostedTokenUrl("  ") === HOSTED_TOKEN_URL, "missing or blank endpoint uses default");
+	s.check(resolveHostedTokenUrl(" https://custom.test/access ") === "https://custom.test/access", "custom endpoint is trimmed without fallback to another domain");
 }
 
 await s.done();

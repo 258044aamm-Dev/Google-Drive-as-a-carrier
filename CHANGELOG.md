@@ -8,6 +8,20 @@ Up to `2.1.1-drive.10` the version number (like `2.1.1-drive.3`) existed only in
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
+## 2.1.20 - 2026-10-08 - TEST RELEASE: hosted Google Drive sign-in fixes
+
+### Fixed
+- Hosted sign-in no longer treats every HTTP 400/401/403 as a revoked refresh token. Only a recognized OAuth `invalid_grant` response on those statuses marks sign-in as lost.
+- Distinguish service/client configuration problems, unknown access failures, rate limits, temporary failures and malformed responses. Show safe HTTP/error details without exposing tokens or raw response bodies.
+- Use the configured hosted token endpoint consistently during wizard validation, vault access and runtime refresh. Disclose custom service origins and revalidate when the endpoint changes; never silently send tokens to a fallback service.
+- Clarify that the copied value is labelled **Your Refresh Token** on the sign-in page and that Retry resends the same value.
+
+### Tests and compatibility
+- Added regression tests for error classification, credential redaction, recovery, token replacement, cancellation and custom endpoint consistency.
+- The implementation passed all 132 regression suites, local Cloudflare Worker integration tests, production build, test/QA type checks and changed-file lint before release preparation.
+- No changes to private Google device sign-in, sync algorithms, encryption, storage formats or the Cloudflare/Local network carrier implementations. Real Google-account sign-in on Android remains a manual verification step.
+- Published as a normal GitHub release marked Latest, with TEST RELEASE in the title; not a GitHub prerelease.
+
 ## 2.1.1-drive.19 (manifest 2.1.19) - 2026-10-04 - test release: P2P moved to its own branch
 
 ### Tests

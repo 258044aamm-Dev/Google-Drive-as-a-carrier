@@ -1,7 +1,7 @@
 import type { DriveApi } from "../driveApi";
 import { GoogleAuthError, GoogleTokenManager, type DeviceCodeInfo, type DeviceSignInResult, type GoogleClient } from "../googleAuth";
 import { GoogleDriveRest, type DriveHttp } from "../googleDriveRest";
-import { HOSTED_TOKEN_URL, HostedTokenManager } from "../hostedAuth";
+import { resolveHostedTokenUrl, HostedTokenManager } from "../hostedAuth";
 import { isDriveCarrier, isDriveSignedIn, type DriveCarrierSettings } from "../carrierSettings";
 import { signInWithGoogle, type SignInUi } from "../signIn";
 import { checkVaultForJoin, createVault, type CheckStep, type JoinCheck } from "./driveSetup";
@@ -166,6 +166,11 @@ export class WizardController {
 			result: null,
 			copied: false,
 		};
+	}
+
+	/** Use the same saved endpoint policy as the carrier; the explicit override is for tests. */
+	get hostedTokenUrl(): string {
+		return resolveHostedTokenUrl(this.deps.hostedUrl ?? this.deps.getSettings().driveHostedUrl);
 	}
 
 	get bundledAvailable(): boolean {
@@ -345,7 +350,7 @@ export class WizardController {
 	/** Identifies the sign-in the current choices need, so going back and forward does not repeat it. */
 	private signInKey(): string {
 		const { draft } = this.state;
-		if (draft.clientMode === "hosted") return `hosted:${normalizeHostedToken(draft.hostedToken)}`;
+		if (draft.clientMode === "hosted") return `hosted:${this.hostedTokenUrl}:${normalizeHostedToken(draft.hostedToken)}`;
 		return chosenClient(draft, this.deps.bundledClient).clientId;
 	}
 
@@ -361,7 +366,7 @@ export class WizardController {
 		this.changed();
 		const pasted = normalizeHostedToken(draft.hostedToken);
 		try {
-			const manager = new HostedTokenManager(this.deps.http, this.deps.hostedUrl ?? HOSTED_TOKEN_URL, pasted);
+			const manager = new HostedTokenManager(this.deps.http, this.hostedTokenUrl, pasted);
 			await manager.provider(true);
 			if (token !== this.running) return;
 			draft.refreshToken = pasted;
@@ -422,7 +427,7 @@ export class WizardController {
 	private apiFor(client: GoogleClient, refreshToken: string): DriveApi {
 		if (this.deps.makeApi) return this.deps.makeApi(client, refreshToken);
 		if (this.state.draft.clientMode === "hosted") {
-			const hosted = new HostedTokenManager(this.deps.http, this.deps.hostedUrl ?? HOSTED_TOKEN_URL, refreshToken);
+			const hosted = new HostedTokenManager(this.deps.http, this.hostedTokenUrl, refreshToken);
 			return new GoogleDriveRest(this.deps.http, hosted.provider);
 		}
 		const tokens = new GoogleTokenManager(this.deps.http, client, refreshToken);

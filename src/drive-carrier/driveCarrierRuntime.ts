@@ -10,7 +10,7 @@ import { MeteredDriveApi, type RequestStats } from "./requestMeter";
 import { browserActivity, type ActivitySource } from "./activity";
 import { GoogleDriveRest, type DriveHttp } from "./googleDriveRest";
 import { GoogleTokenManager } from "./googleAuth";
-import { HOSTED_TOKEN_URL, HostedTokenManager } from "./hostedAuth";
+import { resolveHostedTokenUrl, HostedTokenManager } from "./hostedAuth";
 import { isHostedSignIn, type DriveCarrierSettings } from "./carrierSettings";
 import { NORMAL_DRIVE_PACE, resolveDrivePace, type SyncPaceSettings } from "../settings/syncPace";
 
@@ -64,7 +64,7 @@ export function createDriveCarrier(deps: DriveCarrierRuntimeDeps): DriveCarrier 
 		if (api) return api;
 		const settings = deps.getSettings();
 		const tokens = isHostedSignIn(settings)
-			? new HostedTokenManager(deps.http, settings.driveHostedUrl?.trim() || HOSTED_TOKEN_URL, settings.driveRefreshToken ?? "", undefined, deps.onSignInLost)
+			? new HostedTokenManager(deps.http, resolveHostedTokenUrl(settings.driveHostedUrl), settings.driveRefreshToken ?? "", undefined, deps.onSignInLost)
 			: new GoogleTokenManager(
 				deps.http,
 				{ clientId: settings.driveClientId ?? "", clientSecret: settings.driveClientSecret ?? "" },
