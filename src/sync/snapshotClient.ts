@@ -11,6 +11,7 @@
 
 import * as Y from "yjs";
 import { gunzipSync } from "fflate";
+import { randomId } from "../utils/randomId";
 import type { VaultSyncSettings } from "../settings";
 import type { BlobRef } from "../types";
 import { appendTraceParams, type TraceHttpContext } from "../observability/traceContext";
@@ -587,14 +588,19 @@ export function restoreFromSnapshot(
 				}
 				livePaths.set(path, liveFileId);
 			} else {
-				// File was deleted since snapshot — undelete
-				// Re-create with the snapshot's file ID and content
+				// A missing path may be a rename, not a deletion. Never reuse an
+				// identity that is still active at another path: selective restore
+				// must not mutate a note the user did not select.
+				let restoreId = snapFileId;
+				if ([...livePaths].some(([livePath, id]) => id === snapFileId && livePath !== path)) {
+					do { restoreId = randomId(16); } while (liveMeta.has(restoreId) || liveIdToText.has(restoreId));
+				}
 				if (!liveUsesV2) {
-					livePathToId.set(path, snapFileId);
+					livePathToId.set(path, restoreId);
 				}
 
 				// Check if the Y.Text still exists (tombstoning doesn't delete it)
-				let liveText = liveIdToText.get(snapFileId);
+				let liveText = liveIdToText.get(restoreId);
 				if (liveText) {
 					// Clear and replace content
 					if (liveText.length > 0) {
@@ -605,14 +611,14 @@ export function restoreFromSnapshot(
 					// Create a new Y.Text with the snapshot content
 					liveText = new Y.Text();
 					liveText.insert(0, snapContent);
-					liveIdToText.set(snapFileId, liveText);
+					liveIdToText.set(restoreId, liveText);
 				}
 
 				// Drop stale tombstones for this path to avoid path-squat ghosts.
 				const staleTombstones: string[] = [];
 				liveMeta.forEach((value: unknown, fileId: string) => {
 					if (
-						fileId !== snapFileId
+						fileId !== restoreId
 						&& getMetaPath(value) === path
 						&& isFileMetaDeletedValue(value)
 					) {
@@ -625,8 +631,8 @@ export function restoreFromSnapshot(
 
 				// Clear tombstone and set fresh metadata
 				const reviveEntry = createNestedActiveMeta(path, Date.now(), options.device);
-				liveMeta.set(snapFileId, reviveEntry);
-				livePaths.set(path, snapFileId);
+				liveMeta.set(restoreId, reviveEntry);
+				livePaths.set(path, restoreId);
 
 				result.markdownUndeleted++;
 			}

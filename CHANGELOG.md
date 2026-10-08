@@ -1,0 +1,388 @@
+# Changelog
+
+All notable changes to this fork of [YAOS](https://github.com/kavinsood/yaos) (plugin id `yaos`). The fork starts from upstream **2.1.1** and adds one optional thing: a **Google Drive carrier**, so a vault can sync through a folder in your own Google Drive instead of a Cloudflare Worker. Cloudflare stays the default and behaves as before; nothing changes unless you choose Google Drive.
+
+Releases: https://github.com/258044aamm-Dev/Google-Drive-as-a-carrier/releases
+
+Up to `2.1.1-drive.10` the version number (like `2.1.1-drive.3`) existed only in each release's `manifest.json` and the repository said `2.1.1`. From `2.1.1-drive.15` on, `manifest.json`, `package.json` and `versions.json` carry `2.1.<N>` for build `.N`, so updaters such as BRAT see a clean upgrade. Git tags keep the `2.1.1-drive.N` names.
+
+This file is specific to this fork. It is not part of upstream YAOS.
+
+## 2.1.22 - 2026-10-08 - TEST RELEASE: configuration-sync staging preview
+
+### Added — gated first increment, not full configuration mirroring
+- Default-off configuration staging through Cloudflare Worker, Google Drive and Local network using one shared coordinator.
+- Capture only reviewed projections of `app.json`, `appearance.json` and `hotkeys.json` below the active configuration directory. Unknown app/appearance fields and all arbitrary plugin files stay outside this policy.
+- Immutable hash-checked revision history, deterministic per-file conflict winners, retained alternatives, baseline election, source checkpoints, bounded reads/retries and late-operation fencing.
+- Settings show the scope, encryption disclosure and staging/blocking status. Vault/carrier/server/config-directory changes require runtime reload before capture continues.
+- Validation passed: all 134 regression suites, local Worker integration, production/server-release builds, plugin/tests/QA/server type checks and production/generated-artifact/no-any guards. Full lint: 0 errors and the same 28 existing warnings.
+- 31 focused regression cases plus an actual local Worker integration case; encrypted Drive transport uses FakeDrive and LAN uses real loopback TLS.
+- Full implementation plan and all 122 scenario IDs are recorded with partial/open coverage, rather than claimed complete.
+
+### Safety limits
+- **No live configuration application, including after restart.** Plugin packages/settings, themes, snippets, workspaces and deletion are blocked pending their qualification gates. This does not yet reproduce an Obsidian setup on another device.
+- No change to normal note/attachment configuration-directory exclusions, CRDT schema version or Worker implementation. Feature-off installs do not scan configuration or publish preview metadata.
+- Preview limits: 32 KiB per source file, 128 revisions, 512 KiB history; reaching a limit pauses capture rather than pruning recovery history.
+- Real Obsidian/Android/iOS activation and physical multi-PC LAN tests have not been performed. See `docs/config-sync-preview.md` and `docs/config-sync-coverage.md`.
+
+## 2.1.21 - 2026-10-08 - TEST RELEASE: restore and carrier safety fixes
+
+### Fixed
+- **Selective restore:** restoring an old `A.md` after it was renamed to `B.md` creates a separate note identity. The current `B.md` and its content stay unchanged. Ordinary undelete and legacy path-map restores remain supported.
+- **Drive completeness:** damaged/unreadable files block the synced state, complete receipts and compaction. The same file ID is retried so an in-place repair can recover. Local edits and additive repair uploads remain available.
+- **LAN authentication:** malformed/non-hex proofs fail closed without throwing from the constant-time comparison; message-handler errors are contained at the socket boundary.
+- **Drive lifecycle:** polling, explicit flush and explicit reconcile share bounded, session-fenced operations. Cancelled batches are requeued before another operation starts. Late replies cannot mutate the document, emit stale receipts, initialize an old keyring operation or continue compaction. Shutdown retains a detached, immutable best-effort upload of the final local batch.
+- **Restore-point integrity:** Drive and LAN verify the selected index's vault, compressed/raw lengths and SHA-256 before applying its update. This rejects substituting another valid encrypted snapshot's data. Missing integrity metadata is refused, and decompression is bounded by the validated gzip length.
+- **LAN vault isolation:** listing, daily snapshots, downloads and pruning are vault-scoped. New snapshot IDs include a vault namespace; matching-vault legacy IDs remain readable without moving or deleting them. Runtime backends are cached per vault.
+- **Hosted sign-in errors:** retain safe hosted error types through Drive REST calls, including refresh failures after initial validation. Network/service/configuration failures do not become misleading revoked-token messages.
+
+### Compatibility and verification
+- No CRDT schema bump, encryption-format change or Cloudflare server change. Shared selective restore intentionally changes across carriers; Drive/LAN restore safety now rejects missing hashes, inconsistent sizes or sizes outside the gzip length representation.
+- Added 18 regression cases in `branch-review-regressions` covering all seven reviewed findings, including real loopback TLS malformed-proof rejection, legacy restore points, cross-vault pruning and delayed Drive operations.
+- Production/server-release builds, plugin/tests/QA/server type checks, production/generated-artifact/no-any guards, all 133 regression suites and local Worker integration passed. Full lint has 0 errors and the same 28 existing warnings as the baseline.
+- Real Google-account/Android/Obsidian and multi-PC LAN smoke tests still require manual verification; fake-Drive tests and loopback TLS are not substitutes for those checks.
+- Intended publication: normal GitHub release, Latest, **TEST RELEASE** in the title, not prerelease.
+
+## 2.1.20 - 2026-10-08 - TEST RELEASE: hosted Google Drive sign-in fixes
+
+### Fixed
+- Hosted sign-in no longer treats every HTTP 400/401/403 as a revoked refresh token. Only a recognized OAuth `invalid_grant` response on those statuses marks sign-in as lost.
+- Distinguish service/client configuration problems, unknown access failures, rate limits, temporary failures and malformed responses. Show safe HTTP/error details without exposing tokens or raw response bodies.
+- Use the configured hosted token endpoint consistently during wizard validation, vault access and runtime refresh. Disclose custom service origins and revalidate when the endpoint changes; never silently send tokens to a fallback service.
+- Clarify that the copied value is labelled **Your Refresh Token** on the sign-in page and that Retry resends the same value.
+
+### Tests and compatibility
+- Added regression tests for error classification, credential redaction, recovery, token replacement, cancellation and custom endpoint consistency.
+- The implementation passed all 132 regression suites, local Cloudflare Worker integration tests, production build, test/QA type checks and changed-file lint before release preparation.
+- No changes to private Google device sign-in, sync algorithms, encryption, storage formats or the Cloudflare/Local network carrier implementations. Real Google-account sign-in on Android remains a manual verification step.
+- Published as a normal GitHub release marked Latest, with TEST RELEASE in the title; not a GitHub prerelease.
+
+## 2.1.1-drive.19 (manifest 2.1.19) - 2026-10-04 - test release: P2P moved to its own branch
+
+### Tests
+- New `tests/client/lan-engine.ts` (14 checks): the real `VaultSync` and `DiskMirror` on two devices joined by real secure links on loopback. A new note, an edit and a delete travel and stay deleted; a device joining late gets every live note and no deleted one; both devices typing in one note end identical with nothing lost; two devices creating the same path leave one note that one delete removes; a device that was closed catches up (including a delete made meanwhile); a stranger with another key receives nothing.
+
+### Release naming
+- From this release the git tag equals the manifest version (`2.1.19`), because BRAT compares the two and reported a mismatch for `2.1.1-drive.18` / `2.1.18` (that release was re-published as tag `2.1.18`).
+
+### Changed
+- **All P2P code now lives only on the `p2p-implementation` branch.** `google-drive-carrier` carries the Google Drive carrier and the Local network carrier, and nothing else. Removed from this branch: `src/p2p/`, the P2P settings pages and pairing flow (`src/settings/P2p*.ts`), the P2P section of `settingsTab.ts`, `settingsStore.ts`, `main.ts` and `styles.css`, the P2P tests and `fakeRtc` mock, `qa/p2p-spike/`, `docs/p2p*`, and the `guard:p2p-css-scope` script. `p2p-implementation` is this branch plus one commit that puts the P2P code back, so it can be merged later with a clean diff.
+- The carrier list is Cloudflare, Google Drive and (desktop app) Local network. A vault whose saved carrier is the retired `p2p` test carrier falls back to Cloudflare (nothing else in its settings is touched). P2P was a connection test only and never carried notes.
+- Releases `2.1.1-drive.11` to `2.1.1-drive.17` still contain the P2P test; their entries below stay as history.
+- Left as is: the `tsx` dev dependency that the P2P work added (kept so `package-lock.json` stays untouched).
+
+## 2.1.1-drive.18 (manifest 2.1.18) - 2026-10-04 - test release: Local network carrier (desktop)
+
+### Added
+- **A fourth carrier: Local network (desktop only).** Desktop devices on the same network sync directly with each other: no server, no account. Choose it in Settings > YAOS > Sync carrier on the desktop app; the option does not exist on a phone. Everything is in `src/lan-carrier/`. The mechanism follows the Local Sync plugin by liuboacean (MIT): every device is server and client, links are WebSocket over TLS with a self-signed certificate, a shared key signs devices in, devices find each other with a UDP announcement. See `docs/lan-carrier.md` and `NOTICE-local-sync.md`.
+- Settings screen for it: status line, **Copy setup code**, **Join with a setup code** (`YAOS-LAN1:<vault id>:<key>`), **Create a new pairing key**, the devices on the network, and a "Local network (advanced)" page (find devices automatically, typed-in addresses, TCP and UDP ports, certificate fingerprint, Forget per device, refused sign-ins).
+- Command palette: with this carrier, "Reconnect to sync server" reads "Look for my other devices again" and the reset-cache command says "re-sync from linked devices".
+- Attachments are fetched from linked devices by hash and verified; restore points are kept on the device.
+- Real-device checklist section 18.
+
+### Chosen differences from Local Sync (approved)
+- A random pairing key is made at setup and a weak or missing key stops the carrier (the original falls back to `default-key`). A device whose certificate is not pinned is not accepted silently, sign-in is mutual and bound to the certificate, and there is no plain WebSocket fallback. Default ports 8872/8873 (configurable) so both plugins can coexist.
+- Own WebSocket codec instead of the `ws` library (it cannot be bundled usefully here); `ws` is only a test peer.
+
+### Existing files changed (all additive; Cloudflare, Drive and P2P paths are not edited)
+- `src/drive-carrier/carrierSettings.ts`: `"lan"` joins the carrier names and `isLanCarrier` is added.
+- `src/settings/settingsStore.ts`: the settings type also lists the optional Local network fields (none are in the defaults).
+- `src/settings/settingsTab.ts`: one more carrier option (offered only when the host says the carrier is available, or it is already chosen), the Local network layout when chosen, and its control values.
+- `src/main.ts`: the Local network start-up branch and the carrier fallbacks for transport, attachments and restore points; wording for this carrier in three messages.
+- `src/commands.ts`: optional `isLanCarrier` and three command names for this carrier.
+
+### Tests
+- New: `lan-hub`, `lan-socket`, `lan-auth`, `lan-transport`, `lan-stores`, `lan-settings`, `lan-runtime` (all on loopback with real sockets, certificates and UDP) with `tests/mocks/lanRig.ts`. The existing `drive-carrier-settings` suite passes unchanged: with no Local network host it still shows three carrier options and the same layouts.
+- `lan-settings` found and fixed one bug: an address typed without a port (`192.168.1.20`) was rejected although the screen says it is fine.
+
+## 2.1.1-drive.17 (manifest 2.1.17) - 2026-10-03
+
+### Fixed (P2P connection test: pairing could never connect)
+- **Pairing is now a two-way exchange.** Builds `.11`-`.16` put only the creator's WebRTC offer into the pairing code, and nothing carried the joiner's answer back. WebRTC cannot connect that way (the offering side needs the joiner's ICE credentials and DTLS fingerprint), so the P2P link could not open. Checked in real Chromium and with aiortc: offer only stays "connecting"; with the answer it connects.
+- New flow: the creator makes a pairing code; the joiner pastes it and gets an **answer code** (`YAOS-P2P1-ANS:...`); the creator pastes that under **Step 2** and presses **Connect**. An answer made for an older pairing code, a pairing code pasted as an answer (and the reverse), and a second answer are refused with a plain message.
+- The dev panel has the same two steps; the DevTools surface has `acceptAnswer(code)`.
+- `ping()` never settled (the promise was dropped when the reply arrived). It now returns the round-trip time and settles with `null` if the link closes.
+- Code: `src/p2p/spikeOffer.ts` (answer code), `spikeLink.ts` (`acceptAnswer`, the answer waits for its candidates), `spikeHost.ts`, `src/settings/P2pPairingFlow.ts`, `P2pHomeSettingPage.ts`, `P2pSpikeModal.ts`, `src/main.ts` (debug API only).
+
+### Changed (honest wording)
+- The carrier row, the P2P page and its card now say plainly: **P2P is a connection test; notes are not synced over P2P yet.** With P2P selected the sync runtime does not carry notes, so switch back to Cloudflare or Google Drive to keep syncing. Other carriers' text is unchanged.
+
+### Housekeeping (P2P branch merged into the single branch)
+- `guard:no-any` passes again (three `as unknown as` replaced by `Reflect` and a type check), `typecheck:tests` is clean, the mixed indentation in the deep-link handler and the lint warnings for `createDiv` and `window.setTimeout` are fixed.
+- The four release zips that had been committed to the repository root (`.11`-`.14`) are removed from the tree and `yaos-drive-*.zip` is ignored. They stay in the git history and in the releases.
+- This changelog now covers `.11`-`.16`.
+
+### Tests
+- New `tests/client/p2p-handshake.ts` (25 checks) with `tests/mocks/fakeRtc.ts`, a fake peer connection that opens a channel only after the answer is applied. It fails if `acceptAnswer` does nothing. New answer-code checks in `p2p-spike-offer.ts`; `p2p-pairing-flow.ts` covers the answer step.
+- New `qa/p2p-spike/handshake-proof.mjs`: runs the real host twice in headless Chromium (offer only stays closed, two-way opens, Yjs converges both ways).
+- `drive-carrier-settings.ts`: the P2P home row text changed, and two checks pin the new carrier note and the unchanged Cloudflare text.
+
+## 2.1.1-drive.16 - 2026-10-03
+
+### Changed (P2P connection test, only visible with the P2P carrier selected)
+- A pairing wizard on the P2P page: pick "Create a pairing code" or "Join with a code"; only that step shows. Copy is enabled only when a code exists, Join only when the field has text, and Disconnect only while linked (visibility is decided by a pure view model, and hidden elements use a scoped class so themes cannot override it).
+- The P2P engine now starts on demand, so selecting the carrier no longer needs a plugin reload to use the P2P page. The `onload` P2P block cannot abort the rest of start-up.
+- `manifest.json` and `package.json` are `2.1.16`.
+
+## 2.1.1-drive.15 - 2026-10-03
+
+### Changed (P2P connection test)
+- The P2P settings became a home page (status card plus pairing flow) and an Advanced page with a visible "Run check" button. All P2P styles are scoped under `.yaos-p2p-*` and a new guard (`guard:p2p-css-scope`) enforces that.
+- First build of the `2.1.N` version scheme (manifest `2.1.15`), which removes the BRAT version-mismatch warning.
+
+## 2.1.1-drive.14 - 2026-10-03
+
+### Changed (P2P connection test)
+- The P2P settings are split into a beginner section (link explanation, pairing, vault status) and a navigable Advanced page (backbone placeholder, TURN fields, network check, debug mode).
+
+## 2.1.1-drive.13 - 2026-10-03
+
+### Changed (P2P connection test)
+- The P2P settings show only while the P2P carrier is selected. With any other carrier the whole P2P surface is dormant (no P2P screen, no status-bar item, pairing links refused with a notice).
+
+## 2.1.1-drive.12 - 2026-10-03
+
+### Added (P2P connection test)
+- A "P2P (experimental)" settings group with TURN URL, username and credential (saved, applied on the next pairing), a "Pair another device" button and a network check. The status bar shows the P2P link state while a link is active. `P2P` becomes a third value of the Sync carrier setting.
+
+## 2.1.1-drive.11 - 2026-10-03
+
+### Added (P2P connection test, debug mode only)
+- A development rig for a direct WebRTC link between two devices: the "P2P spike panel (dev)" command, the `obsidian://yaos?action=p2p-pair&code=...` deep link, `window.__YAOS_P2P_DEBUG__`, and Yjs sync over the data channel. Plan: `docs/p2p-plan.md`; runbook: `qa/p2p-spike/runbook.md`.
+
+## 2.1.1-drive.10 - 2026-10-03
+
+### Changed (header status icon, every carrier)
+- **A nicer header icon.** The five states are now one drawn cloud with a small mark inside: a check (synced), a turning ring (syncing), a slash across the cloud (offline), an exclamation mark (needs a look) and a cross (error). The icons are drawn by the plugin (registered with Obsidian's `addIcon`) instead of borrowed from the built-in icon set, so they look the same in every Obsidian version and stay readable at header size. Colour follows the theme: green, accent colour, faint grey, orange, red. While syncing only the small ring turns (the cloud stays still); the turning stops when the system asks for reduced motion. The shapes still differ, so colour is not the only cue. Preview: `docs/status-icons-preview.png`.
+- Not changed: when the icon appears, the click menu, the Advanced switch, the bottom-bar text and its colours, and every other setting.
+- Code: new `src/status/statusIcons.ts`; `STATUS_ICONS` in `simpleStatus.ts` now holds the new ids; `registerStatusIcons(addIcon)` is called once in `main.ts`; header-icon colours and the ring animation in `styles.css`.
+- Tests: `status-simple.ts` grew to 69 checks (registration, drawings, colour rules, reduced motion). Three icon-name assertions in that same file, added in `.9`, now expect the new ids. No other test changed.
+
+## 2.1.1-drive.9 - 2026-10-03
+
+### Changed (setup guide, Google Drive only)
+- **"Private sign-in (coming soon)" is gone.** The disabled placeholder is removed. The guide now offers two ways to sign in: Easy sign-in, and **Private sign-in (your own Google client)**, which is the old "Use my own Google client (advanced)" path under a clearer name. The screen says that the user creates the Google project and enters its client ID and secret, that the details stay theirs, and that nothing goes through anyone else's service. The steps themselves are unchanged. The built-in-client code stays in place and unused: if a build ever contains one, the guide shows the old three-choice layout again.
+- Code: `src/drive-carrier/wizard/screens.ts` only (plus `docs/drive-carrier.md`).
+- Existing test changed on purpose: the one `drive-carrier-wizard-flow` check that asserted the "coming soon" placeholder now asserts its absence and the new wording. Nothing else in the wizard flow tests changed (200 checks pass).
+
+### Added (Google Drive: sync speed, to avoid rate limits)
+- **New setting "Sync speed (Google Drive)"** with four choices: **Normal (default)**, **Gentle**, **Minimal** and **Custom**. Normal is exactly today's behaviour (3 s while working, 30 s idle, 2 min hidden on a computer, paused hidden on a phone, edits grouped for 2 s, full check every 5 min), and a vault that never touches the setting stores nothing and syncs as before. Gentle and Minimal slow the checks, the edit grouping and the full check (numbers in `docs/drive-carrier.md`). Custom has five number fields; each is clamped so it can never be faster than Normal, and capped at a sensible maximum. The change applies immediately to the running sync, no restart.
+- Code: new pure module `src/settings/syncPace.ts` (`resolveDrivePace`); `DriveTransport.applyPace()` (timing fields only); `DriveCarrier.applyPace()`; the setting rows in `src/settings/settingsTab.ts` (Drive mode only); `applySyncPace()` in `src/main.ts`. Two optional settings fields (`syncPace`, `syncPaceCustom`). The Drive `DEFAULT_*` constants now read from the same module, with the same values.
+- Explicit test overrides still take priority over the setting. The Cloudflare carrier is untouched by this entry (its send-side control is a separate entry).
+- New test: `tests/client/drive-carrier-sync-pace.ts` (45 checks: default equals today's numbers, profiles, clamping and a property check over 196 combinations, live change on a running transport, the settings screen, Cloudflare mode shows no Drive group). No existing test changed; all other Drive suites pass unchanged.
+
+### Added (Cloudflare: optional edit grouping, same "Sync speed" setting)
+- **Cloudflare vaults get the same setting, in Advanced (shown once a server is set up).** Cloudflare keeps a live connection, so nothing is polled; the only thing to slow down is how often edits are sent. **Normal (default) sends every edit at once, exactly as before.** Gentle gathers edits for 2 s and Minimal for 5 s, then sends them as one merged message; Custom takes 0 to 30 s (0 = at once). Receiving is not affected. The choice is shared with the Drive setting (one profile name), and applies at once to the running connection.
+- Safe by construction: a merged Yjs update holds exactly the same changes; updates the provider applied itself are never sent back; hiding the window, turning the setting back to Normal and closing the vault all send what is waiting; anything unsent while offline is caught up by the normal sync on reconnect. While the setting is Normal the provider's own forwarder stays in place and the new code is not in the data path at all.
+- Code: new `src/sync/outgoingBatcher.ts`; `VaultSync` gets an optional `getOutgoingBatchMs` and `applyOutgoingBatchPace()` and hands the forwarder back in `destroy()`; `resolveCloudflareBatchMs` in `src/settings/syncPace.ts`; two rows in the Advanced page of `settingsTab.ts`; `main.ts` passes the getter. Not used by the Drive carrier.
+- New test: `tests/client/cloudflare-edit-batching.ts` (35 checks, incl. through the real `VaultSync` on the Cloudflare path with a fake socket). Existing test changed on purpose: one check in `drive-carrier-settings` (Test 3) lists the Advanced rows of a configured Cloudflare vault, and now lists the two new rows; nothing else changed. `drive-carrier-sync-pace` grew to 52 checks (Cloudflare screen).
+
+### Changed (status display, every carrier)
+- **Simple status in the bottom bar, and a status icon in the note header.** The bottom bar now reads, for example, "YAOS: Synced", "YAOS: Offline", "YAOS: Connecting...", "YAOS: Check 2 files", "YAOS: Not saving" or "YAOS: Sign-in problem" instead of long technical text such as "YAOS: Connected · Receipt: server saved latest local state". Hovering shows one plain sentence and, below it, the old long label ("Details: ..."), so no information is lost. A new switch in Advanced, **"Detailed status text"**, brings the old long text back exactly as it was (default off).
+- **Header icon (new, on by default, Advanced switch "Status icon in the note header").** One small icon in the header of each note view (check = synced, spinning arrows = busy, crossed cloud = offline, triangle = needs a look, circle = error; warnings and errors are coloured, the shapes differ so colour is not the only cue). Works on phones, which have no bottom bar. Click: a menu with the status in words and "Retry syncing...". Added and removed with the views; turning the switch off removes every icon.
+- A short wait for the server to confirm your latest edit now shows as the calm "Syncing..." instead of a receipt sentence (upstream issue #68 was about that sentence looking like a fault). The long text is untouched behind the switch.
+- Code: new `src/status/simpleStatus.ts` (pure: `toSimpleStatus`) and `src/status/headerStatusIcons.ts`; `main.ts` (`updateStatusBar` picks short or long text; `setupHeaderStatusIcons`; `applyStatusDisplay`); two switches in `settingsTab.ts`; styles in `styles.css`. `statusBarController.ts` (the long labels) is NOT changed, and its 74 checks pass unchanged. Two optional settings fields (`showStatusIcon`, `detailedStatus`); nothing is stored for the defaults.
+- New test: `tests/client/status-simple.ts` (57 checks). Existing tests changed on purpose, all in `drive-carrier-settings`: three assertions that list the rows of the Advanced page now list the two new switches (Cloudflare without a server, Cloudflare with a server, Drive). Nothing else changed.
+
+### Fixed (engine, every carrier including Cloudflare: two gaps next to upstream PR #80)
+- **A conflict note is never written to disk by `DiskMirror`, however the write is asked for.** The `.8` fix stopped the startup reconcile from re-creating a conflict note that is still an active shared entry, but other paths into `DiskMirror.flushWrite` (a remote update to such an entry, a snapshot restore, a forced write) could still create or overwrite the file. `flushWrite` now returns early for any conflict-note path. The shared entry itself is left alone; deleting the file still records the delete (the `.8` fix). Conflict notes are local-only by contract, so nothing that was meant to sync is affected; the one visible difference is that an old shared conflict note no longer follows remote edits to its text on disk.
+- **A conflict copy whose extension is upper case (`.MD`) is recognised as a conflict note.** The name pattern was case-sensitive on the extension. Effect: the delete rule, the reconcile filter and the new write gate treat such a copy like the others. (`.MD` files are not treated as notes elsewhere in the engine, and that is unchanged.)
+- Code: `flushWriteUnlocked` in `src/sync/diskMirror.ts` (one early return); the pattern in `src/sync/markdownConflictArtifact.ts` (`\.[mM][dD]$`).
+- New test: `tests/client/engine-conflict-note-writeback.ts` (16 checks; 6 of them fail without the change). Existing tests unchanged.
+
+## 2.1.1-drive.8 - 2026-10-03
+
+### Fixed (engine, every carrier including Cloudflare)
+- **A deleted "(YAOS conflict ...)" note no longer comes back after reopening, on both devices.** Conflict notes are meant to stay on one device, but a vault can still hold some as active shared entries (they synced in 2.1.0 and an older device can still send them; upstream issue #78's log shows the same notes being written back). Two things made the delete fail: the delete event ignored them because they are not syncable paths, so nothing was recorded and the other device never heard of it; and the full reconcile wrote every active shared entry that was not found on disk back to disk, which for these notes was always. Now (1) deleting a conflict note that is an active shared entry is recorded like any note's delete, so both devices drop it and it stays gone; (2) the full reconcile never writes a conflict note from the shared document to disk. A conflict note that is not a shared entry (the normal case) is still ignored, and every other note is handled exactly as before.
+  - Code: new `src/runtime/reconcile/conflictNotePolicy.ts` (`shouldRecordMarkdownDelete`, `withoutConflictNotes`); the delete handler in `src/main.ts` and the "missing on disk" list in `ReconciliationController`.
+  - Not changed: existing synced conflict notes are not deleted automatically (they can hold the only copy of some text). If a conflict note returns with a NEW timestamp, it is a fresh copy and a different cause; that was not reproduced and is not covered here.
+
+### Tests
+- New `engine-conflict-note-delete` (15 checks): the policy, the reconcile with a shared conflict-note entry missing from or present on disk, the delete reaching a second document and staying after a reconcile, and the delete handler using the policy. Four fail without the change. Controls: an ordinary shared note missing on disk is still written; a conflict note that is not shared and an ignored note are still ignored.
+
+## 2.1.1-drive.7 - 2026-10-03
+
+One test build that gathers everything done since `2.1.1-drive.6`. **Some of it changes behaviour for every carrier, Cloudflare included** (the engine fixes and the upstream issue fixes below); each change is narrow, has its own tests that fail without it, and leaves the existing suites unchanged. The Drive-only items change nothing unless Google Drive is the carrier.
+
+**Part: Google Drive carrier hardening**
+
+### Fixed (Google Drive carrier)
+- **Encrypted vaults could upload plaintext after one failed start-up call.** If reading or writing `meta.json` failed once when connecting, later cycles skipped the key check and uploaded unencrypted files into the encrypted vault; other devices then rejected them and marked their own files "damaged". The folder now counts as ready only after the key check succeeds, and uploads refuse to run while the key is not ready.
+- **A device whose clock was wrong could make Drive lose data.** Old snapshots were pruned by file name, which carries the creating device's clock, so a device could delete its own newest snapshot. Pruning now orders by Drive's own creation time and never deletes the snapshot it just wrote. The device's picture of what Drive holds is rebuilt after it deletes files, so the repair pass and the "saved" status stay correct.
+- **"Synced" was reported with an incomplete document** (a file vanishing during the first read, a missing or hand-deleted file). The carrier now looks again up to three times and does not report synced while an update cannot be applied; it stays connected so edits still upload, and says why (`lastError`, `unreadableFiles`).
+- **One request that never answered froze syncing until restart.** Each cycle now has a five-minute limit; after that it counts as a failure and the normal retry back-off takes over.
+- A lagging file listing no longer causes duplicate uploads and a false "not saved" status (own fresh uploads are kept for 60 s).
+- Closing the app now sends edits still waiting for the 2-second batch.
+- A comment promised that a duplicate empty vault folder is removed; it is not, and the comment now says so.
+
+### Fixed (Google Drive carrier, engine interaction)
+- **A deleted note came back, with an OLD copy of its text.** If a note was edited and then deleted on one device, another device often received both in one poll. It compared its disk file (not yet updated with the edit) to the already updated document, took the file for "locally modified", kept it and revived the note. It now compares the disk file with the last content known to be in sync (the stored content hash); a file that matches is untouched and the delete is applied. A file the user really edited is still kept. Only wired when Google Drive is the carrier.
+- **A deleted note came back after a reopen when two devices had created the same path.** Two ids for one path meant a delete removed only one of them. With Google Drive, a delete now removes every active id for that path.
+
+### Tests (Google Drive carrier hardening)
+- `drive-carrier-hardening` (23 checks): one regression per carrier fix, each reproduced against the earlier code.
+- `drive-carrier-fuzz` (about 6 s, fixed seeds): 155 random runs across five configurations (three and four devices, interleaved calls, clocks that disagree, compaction every segment, encrypted). The earlier code fails 46 of them.
+- `drive-carrier-engine` (18 checks): real `VaultSync` and `DiskMirror` over the fake Drive for the two deletion fixes, the user-edit case, and the unchanged default behaviour.
+
+**Part: Engine step 1**
+
+### Changed (engine, now for every carrier including Cloudflare)
+- **Engine step 1: the two delete fixes are no longer limited to Google Drive.** Both were Drive-only in `2.1.1-drive.7`; they now apply to Cloudflare too. A remote delete is applied when the disk file still equals the last synced content, even if an edit arrived in the same batch; a delete removes every active id for the path. A file you really edited is still kept. Chosen on purpose: the same symptom is reported upstream (kavinsood/yaos #78).
+- Code: `src/main.ts` always wires the baseline provider; `VaultSync.handleDelete` always removes duplicate ids (the `_tombstoneDuplicateIds` flag is gone).
+
+### Tests (Engine step 1)
+- `drive-carrier-engine` grows to 20 checks: duplicate-id delete with the Cloudflare constructor, and the provider is not gated on the carrier.
+
+**Part: Engine step 2**
+
+### Fixed (engine, every carrier including Cloudflare)
+- **Engine step 2 (upstream SYNC-01): a note you deleted while YAOS was off, or before the first sync finished, no longer comes back.** At the next full reconcile a note that is in the shared document but missing on disk was always written back. Now one content rule decides: the device remembers a hash of the text it last had in sync (the disk index). If that hash still equals the document's text, nothing changed since the file was there, so its absence is a delete made on this device; it is recorded as deleted and the other devices follow. Everything else is as before and the note is written back: no remembered hash (a note this device never had), the document text changed meanwhile (someone edited it, so the edit is not lost), an ignored path, or a file the file system still has.
+  - A brake keeps a vault that looks emptied (the file list not loaded) from being mass-deleted: more than 20 notes and more than 25 % of tracked notes, or several notes with no markdown file found at all, are written back instead and the block is traced (`reconcile-offline-delete-blocked`).
+  - Only in full (authoritative) reconciles. Code: new `src/runtime/reconcile/offlineDeletePolicy.ts`; `ReconciliationController` calls it before writing the "missing on disk" notes.
+  - Not covered: a delete whose event was lost after a reconcile already dropped the file's remembered hash, and notes edited on this device and never re-synced to a settled hash; both are written back as before.
+
+### Tests (Engine step 2)
+- New `engine-offline-delete` (24 checks): the policy and the brake, and the real `VaultSync` + `ReconciliationController` for delete, edited-meanwhile, never-had, ignored, vault list incomplete, conservative mode, mass delete, and delete propagation. Five of them fail without the change.
+
+**Part: Engine step 3**
+
+### Fixed (engine, every carrier including Cloudflare)
+- **Engine step 3 (upstream SYNC-02): an edit on one side of an open note is no longer discarded without a trace.** When an open (editor-bound) note had changed on BOTH sides since the last synced text, one side was overwritten silently: the editor/disk text over the shared document ("local only" branch), or an external disk edit over it ("idle" branch). With the remembered baseline hash it is now known when both sides differ from the baseline and from each other; then the side about to be overwritten is first kept as a `(YAOS conflict - crdt ...)` note. Which side wins is unchanged. Normal typing lag (the document still at the baseline), a missing baseline, equal texts and repeated events make no copy (same cap and dedupe as the existing conflict notes).
+  - Code: `src/runtime/reconcile/boundDivergencePolicy.ts`; `ReconciliationController.preserveCrdtIfBothSidesChanged` called before the two overwrites.
+  - Found but NOT changed: if an open note's disk file lags behind a remote edit and still equals the old baseline, the "idle" branch can write that old text back over the shared document unless the user typed recently. That needs the real editor to judge, so it is only recorded here.
+
+### Tests (Engine step 3)
+- New `engine-bound-both-changed` (13 checks): the policy, both branches, the ordinary cases (no copy), no baseline, a repeated event. Three fail without the change.
+
+**Part: Server, startup, attachments and status bar**
+
+### Fixed (snapshots; server and Google Drive)
+- **Snapshot lists said "0 notes".** The note count of a snapshot was read from `pathToId`, a map that current vaults no longer fill. A vault with thousands of notes showed `markdownFileCount: 0` (upstream issue #78 reported it for the Cloudflare server). The count now comes from the active entries of `meta`; documents without a schema version or with schema v1 keep the old count. Same fix in the Google Drive snapshot backend, which had copied the bug. Only the number in the snapshot list changes; snapshot content and restore are untouched.
+  - Code: new `server/src/activeFiles.ts`; `server/src/snapshot.ts`; `src/drive-carrier/driveSnapshotBackend.ts`; `isTombstone` is now exported from `server/src/tombstoneReaper.ts` (no behaviour change).
+
+### Added (server diagnostics)
+- **The tombstone reaper's trace now explains an idle pass.** Two new fields, `oldestTombstoneAgeMs` and `nextEligibleAt`, say how old the oldest deleted note is and when the first one becomes eligible. A report like "reaped: 0, every tombstone within the grace window" (upstream issue #78) can now be told from a real fault: if even the oldest is younger than 30 days, nothing is wrong. Nothing is reaped differently.
+
+### Checked, no code change (re-deleting does not refresh a tombstone)
+- A question from upstream issue #78 was whether deleting a note again keeps pushing its deletion time forward, so the 30-day grace never ends. It does not: a second delete finds no active note for the path and does nothing, a reconcile does not touch the time, and only a delete after a re-create counts as a new deletion. Pinned by the new `engine-tombstone-age` test so a future change cannot break it silently.
+
+### Changed (server)
+- **A load now clears more than 500 old deleted bodies.** The reaper still caps one pass at 500 bodies (so no single update grows), but after a pass that left some behind, the server runs further passes within a 50 ms budget instead of waiting for the next cold load. Vaults with 500 or fewer eligible bodies run exactly one pass, as before. New function `reapTombstonedBodiesUntilDone` in `server/src/tombstoneReaper.ts`; `server.ts` calls it in place of the single pass. Durable Object behaviour itself could not be run here; the function is tested on documents.
+
+### Fixed (startup)
+- **The first reconcile after startup now waits for Obsidian to restore its workspace layout** (upstream issue #77). Until the layout is restored, the notes you had open are placeholder tabs, so the first reconcile treated them as closed. For a note typed in just before the last shutdown, with no stored baseline, that kept your text as a "(YAOS conflict - disk …)" copy next to the note. New `src/runtime/waitForLayoutReady.ts`; `initSync` in `main.ts` waits once, right before the startup reconcile, for at most 20 seconds, then carries on exactly as before. Reconnect reconciles and the Drive carrier's own sync are not gated; the Drive carrier shares `initSync`, so it gets the same wait.
+- **Second rule from the plan not built.** A note that is open with identical text is already a no-op in the planner (`disk-equals-crdt`), and a loaded editor view is already skipped, so a second content rule would only stack on the first.
+
+### Fixed (attachments)
+- **A local attachment that grew past the size limit is no longer overwritten by the older synced copy** (upstream issue #75). Such a file is left out of upload and reconcile, but it stayed in the synced list, so the download path replaced it without a word. `processDownload` in `src/sync/blobSync.ts` now leaves a local file that is over this device's limit alone, counts it (`oversizedLocalSkips`), traces `skip-local-over-limit`, and shows one Notice per path per session saying that the limit is the reason. With no limit set (0), or for a file within the limit, nothing changes. The same code serves Cloudflare and Drive attachments.
+- **Not changed:** the silent clamp of the limit by the server capability update (`capabilityUpdateService.ts`) still happens; only its effect on local files is closed.
+
+### Changed (status bar wording)
+- **"Receipt: local state not yet received by server" no longer shows while only the newest edit is waiting** (upstream issue #68). When the server has already confirmed an earlier state (`lastKnownServerReceiptEchoAt` is set) and the newest edit is not confirmed yet, a connected device now reads "Receipt: latest edit awaiting server confirmation". Before any confirmation, and when offline, the old wording stays. Only the text changes: the tracker, the confirmation rule and the stored data are untouched.
+- **Why it is not a deeper fix:** the maintainer called the label non-breaking, and the reported state vectors could not be reproduced as a fault in the tracker, so the confirmation rule is left alone.
+
+### Tests (Server, startup, attachments and status bar)
+- `tombstone-reaper` gains Test 17 for the two new fields and Test 18 for the multi-pass loop (1154 tombstones, budget 0, expiring clock, clean document). New `engine-tombstone-age` (6 checks). New `engine-startup-layout` (9 checks): the wait helper, the reconcile with an open versus a not-yet-open note (shows the copy appearing only in the second case), and the position of the wait in `initSync`. `server-ack-tracker` gains Test 13 (the issue's sequence: confirmed, more typing, an echo behind it, then a dominating echo; label checked at each step). New `blob-oversize-local` (12 checks, 8 fail without the change): oversize file kept, no fetch, one notice, controls for small, missing and unlimited, and the same through a reconcile. New `active-files-count` (6 checks, one fails without the change); `drive-carrier-snapshots` gains a current-model check (fails without the change).
+
+## 2.1.1-drive.6 - 2026-10-02
+
+### Changed
+- **A shorter Google Drive settings screen.** With Google Drive chosen, the main section now holds only Status, Sync carrier, Set up Google Drive and Sign out (when signed in). Everything the setup guide fills in moved to one new page, **Manual setup (advanced)**, placed just before Advanced: Vault ID, Google client ID and secret, Sign in with Google, the easy sign-in code and the encryption passphrase. The page shows a warning mark while you are not signed in, and the Status text points to it.
+  - The "Folder on Drive" row is gone; the Vault ID description names the folder instead.
+  - The "This device" group (device name, used only for live cursors) is hidden.
+  - Advanced no longer repeats the Vault ID and no longer talks about deployment.
+  - No setting was removed or renamed; every control is still reachable and stores the same keys.
+- **Command palette names for Google Drive.** *Reconnect to sync server* becomes *Retry syncing with Google Drive*, *Clear local server-receipt state* becomes *Clear local save-confirmation state*, and *Reset local cache (re-sync from server)* becomes *(re-sync from Google Drive)*. The confirmation texts of *Reset local cache* and *Nuclear reset* say Google Drive too. The command ids and what they do are unchanged.
+- Cloudflare screens, command names and texts are unchanged.
+
+### Tests
+- `drive-carrier-settings` grows to 155 checks: the layout, each moved row, the manual page for each sign-in kind, every control still reachable, the Cloudflare screens unchanged, and the command names for both carriers.
+
+## 2.1.1-drive.5 - 2026-10-02
+
+### Added
+- **Easy sign-in for Google Drive**, the new recommended first choice in the setup wizard. No Google Cloud project: you open a sign-in page, sign in with Google, copy the code it shows and paste it into the wizard. The wizard goes from 14 steps to 9.
+  - The page and the token service are the ones used by the Obsidian Google Drive plugin (`ogd.richardxiong.com`, run by that plugin's author, not by YAOS). Your device sends the pasted code to the service to get short-lived access tokens; the Drive requests, and your notes, go straight to Google. The wizard says this on the screens, and recommends encryption.
+  - The "How do you want to sign in?" screen offers Easy sign-in (recommended), Private sign-in (shown as "coming soon" until a built-in Google client is added) and Use my own Google client (the earlier guided path, unchanged).
+  - A vault made with the easy sign-in gets a `YAOS-DRIVE2:` setup code (vault ID and optional passphrase, no client details, never the sign-in code). The second device is asked for its own sign-in code. `YAOS-DRIVE1:` codes still work as before.
+  - Joining by hand has an "easy sign-in" box.
+  - New settings keys, written only by the easy path: `driveAuthMode: "hosted"` (and an optional `driveHostedUrl` for self-hosters). They do not exist in anyone's settings until the easy path is used.
+  - Settings: with the easy sign-in the client ID/secret and "Sign in with Google" rows are hidden, and a "Sign-in code (easy sign-in)" row lets you paste a new code if access is lost. Signing out returns the screen to the normal rows.
+  - If the service says the code is no longer accepted (HTTP 400, 401 or 403, as the Obsidian Google Drive plugin also treats them), a notice asks you to sign in again; temporary errors and being offline just retry.
+- New suite `drive-carrier-hosted` (56 checks): the token service client, which token source the carrier uses, both setup code kinds, pasted-code checks. More checks in `drive-carrier-wizard-flow` (now 197) and `drive-carrier-settings` (107).
+
+### Changed
+- The wizard's new-vault path now always shows the sign-in choice screen (before, it appeared only when a built-in client existed).
+- Going back from the encryption screen skips the automatic sign-in step.
+
+### Fixed
+- Reading a setup code on the join path now happens before the next steps are worked out, so a code can switch the sign-in method correctly.
+- The `no-any` guard failed on two lines from `2.1.1-drive.4` (a double cast in `main.ts` for the optional reload command, and one in the wizard test); both are rewritten without the cast.
+
+### Notes
+- Cloudflare users and existing Drive users are unaffected. The original upstream test suites still pass against this code (95 passed; the same one environment failure as before).
+- Not tested against a real Google account: the live sign-in page and the service were only probed read-only (a made-up token gets HTTP 400 `invalid_grant`, as the code expects). What the page shows after sign-in needs a check on a real device.
+- The sign-in service is run by someone else. If it stops, easy-sign-in vaults pause until you switch sign-in method.
+
+## 2.1.1-drive.4 - 2026-10-02
+
+### Added
+- **Google Drive setup wizard** for people who have never set up anything like this. It opens when you choose Google Drive for the first time, from a **Set up Google Drive** button in the Google Drive section, and from the command **YAOS: Set up Google Drive**. Two paths: *Start a new vault* and *Join my existing vault*.
+  - Guides you through Google Cloud step by step (project, Drive API, consent screen, client of type "TVs and Limited Input devices", Publish app) with a button for each Google page, then pastes and checks the client details.
+  - Signs in with Google by itself (code shown in the wizard), then asks about encryption (on by default, with a clear warning that a lost passphrase cannot be recovered).
+  - Creates the vault only after a test: it makes, reads and deletes a small file in the new `YAOS <vault id>` folder, then writes `meta.json`. Settings are saved at the very end; cancelling earlier changes nothing.
+  - Ends with a **setup code** (`YAOS-DRIVE1:...`) for the second device. It holds the vault ID, the client details and optionally the passphrase, never the sign-in token. The wizard warns to keep it private.
+  - Joining checks the vault first: not found, wrong or missing passphrase, a passphrase for an unencrypted vault, or a different layout are each explained, and nothing is saved until the check passes.
+  - A device that is already set up gets a warning before it makes a new vault.
+  - Syncing starts straight away after setup when nothing was running (otherwise a Reload button is shown).
+  - The built-in shared Google client is **not included yet** (placeholder is empty), so this build offers the "own client" path only.
+- Tests: `drive-carrier-wizard-code` (50 checks) and `drive-carrier-wizard-flow` (132 checks) plus 10 new checks in `drive-carrier-settings`, all against the fake Drive.
+
+### Changed
+- The Drive group's Status row, when signed out, says to press "Set up Google Drive". The older manual rows still work.
+- The notice shown when Google Drive is chosen but not set up points to the wizard.
+
+### Notes
+- Cloudflare users see no difference: the wizard is only reachable once Google Drive is chosen, and the new row appears only in the Google Drive section.
+- Not tested against real Google yet: the wording of Google Cloud's console may differ from the guide.
+
+## 2.1.1-drive.3 - 2026-10-02
+
+### Changed
+- **The "Sync carrier (experimental)" choice is now in Settings > YAOS > Setup**, directly above "Deploy your server". Before, it was the first row under Advanced and easy to miss. Once a Cloudflare server is set up, the row stays as the first row under Advanced. With Google Drive chosen, it is at the top of the Google Drive section so you can switch back.
+- **Choosing Google Drive hides everything that belongs to Cloudflare:** "Setup required", "Deploy your server", Server, Sync token, "Pair another device", "Back up connection details", the Updates section, "Refresh attachment capability", "Set up attachment storage", the deployment repository rows in Advanced, and the server wording in the "Reload required" hint. The screen refreshes as soon as you pick the carrier.
+- Docs now say where to find the choice (README, `docs/drive-carrier.md`, the device checklist).
+
+### Notes
+- After copying the files, restart Obsidian completely. The plugin list shows the version from `manifest.json`, even if an older `main.js` is still loaded.
+- `2.1.1-drive.2` was on GitHub for a few minutes with an older layout (carrier row below "Deploy your server"). It was withdrawn; `drive.3` replaces it.
+- For a Cloudflare user the only visible difference from upstream is that one extra dropdown row. The original upstream test suites still pass against this code (95 passed; the one failure needs `miniflare`, which was not installed here, and fails the same way on untouched upstream).
+
+## 2.1.1-drive.1 - 2026-10-02
+
+First test build with the Google Drive carrier. Meant for real-device testing in a scratch vault. Everything so far was tested against a fake Drive only.
+
+### Added
+- **Google Drive as a sync carrier (optional, off by default).** Devices exchange the same updates the YAOS engine already produces, as small files in a Drive folder named `YAOS <vault id>`. Updates are written once and never edited, and are compacted into snapshots from time to time. Every file carries a SHA-256 check, and a damaged file is skipped. Devices poll Drive, so a change arrives in a few seconds rather than instantly.
+- **Sign in with Google** using the device-code flow (enter a short code at google.com/device) with the narrow `drive.file` scope, so YAOS only sees files it created. You use your own Google OAuth client ("TVs and limited-input devices"); there is no relay and no server of ours.
+- **Attachments on Drive** (folder `YAOS <vault id> blobs`, named by their SHA-256), with the same size and parallel-transfer settings as before.
+- **Snapshots and restore points on Drive** (folder `YAOS <vault id> snapshots`): a daily snapshot, "snapshot now", list, compare and restore, and pruning that keeps pinned snapshots plus the newest 14.
+- **Optional passphrase encryption** of everything stored on Drive (AES-256-GCM, key derived with PBKDF2 and HKDF). It can only be chosen when a vault is first created on Drive. A lost passphrase cannot be recovered. A missing or wrong passphrase stops sync with a notice and writes nothing.
+- **Adaptive polling to save requests and battery:** every 3 seconds while you are using the app, every 30 seconds after a minute of inactivity, every 2 minutes with the window hidden on a desktop, and paused while hidden on a phone, with an immediate check when the app comes back or the network returns. About 38 requests in 10 idle minutes instead of 200.
+- "Saved to Drive" status, so the usual "sent to the server" indicators keep working.
+- Settings: a **Sync carrier** choice, a Google Drive section (folder, vault ID, client ID and secret, passphrase, sign in and sign out).
+- Docs: `docs/drive-carrier.md`, a real-device checklist (`docs/drive-carrier-device-checklist.md`), a README section and notes in the architecture and sync-contract docs.
+
+### Changed
+- **Inside the sync engine, the carrier now sits behind a small `SyncTransport` interface** (`src/sync/transport.ts`). The Cloudflare provider is the default and is built exactly as before. Attachments and snapshots likewise go through two small optional interfaces, with the Worker code as the default. Users of Cloudflare see no difference.
+- Two existing test fixtures use a different placeholder field (`wsconnected: false` instead of `roomname`) because the provider type is now narrower. No assertion changed.
+
+### Known limits
+- Polling only: changes arrive in a few seconds, and there are no live cursors from other devices.
+- A second device must type the same Vault ID by hand. The Cloudflare pairing link and recovery kit do not apply.
+- Reload the plugin after signing in or changing the passphrase.
+- Encryption can only be turned on when the vault is created on Drive.
+- A damaged attachment on Drive is not repaired automatically; deleted-file markers are not cleaned up yet.
+- Google may expire sign-in tokens after 7 days for an OAuth client left in "Testing" mode. Publish the client.
+- The passphrase is stored in plain text in the plugin's data file.
+- Real Google Drive, quotas and phone background behaviour are not yet verified.

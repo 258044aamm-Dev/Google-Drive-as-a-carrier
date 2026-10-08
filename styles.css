@@ -170,3 +170,89 @@ body.vault-crdt-show-cursors .cm-editor .cm-ySelectionCaret {
 body .cm-editor .cm-ySelectionInfo {
 	display: none;
 }
+
+/* Google Drive carrier: the sign-in code shown to the user. */
+.yaos-drive-signin-code {
+	font-size: 2em;
+	font-weight: bold;
+	letter-spacing: 0.15em;
+	text-align: center;
+}
+
+/* Google Drive setup wizard (opened only for the Drive carrier). */
+.yaos-drive-wizard { max-width: 34rem; }
+.yaos-wizard-progress { opacity: 0.7; font-size: 0.85em; margin-bottom: 0.5em; }
+.yaos-wizard-note { padding: 0.6em 0.8em; margin: 0.8em 0; border-radius: 6px; background: var(--background-secondary); }
+.yaos-wizard-warn { border-left: 3px solid var(--text-warning); }
+.yaos-wizard-info { border-left: 3px solid var(--interactive-accent); }
+.yaos-wizard-code { word-break: break-all; user-select: all; }
+.yaos-wizard-field { margin: 0.8em 0; }
+.yaos-wizard-field label { display: block; margin-bottom: 0.25em; }
+.yaos-wizard-check { display: flex; align-items: center; gap: 0.4em; }
+.yaos-wizard-input { width: 100%; }
+textarea.yaos-wizard-input { min-height: 5em; font-family: var(--font-monospace); }
+.yaos-wizard-help { opacity: 0.7; font-size: 0.85em; }
+.yaos-wizard-problem { color: var(--text-error); font-size: 0.85em; }
+.yaos-wizard-busy { opacity: 0.8; }
+.yaos-wizard-checklist { list-style: none; padding-left: 0; }
+.yaos-wizard-link-button { display: block; margin: 0.8em 0; }
+.yaos-wizard-buttons { flex-wrap: wrap; gap: 0.5em; }
+.yaos-wizard-plain { background: transparent; box-shadow: none; }
+
+/*
+ * Status text in the bottom bar: only warnings and errors get a colour.
+ */
+.yaos-status-attention {
+	color: var(--text-warning);
+}
+
+.yaos-status-error {
+	color: var(--text-error);
+}
+
+.yaos-status-offline {
+	color: var(--text-faint);
+}
+
+/*
+ * Status icon in the note header: a cloud whose colour and inner mark show the
+ * state. The strokes use currentColor, so the colour below is all there is.
+ */
+.yaos-header-status.yaos-status-ok {
+	color: var(--color-green);
+}
+
+.yaos-header-status.yaos-status-busy {
+	color: var(--interactive-accent);
+}
+
+.yaos-header-status.yaos-status-offline {
+	color: var(--text-faint);
+}
+
+.yaos-header-status.yaos-status-attention {
+	color: var(--color-orange);
+}
+
+.yaos-header-status.yaos-status-error {
+	color: var(--color-red);
+}
+
+/* While syncing, only the small ring turns; the cloud stays still. */
+.yaos-header-status.yaos-status-busy .yaos-spin {
+	transform-box: view-box;
+	transform-origin: 50px 60px;
+	animation: yaos-status-spin 1.1s linear infinite;
+}
+
+@keyframes yaos-status-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.yaos-header-status.yaos-status-busy .yaos-spin {
+		animation: none;
+	}
+}

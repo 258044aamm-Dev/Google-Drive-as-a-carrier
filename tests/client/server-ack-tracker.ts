@@ -765,4 +765,47 @@ s.section("Test 25: withActiveOpId attributes candidate capture to the active op
 	const latestData = candidates.at(-1)?.data as Record<string, unknown> | undefined;
 	s.check(latestData?.causedByOpId === null, "active op id is restored after scoped mutation");
 }
+
+// ── Test 13 (upstream issue #68): label while a newer edit waits after a confirmation ──
+
+s.section("Test 13: the receipt label tells 'never confirmed' from 'newest edit waiting'");
+{
+	const { getServerReceiptStatusLabel } = await import("../../src/status/statusBarController");
+	const doc = makeDoc(131);
+	const store = new InMemoryCandidateStore();
+	const tracker = new ServerAckTracker();
+	attachTracker(tracker, doc, { __type: "provider" }, null);
+	await tracker.onStartup(store, BASE_SCOPE);
+	const status = () => ({
+		serverAppliedLocalState: tracker.serverAppliedLocalState,
+		lastServerReceiptEchoAt: tracker.lastServerReceiptEchoAt,
+		lastKnownServerReceiptEchoAt: tracker.lastKnownServerReceiptEchoAt,
+		candidatePersistenceHealthy: true,
+		serverReceiptStartupValidation: "validated",
+	});
+
+	doc.getText("t").insert(0, "first");
+	await flushMicrotasks();
+	s.check(
+		getServerReceiptStatusLabel(status(), true) === "Receipt: local state not yet received by server",
+		"before any confirmation the old wording stands",
+	);
+	tracker.recordServerSvEcho(Y.encodeStateVector(doc));
+	s.check(getServerReceiptStatusLabel(status(), true) === "Receipt: server received latest local state", "confirmed: unchanged");
+
+	// Typing goes on; the next echo is behind the newest edit.
+	const behind = Y.encodeStateVector(doc);
+	doc.getText("t").insert(0, " more typing");
+	await flushMicrotasks();
+	tracker.recordServerSvEcho(behind);
+	s.check(tracker.serverAppliedLocalState === false, "the newest edit is not confirmed yet");
+	const waiting = getServerReceiptStatusLabel(status(), true);
+	s.check(waiting === "Receipt: latest edit awaiting server confirmation", `an earlier confirmation exists, so it says waiting (got "${waiting}")`);
+	s.check(
+		getServerReceiptStatusLabel(status(), false) === "Receipt: offline — local state not yet received by server",
+		"offline keeps the warning",
+	);
+	tracker.recordServerSvEcho(Y.encodeStateVector(doc));
+	s.check(getServerReceiptStatusLabel(status(), true) === "Receipt: server received latest local state", "the next dominating echo clears it");
+}
 await s.done();

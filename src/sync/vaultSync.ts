@@ -1,5 +1,6 @@
 import * as Y from "yjs";
 import YSyncProvider from "y-partyserver/provider";
+import { OutgoingUpdateBatcher } from "./outgoingBatcher";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { normalizePath } from "obsidian";
 import { type BlobRef, type BlobMeta, type BlobTombstone } from "../types";
@@ -27,6 +28,7 @@ import { randomId } from "../utils/randomId";
 import { formatUnknown } from "../utils/format";
 import { UpdateTracker } from "./updateTracker";
 import { ServerAckTracker } from "./serverAckTracker";
+import type { SyncTransport, SyncTransportFactory } from "./transport";
 import { IndexedDbCandidateStore, getOrCreateLocalDeviceId, sha256Hex } from "./indexedDbCandidateStore";
 import {
 	createSvEchoCounters,
@@ -138,7 +140,18 @@ type ServerReceiptStartupValidation =
  */
 export class VaultSync {
 	readonly ydoc: Y.Doc;
-	readonly provider: YSyncProvider;
+	/**
+	 * The sync carrier. Everything outside this class talks to it only through
+	 * the `SyncTransport` surface (see transport.ts).
+	 */
+	readonly provider: SyncTransport;
+	/**
+	 * The Cloudflare provider when the default carrier is in use, else null.
+	 * Holds the Cloudflare-only concerns (socket termination, ticketed URL).
+	 */
+	private readonly cloudflareProvider: YSyncProvider | null;
+	private readonly getOutgoingBatchMs: (() => number) | null = null;
+	private outgoingBatcher: OutgoingUpdateBatcher | null = null;
 	readonly persistence: IndexeddbPersistence;
 	readonly updateTracker: UpdateTracker;
 	readonly serverAckTracker: ServerAckTracker;
@@ -262,7 +275,6 @@ export class VaultSync {
 	private _serverAckPersistenceUnavailable = false;
 	private _serverReceiptStartupValidation: ServerReceiptStartupValidation = "not_started";
 	private readonly _svEchoCounters = createSvEchoCounters();
-
 	/** Buffered renames for batch flush. */
 	private _renameBatch: Map<string, string> = new Map(); // oldPath -> newPath
 	private _renameBatchNewToOld: Map<string, string> = new Map(); // newPath -> oldPath
@@ -323,6 +335,17 @@ export class VaultSync {
 			 * state-vector truth and persistence authority.
 			 */
 			onServerReceiptStatusChanged?: () => void;
+			/**
+			 * Build a different sync carrier instead of the default Cloudflare
+			 * provider. When set, no Worker connection, ticket or token is used.
+			 */
+			transportFactory?: SyncTransportFactory;
+			/**
+			 * Cloudflare only: how long to gather edits before sending them as
+			 * one message, in ms. Absent or 0 = send every edit at once (the
+			 * default). Read again by applyOutgoingBatchPace().
+			 */
+			getOutgoingBatchMs?: () => number;
 		},
 	) {
 		this.debug = settings.debug;
@@ -384,7 +407,10 @@ export class VaultSync {
 		const longLivedToken = settings.token;
 		const syncPrefix = `/vault/sync/${encodeURIComponent(roomId)}`;
 
-		this.provider = new YSyncProvider(settings.host, roomId, this.ydoc, {
+		const transportFactory = options?.transportFactory;
+		const cloudflare = transportFactory
+			? null
+			: new YSyncProvider(settings.host, roomId, this.ydoc, {
 			prefix: syncPrefix,
 			params: async () => {
 				// Build base params (schema version + optional trace context).
@@ -419,6 +445,20 @@ export class VaultSync {
 			connect: false,
 			maxBackoffTime: MAX_BACKOFF_TIME_MS,
 		});
+		const provider = cloudflare ?? transportFactory?.({
+			doc: this.ydoc,
+			vaultId: roomId,
+			isLocalStoreOrigin: (origin) => origin !== null && origin === this.persistence,
+		});
+		if (!provider) throw new Error("No sync transport could be created");
+		this.cloudflareProvider = cloudflare;
+		this.provider = provider;
+		this.getOutgoingBatchMs = options?.getOutgoingBatchMs ?? null;
+		if (cloudflare && this.getOutgoingBatchMs) {
+			this.outgoingBatcher = new OutgoingUpdateBatcher(this.ydoc, cloudflare);
+			// 0 (the default) leaves the provider's own forwarder in place.
+			this.outgoingBatcher.setDelayMs(this.getOutgoingBatchMs());
+		}
 
 		// Wire update tracker before any Y.Doc events so timestamps are captured.
 		this.updateTracker = new UpdateTracker();
@@ -1737,6 +1777,17 @@ export class VaultSync {
 		return tombstonedIds;
 	}
 
+	/** Active file ids other than `exceptId` whose metadata path is `path`. */
+	private activeIdsForPath(path: string, exceptId: string): string[] {
+		const ids: string[] = [];
+		this.meta.forEach((value: unknown, fileId: string) => {
+			if (fileId === exceptId || isFileMetaDeletedValue(value)) return;
+			const candidate = getMetaPath(value);
+			if (candidate && this.normPath(candidate) === path) ids.push(fileId);
+		});
+		return ids;
+	}
+
 	handleDelete(path: string, device?: string, opId?: string): void {
 		path = this.normPath(path);
 
@@ -1783,11 +1834,19 @@ export class VaultSync {
 			return;
 		}
 
+		// Two devices that create the same path before they see each other leave two
+		// active ids for it. Tombstoning only the winner made the other id the path's
+		// owner, and the note came back at the next reconcile.
+		const duplicateIds = this.activeIdsForPath(resolvedPath, fileId);
+
 		this.ydoc.transact(() => {
 			if (this.shouldWriteLegacyPathMap()) {
 				this.pathToId.delete(resolvedPath);
 			}
 			this.setMetaDeleted(fileId, resolvedPath, device);
+			for (const duplicateId of duplicateIds) {
+				this.setMetaDeleted(duplicateId, resolvedPath, device);
+			}
 		}, ORIGIN_SEED);
 
 		this._pathIndexesDirty = true;
@@ -2007,7 +2066,9 @@ export class VaultSync {
 	 */
 	private patchProviderTicket(value: string): void {
 		try {
-			this.provider.url = patchTicketInUrl(this.provider.url, value);
+			const cloudflare = this.cloudflareProvider;
+			if (!cloudflare) return;
+			cloudflare.url = patchTicketInUrl(cloudflare.url, value);
 			this.log("socket ticket refreshed in provider URL");
 		} catch (err) {
 			this.log(`patchProviderTicket: failed to update provider URL: ${formatUnknown(err)}`);
@@ -2043,6 +2104,13 @@ export class VaultSync {
 		}
 	}
 
+	/** The "sync speed" setting changed: apply the new Cloudflare edit-grouping delay to the running connection. */
+	applyOutgoingBatchPace(): void {
+		if (this.outgoingBatcher && this.getOutgoingBatchMs) {
+			this.outgoingBatcher.setDelayMs(this.getOutgoingBatchMs());
+		}
+	}
+
 	async destroy(): Promise<void> {
 		this.log("Destroying VaultSync");
 		if (this._renameTimer) window.clearTimeout(this._renameTimer);
@@ -2050,7 +2118,7 @@ export class VaultSync {
 		this.clearPendingRenames();
 		await this.flushReceiptPersistence();
 
-		const ws = this.provider.ws;
+		const ws = this.cloudflareProvider?.ws ?? null;
 
 		// Force terminate the WebSocket to skip the 30s close handshake timeout in "ws" library (Node/Electron).
 		// Safe because it's a targeted call on our own instance.
@@ -2064,6 +2132,8 @@ export class VaultSync {
 			this.provider.awareness.destroy();
 		}
 
+		// Hand the update forwarding back to the provider (sending what is waiting) before it is destroyed.
+		this.outgoingBatcher?.dispose();
 		this.provider.destroy();
 		await this.persistence.destroy();
 		this.ydoc.destroy();

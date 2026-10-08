@@ -111,6 +111,18 @@ export interface ReapResult {
 	conflicted: number;
 	/** Tombstoned and eligible, but beyond this pass's budget. */
 	remaining: number;
+	/**
+	 * Age in ms of the oldest tombstone that still holds a body and has a known
+	 * deletion time, or null when there is none.  With `nextEligibleAt` this
+	 * tells a report like "reaped: 0, withinGrace: all" apart from a real fault:
+	 * if even the oldest is younger than the grace period, nothing is wrong.
+	 */
+	oldestTombstoneAgeMs: number | null;
+	/**
+	 * Earliest time (ms since epoch) at which a tombstone that is held back only
+	 * by the grace period becomes eligible, or null when none is waiting.
+	 */
+	nextEligibleAt: number | null;
 }
 
 const EMPTY_RESULT: ReapResult = {
@@ -124,6 +136,8 @@ const EMPTY_RESULT: ReapResult = {
 	unknownAge: 0,
 	conflicted: 0,
 	remaining: 0,
+	oldestTombstoneAgeMs: null,
+	nextEligibleAt: null,
 };
 
 /**
@@ -164,7 +178,7 @@ function readDeletedAt(value: unknown): number | null {
 }
 
 /** Whether a metadata value is a tombstone, in either shape. */
-function isTombstone(value: unknown): boolean {
+export function isTombstone(value: unknown): boolean {
 	if (readDeletedAt(value) !== null) return true;
 	const nested = asMapLike(value);
 	if (nested) return nested.get("deleted") === true;
@@ -254,6 +268,18 @@ export function reapTombstonedBodies(doc: Y.Doc, options: ReapOptions = {}): Rea
 		if (blockedByReference) result.conflicted++;
 		if (ageUnknown) result.unknownAge++;
 		if (insideGrace) result.withinGrace++;
+		if (!ageUnknown) {
+			const age = now - deletedAt;
+			if (result.oldestTombstoneAgeMs === null || age > result.oldestTombstoneAgeMs) {
+				result.oldestTombstoneAgeMs = age;
+			}
+			if (insideGrace && !blockedByReference) {
+				const eligibleAt = deletedAt + graceMs;
+				if (result.nextEligibleAt === null || eligibleAt < result.nextEligibleAt) {
+					result.nextEligibleAt = eligibleAt;
+				}
+			}
+		}
 
 		if (!blockedByReference && !ageUnknown && !insideGrace) candidates.push(fileId);
 	});
@@ -274,4 +300,51 @@ export function reapTombstonedBodies(doc: Y.Doc, options: ReapOptions = {}): Rea
 	}, TOMBSTONE_REAP_ORIGIN);
 
 	return result;
+}
+
+/** Extra reaping time one load may spend on passes after the first, in ms. */
+export const TOMBSTONE_REAP_EXTRA_BUDGET_MS = 50;
+
+export interface ReapUntilDoneOptions extends ReapOptions {
+	/** Time allowed for passes after the first. Default `TOMBSTONE_REAP_EXTRA_BUDGET_MS`. */
+	extraBudgetMs?: number;
+	/** Injectable monotonic clock in ms, for tests. */
+	clock?: () => number;
+}
+
+/**
+ * One pass, then more passes while eligible bodies remain and the time budget
+ * lasts.
+ *
+ * A vault with more than `maxPerRun` eligible tombstones used to need one cold
+ * load per 500 (upstream issue #78: 1154 tombstones). Each pass is still its own
+ * transaction capped at `maxPerRun`, so no update gets larger. When nothing is
+ * left after the first pass (the usual case) this is exactly one pass.
+ *
+ * The result is the first pass's picture with the work of all passes added:
+ * `reaped` and `charsFreed` are sums, `remaining`, `oldestTombstoneAgeMs` and
+ * `nextEligibleAt` describe the state after the last pass.
+ */
+export function reapTombstonedBodiesUntilDone(doc: Y.Doc, options: ReapUntilDoneOptions = {}): ReapResult {
+	const clock = options.clock ?? (() => Date.now());
+	const budget = options.extraBudgetMs ?? TOMBSTONE_REAP_EXTRA_BUDGET_MS;
+	const first = reapTombstonedBodies(doc, options);
+	let last = first;
+	let reaped = first.reaped;
+	let charsFreed = first.charsFreed;
+	const startedAt = clock();
+	while (last.remaining > 0 && last.reaped > 0 && clock() - startedAt < budget) {
+		last = reapTombstonedBodies(doc, options);
+		reaped += last.reaped;
+		charsFreed += last.charsFreed;
+	}
+	if (last === first) return first;
+	return {
+		...first,
+		reaped,
+		charsFreed,
+		remaining: last.remaining,
+		oldestTombstoneAgeMs: last.oldestTombstoneAgeMs,
+		nextEligibleAt: last.nextEligibleAt,
+	};
 }

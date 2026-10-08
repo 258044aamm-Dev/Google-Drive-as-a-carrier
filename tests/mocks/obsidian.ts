@@ -54,6 +54,21 @@ export class Modal {
 	close(): void {}
 }
 
+/**
+ * Declarative settings sub-page (obsidian 1.13+). The mock only needs to
+ * exist as a base class: pages are never rendered in the test environment
+ * (no DOM), tests only check that the page factories construct them.
+ */
+export abstract class SettingPage {
+	// Obsidian assigns these on the real instance; unknown here on purpose.
+	rootEl: unknown = null;
+	titlebarEl: unknown = null;
+	containerEl: unknown = null;
+	title = "";
+	abstract display(): void;
+	hide(): void {}
+}
+
 /** Not called in observer/scheduling paths — stub for completeness. */
 export function arrayBufferToHex(buf: ArrayBuffer): string {
 	return Array.from(new Uint8Array(buf), (byte) =>

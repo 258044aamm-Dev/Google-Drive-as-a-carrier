@@ -6,7 +6,7 @@ import {
 	buildDocumentSummary,
 	type DocumentSummary,
 } from "./documentSummary";
-import { reapTombstonedBodies, type ReapResult } from "./tombstoneReaper";
+import { reapTombstonedBodiesUntilDone, type ReapResult } from "./tombstoneReaper";
 import { SqlDocStore } from "./sqlDocStore";
 import { readRoomMeta, type RoomMeta, writeRoomMeta } from "./roomMeta";
 import {
@@ -548,7 +548,7 @@ export class VaultSyncServer extends YServer<Env> {
 		if (!this.documentLoaded) return;
 
 		try {
-			const result = reapTombstonedBodies(this.document);
+			const result = reapTombstonedBodiesUntilDone(this.document);
 			this.lastTombstoneReap = result;
 			if (result.tombstones > 0) {
 				await this.recordTrace("tombstone-reap", { ...result });
