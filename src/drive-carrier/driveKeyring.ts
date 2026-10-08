@@ -75,32 +75,39 @@ export class DriveKeyring {
 		return this.pending;
 	}
 
-	async ensureMeta(folderId: string): Promise<void> {
+	async ensureMeta(folderId: string, check: () => void = () => undefined): Promise<void> {
+		check();
 		if (this.resolved) return;
 		const files = await this.api.listFiles(folderId);
+		check();
 		const metas = oldestFirst(files.filter((f) => f.name === META_NAME));
 		const passphrase = this.options.passphrase;
 		const first = metas[0];
 		if (!first) {
-			await this.createMeta(folderId, passphrase);
+			await this.createMeta(folderId, passphrase, check);
 			return;
 		}
-		await this.readMeta(first, passphrase);
+		await this.readMeta(first, passphrase, check);
 	}
 
-	private async createMeta(folderId: string, passphrase: string): Promise<void> {
+	private async createMeta(folderId: string, passphrase: string, check: () => void): Promise<void> {
+		check();
 		const body: Record<string, unknown> = { app: "yaos-drive", schema: DRIVE_LAYOUT_SCHEMA, vaultId: this.options.vaultId };
 		if (!passphrase) {
 			await this.api.createFile(folderId, META_NAME, new TextEncoder().encode(JSON.stringify(body)));
+			check();
 			this.resolved = true;
 			return;
 		}
 		const created = await createEncryption(passphrase, this.options.vaultId, this.options.kdfIterations ?? DEFAULT_KDF_ITERATIONS);
+		check();
 		body.encryption = created.meta;
 		const mine = await this.api.createFile(folderId, META_NAME, new TextEncoder().encode(JSON.stringify(body)));
+		check();
 		// Two devices may start an encrypted vault at the same moment, each with its own salt.
 		// Everyone adopts the oldest meta file; nothing has been written with a key yet.
 		const all = oldestFirst((await this.api.listFiles(folderId)).filter((f) => f.name === META_NAME));
+		check();
 		const chosen = all[0];
 		if (!chosen || chosen.id === mine.id) {
 			this.resolvedSealer = created.sealer;
@@ -108,11 +115,14 @@ export class DriveKeyring {
 			return;
 		}
 		await this.api.deleteFile(mine.id).catch(() => undefined);
-		await this.readMeta(chosen, passphrase);
+		check();
+		await this.readMeta(chosen, passphrase, check);
 	}
 
-	private async readMeta(file: DriveFileInfo, passphrase: string): Promise<void> {
+	private async readMeta(file: DriveFileInfo, passphrase: string, check: () => void): Promise<void> {
+		check();
 		const raw = new TextDecoder().decode(await this.api.readFile(file.id));
+		check();
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(raw);
@@ -140,7 +150,9 @@ export class DriveKeyring {
 			throw new FatalCarrierError("This vault is encrypted. Enter its encryption passphrase in the YAOS settings, then reload the plugin.");
 		}
 		try {
-			this.resolvedSealer = await unlockEncryption(passphrase, this.options.vaultId, meta);
+			const sealer = await unlockEncryption(passphrase, this.options.vaultId, meta);
+			check();
+			this.resolvedSealer = sealer;
 		} catch (err) {
 			if (err instanceof EncryptionError) throw new FatalCarrierError(`${err.message} Check the passphrase in the YAOS settings, then reload the plugin.`);
 			throw err instanceof Error ? err : new DriveError(500, String(err));

@@ -129,14 +129,20 @@ export class LanSocket {
 		}
 		for (const message of messages) {
 			if (this.closed) return;
-			switch (message.kind) {
-				case "text": this.handlers.onText(message.data); break;
-				case "binary": this.handlers.onBinary(message.data); break;
-				case "ping": this.write(OP_PONG, message.data); break;
-				case "pong": this.handlers.onPong?.(); break;
-				case "close":
-					this.close(message.code === 1005 ? 1000 : message.code, message.reason);
-					break;
+			try {
+				switch (message.kind) {
+					case "text": this.handlers.onText(message.data); break;
+					case "binary": this.handlers.onBinary(message.data); break;
+					case "ping": this.write(OP_PONG, message.data); break;
+					case "pong": this.handlers.onPong?.(); break;
+					case "close":
+						this.close(message.code === 1005 ? 1000 : message.code, message.reason);
+						break;
+				}
+			} catch {
+				// Malformed peer data must never escape the network callback.
+				this.close(1008, "invalid message");
+				return;
 			}
 		}
 	}

@@ -54,6 +54,7 @@ export function explainSetupError(err: unknown): string {
 export function explainHostedSignInError(err: unknown): string {
 	if (err instanceof HostedAuthError) {
 		const detail = ` (HTTP ${err.status}; ${err.responseKind}; ${err.code}).`;
+		if (err.code === "network") return "No connection to the sign-in service. Check your internet and try again.";
 		if (err.code === "invalid_grant") {
 			return "The sign-in service rejected the refresh token. Press Back to replace it with the complete value labelled Your Refresh Token on the sign-in page, or sign in there again. Try again resends the same token" + detail;
 		}

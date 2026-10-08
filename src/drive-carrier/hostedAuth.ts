@@ -51,6 +51,7 @@ export class HostedTokenManager {
 	private accessToken: string | null = null;
 	private expiresAt = 0;
 	private inflight: Promise<string> | null = null;
+	private rejection: HostedAuthError | null = null;
 	/** Set once the service says the token no longer works; the user must sign in again. */
 	revoked = false;
 
@@ -67,7 +68,7 @@ export class HostedTokenManager {
 
 	private get(forceRefresh: boolean): Promise<string> {
 		if (this.revoked) {
-			return Promise.reject(new GoogleAuthError("Your sign-in was revoked or has expired. Sign in again in the YAOS settings.", "invalid_grant", true));
+			return Promise.reject(this.rejection ?? new HostedAuthError("Your sign-in was revoked or has expired. Sign in again in the YAOS settings.", "invalid_grant", true, 401, "oauth-json"));
 		}
 		if (!forceRefresh && this.accessToken && this.now() < this.expiresAt - EXPIRY_MARGIN_MS) {
 			return Promise.resolve(this.accessToken);
@@ -97,7 +98,7 @@ export class HostedTokenManager {
 				// Not JSON (a proxy error page, for example): report by status.
 			}
 		} catch {
-			throw new GoogleAuthError("No connection to the sign-in service. Check your internet.", "network", false);
+			throw new HostedAuthError("No connection to the sign-in service. Check your internet.", "network", false, 0, "non-json");
 		}
 		const oauthCode = typeof json.error === "string" && OAUTH_ERROR_CODES.has(json.error) ? json.error : "";
 		if (oauthCode) responseKind = "oauth-json";
@@ -113,8 +114,9 @@ export class HostedTokenManager {
 		// configuration errors can also produce 400/401/403. Never echo raw bodies.
 		if ([400, 401, 403].includes(status) && oauthCode === "invalid_grant") {
 			this.revoked = true;
+			this.rejection = new HostedAuthError(`The sign-in service rejected the refresh token (HTTP ${status}).`, "invalid_grant", true, status, responseKind);
 			this.onRevoked();
-			throw new HostedAuthError(`The sign-in service rejected the refresh token (HTTP ${status}).`, "invalid_grant", true, status, responseKind);
+			throw this.rejection;
 		}
 		const code = [400, 401, 403].includes(status) && oauthCode ? oauthCode : `http_${status}`;
 		throw new HostedAuthError(`The sign-in service could not refresh access (HTTP ${status}; ${responseKind}).`, code, false, status, responseKind);

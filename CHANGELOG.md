@@ -8,6 +8,24 @@ Up to `2.1.1-drive.10` the version number (like `2.1.1-drive.3`) existed only in
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
+## 2.1.21 - 2026-10-08 - TEST RELEASE: restore and carrier safety fixes
+
+### Fixed
+- **Selective restore:** restoring an old `A.md` after it was renamed to `B.md` creates a separate note identity. The current `B.md` and its content stay unchanged. Ordinary undelete and legacy path-map restores remain supported.
+- **Drive completeness:** damaged/unreadable files block the synced state, complete receipts and compaction. The same file ID is retried so an in-place repair can recover. Local edits and additive repair uploads remain available.
+- **LAN authentication:** malformed/non-hex proofs fail closed without throwing from the constant-time comparison; message-handler errors are contained at the socket boundary.
+- **Drive lifecycle:** polling, explicit flush and explicit reconcile share bounded, session-fenced operations. Cancelled batches are requeued before another operation starts. Late replies cannot mutate the document, emit stale receipts, initialize an old keyring operation or continue compaction. Shutdown retains a detached, immutable best-effort upload of the final local batch.
+- **Restore-point integrity:** Drive and LAN verify the selected index's vault, compressed/raw lengths and SHA-256 before applying its update. This rejects substituting another valid encrypted snapshot's data. Missing integrity metadata is refused, and decompression is bounded by the validated gzip length.
+- **LAN vault isolation:** listing, daily snapshots, downloads and pruning are vault-scoped. New snapshot IDs include a vault namespace; matching-vault legacy IDs remain readable without moving or deleting them. Runtime backends are cached per vault.
+- **Hosted sign-in errors:** retain safe hosted error types through Drive REST calls, including refresh failures after initial validation. Network/service/configuration failures do not become misleading revoked-token messages.
+
+### Compatibility and verification
+- No CRDT schema bump, encryption-format change or Cloudflare server change. Shared selective restore intentionally changes across carriers; Drive/LAN restore safety now rejects missing hashes, inconsistent sizes or sizes outside the gzip length representation.
+- Added 18 regression cases in `branch-review-regressions` covering all seven reviewed findings, including real loopback TLS malformed-proof rejection, legacy restore points, cross-vault pruning and delayed Drive operations.
+- Production/server-release builds, plugin/tests/QA/server type checks, production/generated-artifact/no-any guards, all 133 regression suites and local Worker integration passed. Full lint has 0 errors and the same 28 existing warnings as the baseline.
+- Real Google-account/Android/Obsidian and multi-PC LAN smoke tests still require manual verification; fake-Drive tests and loopback TLS are not substitutes for those checks.
+- Intended publication: normal GitHub release, Latest, **TEST RELEASE** in the title, not prerelease.
+
 ## 2.1.20 - 2026-10-08 - TEST RELEASE: hosted Google Drive sign-in fixes
 
 ### Fixed

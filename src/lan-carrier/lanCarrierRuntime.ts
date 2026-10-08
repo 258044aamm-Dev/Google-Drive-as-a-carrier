@@ -55,7 +55,7 @@ export interface LanCarrier {
 export function createLanCarrier(deps: LanCarrierDeps): LanCarrier {
 	let transport: LanTransport | null = null;
 	let blobStore: LanBlobStore | null = null;
-	let snapshotBackend: LanSnapshotBackend | null = null;
+	const snapshotBackends = new Map<string, LanSnapshotBackend>();
 
 	return {
 		transportFactory: ({ doc, isLocalStoreOrigin }) => {
@@ -102,8 +102,12 @@ export function createLanCarrier(deps: LanCarrierDeps): LanCarrier {
 			return blobStore;
 		},
 		snapshotBackend(vaultId, getDoc) {
-			snapshotBackend ??= new LanSnapshotBackend(deps.filesFor("snapshots"), { vaultId, getDoc });
-			return snapshotBackend;
+			let backend = snapshotBackends.get(vaultId);
+			if (!backend) {
+				backend = new LanSnapshotBackend(deps.filesFor("snapshots"), { vaultId, getDoc });
+				snapshotBackends.set(vaultId, backend);
+			}
+			return backend;
 		},
 		applyManualPeers() {
 			transport?.hub.setManualPeers(lanManualPeerList(deps.getSettings()));

@@ -1,3 +1,4 @@
+import { HostedAuthError } from "./hostedAuth";
 import { DriveError, type DriveApi, type DriveFileInfo, type DriveFolderInfo } from "./driveApi";
 
 /** One HTTP request. The carrier never sees how it is sent (Obsidian's requestUrl, fetch, a test double). */
@@ -75,6 +76,7 @@ export class GoogleDriveRest implements DriveApi {
 		try {
 			token = await this.getAccessToken(forceRefresh);
 		} catch (err) {
+			if (err instanceof HostedAuthError) throw err;
 			throw new DriveError(401, `Could not get an access token: ${err instanceof Error ? err.message : String(err)}`);
 		}
 		try {

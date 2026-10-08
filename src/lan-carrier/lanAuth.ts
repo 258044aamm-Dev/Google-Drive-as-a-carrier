@@ -56,10 +56,9 @@ export function verifyProof(
 	serverFingerprint: string,
 	proof: unknown,
 ): boolean {
-	if (typeof proof !== "string") return false;
+	if (typeof proof !== "string" || !/^[0-9a-f]{64}$/.test(proof)) return false;
 	const expected = computeProof(key, role, nonceFrom, nonceTo, serverFingerprint);
-	if (proof.length !== expected.length) return false;
-	return loadLanNode().crypto.timingSafeEqual(Buffer.from(proof), Buffer.from(expected));
+	return loadLanNode().crypto.timingSafeEqual(Buffer.from(proof, "hex"), Buffer.from(expected, "hex"));
 }
 
 /** Counts failed sign-ins per remote address. */

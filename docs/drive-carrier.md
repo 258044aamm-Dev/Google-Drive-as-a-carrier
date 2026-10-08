@@ -239,3 +239,35 @@ Cloudflare settings are never removed. Only one carrier is active at a time.
 The automated tests use an in-memory fake of Drive. Real Drive behaviour (latency,
 listing under the `drive.file` scope, quotas) and real phones are not covered by
 them; use [drive-carrier-device-checklist.md](drive-carrier-device-checklist.md).
+
+## 2.1.21 safety notes
+
+- Restoring historical `A.md` when its identity now lives at `B.md` creates a
+  separate `A.md`; the current `B.md` is not renamed or overwritten. A genuine
+  deleted note can still reuse its tombstoned identity. This is shared restore
+  behavior, including Cloudflare and Local network.
+- An unreadable/corrupt Drive update keeps completeness false, even if a newer
+  snapshot exists: unknown corrupt bytes are not assumed to be covered. Local
+  edits and additive repair uploads still work, but complete receipts and
+  compaction wait. The same file is retried on later polls. Prefer restoring the
+  damaged file from a trusted backup; do not delete unknown data just to clear
+  the warning. If an owner deliberately removes it after recovery, the next
+  listing can clear the block. `unreadableFiles` and `lastError` report the state.
+- Poll, flush and reconcile are bounded by the operation timeout. Disconnect,
+  timeout and teardown fence their continuations and synchronously requeue a
+  detached pending batch. The HTTP implementation may not abort a request
+  already sent; it can still arrive at Drive, but its late result cannot change
+  the local document, send receipts or launch follow-on cleanup. Duplicate Yjs
+  update uploads are safe. Teardown's separate best-effort final upload uses
+  captured bytes only and never updates the ended transport. Local persistence
+  and next-start reconciliation remain the fallback if shutdown cannot send it.
+- Restore-point downloads validate vault, sizes and the raw update's SHA-256
+  against the selected index before applying data. Both Drive/LAN writers have
+  always emitted these integrity fields; missing/invalid hashes are now refused.
+  The gzip length declaration must agree with the index before allocating the
+  output buffer; invalid sizes or sizes beyond its 32-bit length representation
+  are refused. No smaller arbitrary vault-size cap is imposed. Live sync,
+  attachment limits and the encryption format are unchanged.
+- Hosted token refresh errors keep their safe configuration/network/rate-limit/
+  service classification throughout vault access. No raw response body or
+  credential is included in the new hosted error diagnostics.

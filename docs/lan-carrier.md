@@ -74,3 +74,21 @@ sync never touches.
 `lanFileStore`, `lanSettings`, `lanSettingsRows`, `lanCarrierRuntime`.
 
 Tests: `tests/client/lan-*.ts` and `tests/mocks/lanRig.ts`.
+
+## 2.1.21 restore and authentication safety
+
+- Authentication proofs must be exactly 64 lowercase hexadecimal characters.
+  Malformed Unicode or non-hex proofs are refused without throwing out of the
+  socket callback. Handler exceptions close that link, not the listening hub.
+- Restore-point list, daily scheduling, downloads and pruning consider only the
+  active vault ID. New IDs include a SHA-256 vault namespace, preventing two
+  vaults sharing the local directory from overwriting the same snapshot name.
+  Runtime backend caches are per vault. Old timestamp-only snapshots remain
+  available when their index matches that vault; nothing is automatically moved
+  or deleted to migrate storage. Foreign/missing-vault entries are not restored.
+- Before applying a restore point, its compressed/raw sizes and raw SHA-256 must
+  match the selected index. Missing hashes are refused. Decompression is bounded
+  by the validated 32-bit gzip length declaration, without a smaller arbitrary
+  vault-size cap.
+  Restoring a renamed historical note makes a separate identity rather than
+  modifying the current note at its new path.

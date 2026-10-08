@@ -1,5 +1,6 @@
 import * as Y from "yjs";
-import { gunzipSync, gzipSync } from "fflate";
+import { gzipSync } from "fflate";
+import { verifiedSnapshotDoc } from "../snapshots/snapshotIntegrity";
 import type { SnapshotBackend } from "../snapshots/snapshotBackend";
 import type { SnapshotIndex, SnapshotResult } from "../sync/snapshotClient";
 import { isFileMetaDeletedValue } from "../sync/fileMeta";
@@ -82,7 +83,7 @@ export class LanSnapshotBackend implements SnapshotBackend {
 			if (!bytes) continue;
 			const index = parseIndex(decoder.decode(bytes));
 			const id = name.slice(INDEX_PREFIX.length, name.length - INDEX_SUFFIX.length);
-			if (index && index.snapshotId === id) out.push(index);
+			if (index && index.snapshotId === id && index.vaultId === this.options.vaultId) out.push(index);
 		}
 		return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
 	}
@@ -112,7 +113,10 @@ export class LanSnapshotBackend implements SnapshotBackend {
 			}
 		});
 		const now = this.clock();
-		const id = `${String(now).padStart(13, "0")}-${this.random()}`;
+		// Namespace new IDs by vault without moving or deleting legacy files.
+		// Old timestamp-only IDs remain readable when their index names this vault.
+		const namespace = await sha256Hex(new TextEncoder().encode(this.options.vaultId));
+		const id = `${String(now).padStart(13, "0")}-${this.random()}-${namespace}`;
 		const schema = sys.get("schemaVersion");
 		const index: SnapshotIndex = {
 			snapshotId: id,
@@ -165,10 +169,14 @@ export class LanSnapshotBackend implements SnapshotBackend {
 	}
 
 	async download(snapshot: SnapshotIndex): Promise<Y.Doc> {
+		if (snapshot.vaultId !== this.options.vaultId) throw new Error("Snapshot belongs to a different vault");
 		const data = await this.files.read(`${DATA_PREFIX}${snapshot.snapshotId}${DATA_SUFFIX}`);
 		if (!data) throw new Error("Snapshot download failed (404)");
-		const doc = new Y.Doc();
-		Y.applyUpdate(doc, gunzipSync(data));
-		return doc;
+		const indexBytes = await this.files.read(`${INDEX_PREFIX}${snapshot.snapshotId}${INDEX_SUFFIX}`);
+		const stored = indexBytes ? parseIndex(new TextDecoder().decode(indexBytes)) : null;
+		if (!stored || stored.vaultId !== this.options.vaultId || stored.snapshotId !== snapshot.snapshotId) {
+			throw new Error("Snapshot index is missing or belongs to a different vault");
+		}
+		return await verifiedSnapshotDoc(data, snapshot, this.options.vaultId);
 	}
 }

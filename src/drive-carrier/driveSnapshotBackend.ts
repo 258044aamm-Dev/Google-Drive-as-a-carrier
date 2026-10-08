@@ -1,5 +1,6 @@
 import * as Y from "yjs";
-import { gunzipSync, gzipSync } from "fflate";
+import { gzipSync } from "fflate";
+import { verifiedSnapshotDoc } from "../snapshots/snapshotIntegrity";
 import type { SnapshotBackend } from "../snapshots/snapshotBackend";
 import type { SnapshotIndex, SnapshotResult } from "../sync/snapshotClient";
 import type { DriveApi, DriveFileInfo } from "./driveApi";
@@ -262,6 +263,7 @@ export class DriveSnapshotBackend implements SnapshotBackend {
 	}
 
 	async download(snapshot: SnapshotIndex): Promise<Y.Doc> {
+		if (snapshot.vaultId !== this.options.vaultId) throw new Error("Snapshot belongs to a different vault");
 		const folderId = await this.folder();
 		const files = await this.api.listFiles(folderId);
 		const file = oldestFirst(files.filter((f) => f.name === dataName(snapshot.snapshotId)))[0];
@@ -281,8 +283,6 @@ export class DriveSnapshotBackend implements SnapshotBackend {
 				throw err;
 			}
 		}
-		const doc = new Y.Doc();
-		Y.applyUpdate(doc, gunzipSync(payload));
-		return doc;
+		return await verifiedSnapshotDoc(payload, snapshot, this.options.vaultId);
 	}
 }
