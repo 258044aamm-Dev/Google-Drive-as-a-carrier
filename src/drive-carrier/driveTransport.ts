@@ -60,10 +60,29 @@ export interface DriveTransportOptions {
 	/** F6: how many snapshots to keep when compacting (2-10). Default 4; 2 is 2.1.22 exactly. */
 	keepSnapshots?: number;
 	/**
-	 * F6: read the snapshot back and check it against the document before any
-	 * segment is deleted. Default true (safety); false skips the readback.
+	 * F6: read a replacement file back from Drive and check it before any file it
+	 * covers is deleted. Default true (safety); false skips the readback and
+	 * restores 2.1.22's byte behaviour for metered connections.
 	 */
 	verifyBeforePrune?: boolean;
+	/**
+	 * F1: how compaction works. "adaptive" (default) merges the change files into
+	 * one and only writes a full snapshot when it is actually smaller; "legacy" is
+	 * 2.1.22: a full snapshot at the first trigger, whatever it costs. See
+	 * DEFAULT_COMPACTION_MODE.
+	 */
+	compaction?: CompactionMode;
+	/**
+	 * F1: the largest snapshot compaction will write, in bytes. Above it the
+	 * change files are merged instead. Default 64 MB.
+	 */
+	snapshotMaxBytes?: number;
+	/**
+	 * F7: how many bytes of applied update payloads may be held in memory.
+	 * Default 32 MB; the oldest are dropped first and re-read from Drive if a
+	 * rebuild ever needs them.
+	 */
+	maxRetainedPayloadBytes?: number;
 	/** Largest wait after repeated failures. */
 	maxBackoffMs?: number;
 	/** One whole cycle (upload, poll, repair, compact) may take this long before it counts as a failure. Default 5 minutes (a large first snapshot on a slow link must still fit). */
@@ -115,8 +134,14 @@ interface KnownFile {
 	uploadedAt?: number;
 	kind: "segment" | "snapshot";
 	state: FileState;
-	/** The Yjs update the file holds. Kept for applied files so Drive's content can be recomputed. */
+	/**
+	 * The Yjs update the file holds, while it is retained (F7: applied payloads
+	 * may be dropped once a later file covers them, or when the memory bound is
+	 * reached; a rebuild then re-reads them from Drive).
+	 */
 	payload?: Uint8Array;
+	/** The state vector of `payload`, computed once when a coverage test needs it. */
+	sv?: Uint8Array;
 }
 
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
@@ -142,6 +167,20 @@ export function clampKeepSnapshots(value: number | undefined): number {
 	if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_KEEP_SNAPSHOTS;
 	return Math.min(KEEP_SNAPSHOTS_MAX, Math.max(KEEP_SNAPSHOTS_MIN, Math.floor(value)));
 }
+/** F1: the two compaction modes. `adaptive` is the default; `legacy` is 2.1.22. */
+export type CompactionMode = "adaptive" | "legacy";
+export const DEFAULT_COMPACTION_MODE: CompactionMode = "adaptive";
+/** F1: a snapshot is only written when it is at most this share of the change files it replaces. */
+const SNAPSHOT_WORTH_RATIO = 0.6;
+
+function stateVectorCovers(cover: Uint8Array, part: Uint8Array): boolean {
+	const whole = Y.decodeStateVector(cover);
+	for (const [client, clock] of Y.decodeStateVector(part)) {
+		if ((whole.get(client) ?? 0) < clock) return false;
+	}
+	return true;
+}
+
 const MAX_PENDING_PARTS = 200;
 /** How many times one cycle re-reads Drive while the picture is incomplete. */
 const MAX_COMPLETE_POLLS = 3;
@@ -209,6 +248,8 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	private remoteDirty = false;
 	/** A file disappeared between listing and reading in the last poll; wait one cycle before repairing. */
 	private pollSawGone = false;
+	/** F7: bytes of retained update payloads, so the memory bound can be enforced. */
+	private retainedBytes = 0;
 	private pending: Uint8Array[] = [];
 	private counter = 0;
 	/** Number of files this session has stored on Drive. Reported as the "persistence generation" in receipts. */
@@ -264,10 +305,15 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			batchMs: options.batchMs ?? 2000,
 			cycleTimeoutMs: options.cycleTimeoutMs ?? 300_000,
 			listingGraceMs: options.listingGraceMs ?? 60_000,
-			compactSegmentCount: options.compactSegmentCount ?? 50,
+			// F1: adaptive compaction bounds the file count, so its cap is higher;
+			// "legacy" keeps 2.1.22's 50 exactly.
+			compactSegmentCount: options.compactSegmentCount ?? (options.compaction === "legacy" ? 50 : 200),
 			compactSegmentBytes: options.compactSegmentBytes ?? 1_000_000,
 			keepSnapshots: clampKeepSnapshots(options.keepSnapshots),
 			verifyBeforePrune: options.verifyBeforePrune ?? true,
+			compaction: options.compaction === "legacy" ? "legacy" : "adaptive",
+			snapshotMaxBytes: options.snapshotMaxBytes ?? 64 * 1024 * 1024,
+			maxRetainedPayloadBytes: options.maxRetainedPayloadBytes ?? 32 * 1024 * 1024,
 			reconcileIntervalMs: options.reconcileIntervalMs ?? 5 * 60_000,
 			maxBackoffMs: options.maxBackoffMs ?? 60_000,
 			autoTimers: options.autoTimers ?? true,
@@ -406,6 +452,16 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	private isComplete(): boolean {
 		if (this.pollSawGone || this.unreadableFiles > 0) return false;
 		return this.doc.store.pendingStructs === null && this.doc.store.pendingDs === null;
+	}
+
+	/** F7: how many bytes of applied update payloads are held in memory right now. */
+	get retainedPayloadBytes(): number {
+		return this.retainedBytes;
+	}
+
+	/** Number of files this device knows about on Drive (applied, damaged or gone). */
+	get knownFiles(): number {
+		return this.known.size;
 	}
 
 	/** Number of files on Drive this device cannot read (damaged, wrong key, plaintext in an encrypted vault). */
@@ -760,7 +816,7 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		}
 	}
 
-	private async uploadUpdate(kind: FileKind, update: Uint8Array, op: DriveOperation): Promise<DriveFileInfo> {
+	private async uploadUpdate(kind: FileKind, update: Uint8Array, op: DriveOperation, nameOverride?: string): Promise<DriveFileInfo> {
 		// F2: the single choke point for every Drive write (segments from edits,
 		// repairs, compaction snapshots). Nothing is written under a schema this
 		// device cannot honour, whichever path (cycle, flush, reconcile) asked.
@@ -774,9 +830,9 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		const data = await op.wait(() => encodeFile(kind, body, sealer !== null));
 		op.check();
 		const now = this.opts.now();
-		const name = kind === KIND_SEGMENT
+		const name = nameOverride ?? (kind === KIND_SEGMENT
 			? segmentName(now, this.opts.deviceId, this.counter++)
-			: snapshotName(now, this.opts.deviceId, this.counter++);
+			: snapshotName(now, this.opts.deviceId, this.counter++));
 		const info = await op.wait(() => this.api.createFile(folderId, name, data));
 		op.check();
 		if (info.size !== data.length) {
@@ -785,16 +841,16 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			op.check();
 			throw new DriveError(502, `Upload of ${name} was stored with a different size (${info.size} != ${data.length})`);
 		}
-		this.known.set(name, {
+		this.setKnown(name, {
 			id: info.id,
 			size: info.size,
 			created: info.createdTime,
 			uploadedAt: now,
 			kind: kind === KIND_SEGMENT ? "segment" : "snapshot",
 			state: "applied",
-			payload: update,
-		});
+		}, update);
 		this.mergeRemote(update);
+		this.enforcePayloadBound();
 		this.storedGeneration++;
 		this.emitReceipt();
 		return info;
@@ -830,14 +886,87 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		}
 	}
 
-	private rebuildRemoteIfDirty(): void {
+	/** Remember a file, keeping the payload account (F7) straight. */
+	private setKnown(name: string, file: KnownFile, payload?: Uint8Array): void {
+		const previous = this.known.get(name);
+		if (previous?.payload) this.retainedBytes -= previous.payload.length;
+		if (payload !== undefined) {
+			file.payload = payload;
+			this.retainedBytes += payload.length;
+		}
+		this.known.set(name, file);
+	}
+
+	/** Forget a file and its payload. */
+	private forget(name: string): void {
+		const previous = this.known.get(name);
+		if (previous?.payload) this.retainedBytes -= previous.payload.length;
+		this.known.delete(name);
+	}
+
+	/**
+	 * F7: drop payloads that a later applied file already covers. A snapshot holds
+	 * the whole document at the moment it was written, so every file whose state
+	 * it contains is no longer needed to rebuild what Drive holds.
+	 */
+	private dropCoveredPayloads(exceptName: string): void {
+		const cover = this.known.get(exceptName);
+		if (!cover?.payload) return;
+		const coverSv = (cover.sv ??= Y.encodeStateVectorFromUpdate(cover.payload));
+		for (const [name, file] of this.known.entries()) {
+			if (name === exceptName || !file.payload) continue;
+			const sv = (file.sv ??= Y.encodeStateVectorFromUpdate(file.payload));
+			if (!stateVectorCovers(coverSv, sv)) continue;
+			this.retainedBytes -= file.payload.length;
+			delete file.payload;
+			delete file.sv;
+		}
+	}
+
+	/** F7: the hard bound. Oldest by Drive's creation time goes first. */
+	private enforcePayloadBound(): void {
+		const cap = this.opts.maxRetainedPayloadBytes;
+		if (this.retainedBytes <= cap) return;
+		const order = Array.from(this.known.entries())
+			.filter(([, f]) => f.payload !== undefined)
+			.sort((a, b) => ((a[1].created ?? 0) - (b[1].created ?? 0)) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+		for (const [, file] of order) {
+			if (this.retainedBytes <= cap) break;
+			if (!file.payload) continue;
+			this.retainedBytes -= file.payload.length;
+			delete file.payload;
+			delete file.sv;
+		}
+	}
+
+	/**
+	 * Recompute what Drive holds. Payloads still in memory are merged; payloads
+	 * F7 dropped are read back from Drive (only files the last listing showed are
+	 * asked for, so this is bounded by one listing). A file that is gone or
+	 * unreadable contributes nothing, exactly as before.
+	 */
+	private async rebuildRemoteIfDirty(op: DriveOperation): Promise<void> {
 		if (!this.remoteDirty) return;
 		const parts: Uint8Array[] = [];
-		for (const f of this.known.values()) {
-			if (f.state === "applied" && f.payload) parts.push(f.payload);
+		for (const [name, file] of Array.from(this.known.entries())) {
+			if (file.state !== "applied") continue;
+			if (file.payload) {
+				parts.push(file.payload);
+				continue;
+			}
+			const info: DriveFileInfo = { id: file.id, name, size: file.size, createdTime: file.created ?? 0 };
+			const result = await this.download(info, op);
+			op.check();
+			if (result.state === "ok") {
+				this.setKnown(name, { ...file, kind: result.kind === KIND_SEGMENT ? "segment" : "snapshot", state: "applied" }, result.payload);
+				parts.push(result.payload);
+			} else {
+				this.opts.log(`drive carrier: ${name} could not be read back for the rebuild (${result.state})`);
+			}
 		}
 		this.remoteState = parts.length > 0 ? Y.mergeUpdates(parts) : null;
 		this.remoteDirty = false;
+		this.enforcePayloadBound();
 	}
 
 	private mergeRemote(update: Uint8Array): void {
@@ -883,7 +1012,7 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			// A listing can lag behind an upload. Keep our own fresh uploads for a short
 			// grace period instead of concluding they vanished (which would re-upload them).
 			if (file.uploadedAt !== undefined && this.opts.now() - file.uploadedAt < this.opts.listingGraceMs) continue;
-			this.known.delete(name);
+			this.forget(name);
 			if (file.state === "applied") this.remoteDirty = true;
 		}
 	}
@@ -925,26 +1054,26 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		op.check();
 		if (result.state === "gone") {
 			// Compacted away between listing and reading; a snapshot covers it.
-			this.known.set(name, { id: info.id, size: info.size, kind: nameKind, state: "gone" });
+			this.setKnown(name, { id: info.id, size: info.size, kind: nameKind, state: "gone" });
 			this.pollSawGone = true;
 			return;
 		}
 		if (result.state === "corrupt") {
 			this.opts.log(`drive carrier: skipping damaged file ${name}: ${result.reason}`);
-			this.known.set(name, { id: info.id, size: info.size, kind: nameKind, state: "corrupt" });
+			this.setKnown(name, { id: info.id, size: info.size, kind: nameKind, state: "corrupt" });
 			return;
 		}
 		const expected = nameKind === "segment" ? KIND_SEGMENT : KIND_SNAPSHOT;
 		if (result.kind !== expected) {
 			this.opts.log(`drive carrier: skipping ${name}: kind does not match its name`);
-			this.known.set(name, { id: info.id, size: info.size, kind: nameKind, state: "corrupt" });
+			this.setKnown(name, { id: info.id, size: info.size, kind: nameKind, state: "corrupt" });
 			return;
 		}
 		try {
 			Y.applyUpdate(this.doc, result.payload, this);
 		} catch (err) {
 			this.opts.log(`drive carrier: skipping ${name}: update could not be applied (${err instanceof Error ? err.message : String(err)})`);
-			this.known.set(name, { id: info.id, size: info.size, kind: nameKind, state: "corrupt" });
+			this.setKnown(name, { id: info.id, size: info.size, kind: nameKind, state: "corrupt" });
 			return;
 		}
 		op.check();
@@ -954,7 +1083,11 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		} catch {
 			// The update applied but could not be merged into the cache; reconcile will cover it.
 		}
-		this.known.set(name, { id: info.id, size: info.size, created: info.createdTime, kind: nameKind, state: "applied", payload: result.payload });
+		this.setKnown(name, { id: info.id, size: info.size, created: info.createdTime, kind: nameKind, state: "applied" }, result.payload);
+		// F7: a snapshot covers everything written before it, so those payloads are
+		// no longer needed to rebuild what Drive holds.
+		if (nameKind === "snapshot") this.dropCoveredPayloads(name);
+		this.enforcePayloadBound();
 	}
 
 	// ---------------------------------------------------------------------
@@ -978,7 +1111,8 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		// unreadable remote files. Keep it available even while completeness is blocked.
 		if (this.pollSawGone) return;
 		this.lastReconcileAt = this.opts.now();
-		this.rebuildRemoteIfDirty();
+		await this.rebuildRemoteIfDirty(op);
+		op.check();
 		const remote = new Y.Doc();
 		try {
 			if (this.remoteState) Y.applyUpdate(remote, this.remoteState);
@@ -1006,7 +1140,11 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 				bytes += f.size;
 			}
 		}
-		if (count <= this.opts.compactSegmentCount && bytes <= this.opts.compactSegmentBytes) return;
+		// F1: the file count is the cap in both modes. 2.1.22 ("legacy") also let
+		// the byte total bring compaction forward; adaptively the byte total is the
+		// floor that decides whether a snapshot is worth writing at all.
+		const bytesTrigger = this.opts.compaction === "legacy" && bytes > this.opts.compactSegmentBytes;
+		if (count <= this.opts.compactSegmentCount && !bytesTrigger) return;
 		if (this.opts.now() - this.lastCompactAt < MIN_COMPACT_GAP_MS) return;
 		this.lastCompactAt = this.opts.now();
 		await this.compactLocked(op);
@@ -1014,21 +1152,117 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	}
 
 	/**
-	 * Write a full snapshot, then delete the segments it covers and surplus old snapshots.
-	 * Only files this device has applied are ever deleted. If another device compacts at the
-	 * same moment both snapshots are valid and the extra deletes are harmless.
+	 * Replace the segments that have piled up with fewer files. Only files this
+	 * device has applied are ever deleted, and only once their replacement has
+	 * been read back and checked (F6). If another device compacts at the same
+	 * moment both replacements are valid and the extra deletes are harmless.
 	 */
 	private async compactLocked(op: DriveOperation): Promise<void> {
 		const covered: [string, KnownFile][] = [];
+		let liveBytes = 0;
 		for (const entry of this.known.entries()) {
-			if (entry[1].kind === "segment" && entry[1].state === "applied") covered.push(entry);
+			if (entry[1].kind === "segment" && entry[1].state === "applied") {
+				covered.push(entry);
+				liveBytes += entry[1].size;
+			}
 		}
-		if (covered.length === 0) return;
-		// The state vector is taken before the encode and compared after the read
-		// back: it says exactly which document the snapshot must hold, and stays
-		// right when the user keeps editing while the upload and readback run.
+		if (covered.length < 2) return;
+		covered.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+		// The state vector is taken before the encode so it is always a subset of
+		// what the snapshot holds, however the user keeps editing while this runs.
 		const vector = Y.encodeStateVector(this.doc);
-		const written = await this.uploadUpdate(KIND_SNAPSHOT, Y.encodeStateAsUpdate(this.doc), op);
+		const raw = Y.encodeStateAsUpdate(this.doc);
+		if (this.opts.compaction === "legacy") {
+			await this.snapshotLocked(raw, vector, covered, op);
+			return;
+		}
+		// F1 tier B: write a full snapshot only when it is really smaller than the
+		// change files it would replace (and not larger than the ceiling).
+		const worthIt = liveBytes >= this.opts.compactSegmentBytes
+			&& raw.length <= Math.floor(SNAPSHOT_WORTH_RATIO * liveBytes)
+			&& raw.length <= this.opts.snapshotMaxBytes;
+		if (worthIt) {
+			await this.snapshotLocked(raw, vector, covered, op);
+			return;
+		}
+		await this.mergeSegmentsLocked(covered, liveBytes, op);
+	}
+
+	/**
+	 * F1 tier A: merge change files into one. The bytes written are about the sum
+	 * of the inputs, not the size of the document, so this is the cheap tier.
+	 *
+	 * The *smallest* files are merged, and at least a quarter of them, so the
+	 * bytes written per trigger are paid back by the files it removes. A file
+	 * that is already large stays out of the way: folding it in would write the
+	 * same bytes again for nothing, and doing that every trigger would make the
+	 * cost grow with everything ever stored. Files whose payload F7 dropped are
+	 * read back first; a file that cannot be read is left in place, so nothing is
+	 * ever lost to a merge.
+	 */
+	private async mergeSegmentsLocked(covered: [string, KnownFile][], liveBytes: number, op: DriveOperation): Promise<void> {
+		const excess = covered.length - this.opts.compactSegmentCount;
+		const take = Math.max(2, Math.ceil(covered.length / 4), excess + 1);
+		const chosen = covered
+			.slice()
+			.sort((a, b) => (a[1].size - b[1].size) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+			.slice(0, take);
+		const parts: Uint8Array[] = [];
+		const ready: [string, KnownFile][] = [];
+		for (const [name, file] of chosen) {
+			let payload = file.payload;
+			if (!payload) {
+				const result = await this.download({ id: file.id, name, size: file.size, createdTime: file.created ?? 0 }, op);
+				op.check();
+				if (result.state !== "ok" || result.kind !== KIND_SEGMENT) {
+					this.opts.log(`drive carrier: not merging ${name}: ${result.state === "ok" ? "it is not a change file" : result.state}`);
+					continue;
+				}
+				payload = result.payload;
+				this.setKnown(name, { ...file, state: "applied" }, payload);
+			}
+			parts.push(payload);
+			ready.push([name, file]);
+		}
+		if (ready.length < 2) return;
+		// Merge in chunks of 50, so one very full folder cannot allocate everything at once.
+		let merged = parts[0] as Uint8Array;
+		for (let i = 1; i < parts.length; i += 50) {
+			merged = Y.mergeUpdates([merged, ...parts.slice(i, i + 50)]);
+		}
+		// The merged file carries the newest stamp of its inputs, so reading files
+		// in name order still ends with the file that holds all of their content.
+		const stamp = ready.reduce((newest, [name]) => Math.max(newest, DriveTransport.stampOf(name)), 0);
+		const written = await this.uploadUpdate(KIND_SEGMENT, merged, op, segmentName(stamp, this.opts.deviceId, this.counter++));
+		op.check();
+		if (this.opts.verifyBeforePrune) {
+			const verdict = await this.verifyReplacement(written, merged, op);
+			op.check();
+			if (verdict !== true) {
+				const detail = typeof verdict === "string" ? verdict : "the merged file did not read back";
+				this.opts.log(`drive carrier: keeping every change file because ${detail}`);
+				this.reportNotice(
+					"merge-verify-failed",
+					`YAOS: a merged sync file could not be read back from Google Drive (${detail}), so no older sync file was removed. Sync keeps working; the plugin will try again.`,
+				);
+				return;
+			}
+		}
+		this.opts.log(`drive carrier: merged ${ready.length} change file(s) (${liveBytes} bytes live) into one`);
+		for (const [name, file] of ready) {
+			const deleted = await this.deleteQuiet(file.id, op);
+			op.check();
+			if (deleted) this.forget(name);
+		}
+		await this.finishCompaction(op);
+	}
+
+	/** Tier B (and every compaction in "legacy"): replace the covered segments with a full snapshot. */
+	private async snapshotLocked(raw: Uint8Array, vector: Uint8Array, covered: [string, KnownFile][], op: DriveOperation): Promise<void> {
+		// `vector` says exactly which document the snapshot must hold; it is
+		// compared after the read back, so it stays right when the user keeps
+		// editing while the upload and readback run.
+		const written = await this.uploadUpdate(KIND_SNAPSHOT, raw, op);
 		op.check();
 		if (this.opts.verifyBeforePrune) {
 			const verdict = await this.verifySnapshot(written, vector, op);
@@ -1048,7 +1282,7 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		for (const [name, file] of covered) {
 			const deleted = await this.deleteQuiet(file.id, op);
 			op.check();
-			if (deleted) this.known.delete(name);
+			if (deleted) this.forget(name);
 		}
 		// Keep the newest snapshots by Drive's own creation time. A device name carries
 		// the creator's clock, and a clock running ahead used to outrank every later
@@ -1061,12 +1295,41 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		for (const [name, file] of snaps.slice(0, Math.max(0, snaps.length - keepOthers))) {
 			const deleted = await this.deleteQuiet(file.id, op);
 			op.check();
-			if (deleted) this.known.delete(name);
+			if (deleted) this.forget(name);
 		}
-		// Files left Drive by this device's own hand: the picture of Drive must be rebuilt
-		// from what remains, or the repair pass and the "saved" receipt would read stale data.
+		await this.finishCompaction(op);
+	}
+
+	/** After a compaction deleted files: the picture of Drive must be rebuilt from what remains. */
+	private async finishCompaction(op: DriveOperation): Promise<void> {
+		// Files left Drive by this device's own hand, or the repair pass and the
+		// "saved" receipt would read stale data.
 		this.remoteDirty = true;
-		this.rebuildRemoteIfDirty();
+		await this.rebuildRemoteIfDirty(op);
+		op.check();
+	}
+
+	/** The timestamp inside `seg-<13 digits>-…`, 0 when the name is not a segment name. */
+	private static stampOf(name: string): number {
+		const match = /^seg-(\d{13})-/.exec(name);
+		return match ? Number(match[1]) : 0;
+	}
+
+	/**
+	 * F1/F6: read a merged change file back and compare it byte for byte with
+	 * what was sent, before the files it replaces are deleted.
+	 */
+	private async verifyReplacement(file: DriveFileInfo, expected: Uint8Array, op: DriveOperation): Promise<true | string> {
+		let result: Awaited<ReturnType<DriveTransport["download"]>>;
+		try {
+			result = await this.download(file, op);
+		} catch (err) {
+			op.check();
+			return `the merged file could not be read back (${err instanceof Error ? err.message : String(err)})`;
+		}
+		if (result.state !== "ok") return result.state === "corrupt" ? `the merged file reads back damaged (${result.reason})` : "the merged file is no longer on Drive";
+		if (!sameBytes(result.payload, expected)) return "the merged file does not hold what was written";
+		return true;
 	}
 
 	/**

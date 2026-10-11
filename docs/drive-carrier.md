@@ -95,7 +95,10 @@ Coming back to the front or regaining the network polls immediately, and edits
 waiting to upload are sent when the window goes away. A flat 3-second poll would
 be 200 requests in ten idle minutes; this takes about 38 (about 5 hidden on
 desktop, none on a phone). A request counter is built in (`requestStats()`), and
-the tests assert these budgets.
+the tests assert these budgets. It counts payload bytes as well as calls:
+`bytesWritten` (what the carrier stored on Drive) and `bytesRead` (what it
+downloaded), each also per operation, so the cost of a vault can be read off
+instead of guessed.
 
 Because phones suspend apps, changes made on another device while the phone app
 is in the background arrive when you open it again.
@@ -124,6 +127,37 @@ Cloudflare vaults have the same setting (Advanced, once a server is set up). A
 live connection has nothing to poll, so there it only controls how long your
 edits are gathered before being sent together: Normal sends each edit at once
 (default), Gentle 2 s, Minimal 5 s, Custom 0 to 30 s.
+
+### What tidying the sync folder costs (2.1.23)
+
+Every device writes its edits as small `seg-*.ydu` files and reads the ones the
+others wrote. When the folder has gathered many of them, the carrier tidies up.
+Until 2.1.22 that meant uploading a copy of the **whole document** as soon as the
+change files passed 1 MB, so an 8 MB vault wrote 8 MB again after a few lines of
+typing (measured: 28× the bytes you changed). Since 2.1.23 it works in two tiers:
+
+- **Merge (the common case).** The *smallest* change files are merged into one
+  with `Y.mergeUpdates`, and only enough of them to bring the file count back to
+  its cap. The bytes written are about the bytes those files held, so a normal
+  vault writes about what you changed, plus the copy of it that gets merged. A
+  file that is already large stays out of the way: rewriting it would store the
+  same bytes again for nothing.
+- **A full copy only when it pays.** A full snapshot is written only when it is
+  at most 60% of the live change files (and at most 64 MB, so one huge vault
+  cannot start a giant upload). That is the case worth a copy: a lot of text was
+  typed and then deleted, so the change files hold far more than the document
+  does.
+
+Measured on the probe that found the problem: 8.29 MB document with 0.30 MB of
+edits wrote ×1.0 (was ×28.2), the same with 3.00 MB of edits wrote ×1.0 (was
+×10.5), and 250 edits past the tidy-up cap wrote ×1.41. A "Compact changes"
+setting on the Drive settings screen restores the old behaviour exactly
+(*Take full copies*, i.e. 2.1.22) for anyone who prefers it.
+
+Memory is bounded the same way: the carrier keeps the payload of a change file
+only while it is needed to rebuild what Drive holds (a later full copy drops the
+ones it covers, and the oldest are dropped past 32 MB). A payload it dropped is
+simply read back from Drive if a rebuild ever needs it, so nothing is lost.
 
 ## Setup wizard (recommended)
 
@@ -202,7 +236,9 @@ Cloudflare screens and names are unchanged.
 
 - **Key check before any upload.** The folder is used only after the key check (`meta.json`) succeeded; an encrypted vault never receives plaintext, even after a failed start-up call.
 - **A restore point is read back before anything is deleted.** After a compaction writes the full snapshot, the carrier downloads it, checks its checksum and compares the document state it holds with the state that was encoded; only then are the sync files it covers removed. The uploaded file's size is still verified as before. If the read-back fails or the file cannot be read, *every* file is kept, the reason is logged once, and the next compaction (at least 30 s later) tries again. **Restore points kept** (in the Google Drive settings page, 2 to 10, default 4) decides how many full copies one compaction keeps; 2 is exactly what 2.1.22 kept. **Check a restore point before deleting** turns the read-back off for metered connections, which restores 2.1.22's behaviour exactly.
-- **Snapshots are pruned by Drive's creation time**, not by file name, so a wrong device clock cannot delete the newest data. Wrong clocks still affect the note-collision tie-break and snapshot day names (same as with Cloudflare).
+- **Snapshots are pruned by Drive's creation time**, not by file name, so a wrong device clock cannot delete the newest data.
+- **Tidying the folder is bounded (F1).** Compaction merges the smallest change files instead of re-uploading the document; a full copy is only written when it is at most 60% of the live change files and at most 64 MB. Measured cost of the old behaviour was ×28 the bytes you changed; the new default is about ×1. "Compact changes → Take full copies" restores 2.1.22 exactly. The request meter reports bytes as well as calls (`requestStats()`: `bytesWritten`, `bytesRead`).
+- **Memory is bounded (F7).** A change file's payload is kept only while it is needed to rebuild the picture of what Drive holds, and never more than 32 MB in total (oldest dropped first). Evicted payloads are re-read from Drive when a rebuild needs them, so convergence is unchanged. Wrong clocks still affect the note-collision tie-break and snapshot day names (same as with Cloudflare).
 - **Not "synced" while incomplete.** If a file is missing or an update cannot be applied, the carrier stays connected, keeps uploading your edits and does not claim to be synced. Check `unreadableFiles` in diagnostics for damaged files.
 - **Time limit.** One sync cycle may take five minutes; a stuck request then counts as a failure and is retried with back-off.
 - **Deletes (all carriers).** A remote delete is applied when the disk file still matches the last synced content, even if an edit arrived in the same poll. A file you really edited is kept (and the note is revived with your text). A delete removes every active id for the path. A note you deleted while YAOS was off is recorded as deleted at the next full reconcile when its remembered content hash equals the shared text (otherwise it is written back as before).

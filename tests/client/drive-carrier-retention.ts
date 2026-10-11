@@ -44,6 +44,10 @@ function dev(drive: FakeDrive, name: string, start: number, extra: Partial<Drive
 		now: () => clock.now,
 		log: (m) => logs.push(m),
 		onNotice: (m) => notices.push(m),
+		// This suite is about restore points (snapshots). F1's adaptive default
+		// would merge small folders instead, so the snapshot tier is pinned here;
+		// drive-carrier-compaction-cost covers the adaptive default.
+		compaction: "legacy",
 		...extra,
 	});
 	return { name, doc, text: doc.getText("t"), t, clock, logs, notices };

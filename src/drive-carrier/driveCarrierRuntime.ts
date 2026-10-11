@@ -5,7 +5,7 @@ import type { SyncTransportFactory } from "../sync/transport";
 import { DriveBlobStore, type AttachmentAudit } from "./driveBlobStore";
 import { DriveSnapshotBackend } from "./driveSnapshotBackend";
 import { DriveKeyring } from "./driveKeyring";
-import { DriveTransport } from "./driveTransport";
+import { DEFAULT_COMPACTION_MODE, DriveTransport } from "./driveTransport";
 import { MeteredDriveApi, type RequestStats } from "./requestMeter";
 import { browserActivity, type ActivitySource } from "./activity";
 import { GoogleDriveRest, type DriveHttp } from "./googleDriveRest";
@@ -133,6 +133,7 @@ export function createDriveCarrier(deps: DriveCarrierRuntimeDeps): DriveCarrier 
 				keyring: keyringFor(vaultId),
 				keepSnapshots: deps.getSettings().driveKeepSnapshots,
 				verifyBeforePrune: deps.getSettings().driveVerifyBeforePrune !== false,
+				compaction: deps.getSettings().driveCompaction === "legacy" ? "legacy" : DEFAULT_COMPACTION_MODE,
 				onFatal: deps.onFatal,
 				onNotice: deps.onNotice,
 				folderIdentity: deps.folderIdentity,

@@ -6,6 +6,12 @@ export interface RequestStats {
 	/** Requests in the last 60 seconds. */
 	lastMinute: number;
 	byOperation: Record<string, number>;
+	/** F1: payload bytes stored on Drive (`createFile`) since the carrier started. */
+	bytesWritten: number;
+	/** F1: payload bytes downloaded (`readFile`) since the carrier started. */
+	bytesRead: number;
+	/** The same two figures per operation. Requests without a payload stay at zero. */
+	bytesByOperation: Record<string, { written: number; read: number }>;
 }
 
 /**
@@ -16,6 +22,9 @@ export class MeteredDriveApi implements DriveApi {
 	private total = 0;
 	private recent: number[] = [];
 	private readonly ops: Record<string, number> = {};
+	private written = 0;
+	private read = 0;
+	private readonly bytes: Record<string, { written: number; read: number }> = {};
 
 	constructor(
 		private readonly inner: DriveApi,
@@ -25,13 +34,39 @@ export class MeteredDriveApi implements DriveApi {
 	stats(): RequestStats {
 		const cutoff = this.now() - 60_000;
 		this.recent = this.recent.filter((t) => t > cutoff);
-		return { total: this.total, lastMinute: this.recent.length, byOperation: { ...this.ops } };
+		const bytesByOperation: Record<string, { written: number; read: number }> = {};
+		for (const [op, entry] of Object.entries(this.bytes)) bytesByOperation[op] = { ...entry };
+		return {
+			total: this.total,
+			lastMinute: this.recent.length,
+			byOperation: { ...this.ops },
+			bytesWritten: this.written,
+			bytesRead: this.read,
+			bytesByOperation,
+		};
 	}
 
 	private count(op: string): void {
 		this.total++;
 		this.ops[op] = (this.ops[op] ?? 0) + 1;
 		this.recent.push(this.now());
+	}
+
+	/**
+	 * Count payload bytes. Only the file body counts: names, listings and error
+	 * bodies are not part of the figure, and a request that failed counts no
+	 * bytes, so `bytesWritten` says what was actually stored.
+	 */
+	private countBytes(op: string, bytes: { written?: number; read?: number }): void {
+		const entry = (this.bytes[op] ??= { written: 0, read: 0 });
+		if (bytes.written) {
+			entry.written += bytes.written;
+			this.written += bytes.written;
+		}
+		if (bytes.read) {
+			entry.read += bytes.read;
+			this.read += bytes.read;
+		}
 	}
 
 	findFolders(name: string): Promise<DriveFolderInfo[]> {
@@ -49,14 +84,18 @@ export class MeteredDriveApi implements DriveApi {
 		return this.inner.listFiles(folderId);
 	}
 
-	createFile(folderId: string, name: string, data: Uint8Array): Promise<DriveFileInfo> {
+	async createFile(folderId: string, name: string, data: Uint8Array): Promise<DriveFileInfo> {
 		this.count("createFile");
-		return this.inner.createFile(folderId, name, data);
+		const info = await this.inner.createFile(folderId, name, data);
+		this.countBytes("createFile", { written: data.length });
+		return info;
 	}
 
-	readFile(fileId: string): Promise<Uint8Array> {
+	async readFile(fileId: string): Promise<Uint8Array> {
 		this.count("readFile");
-		return this.inner.readFile(fileId);
+		const bytes = await this.inner.readFile(fileId);
+		this.countBytes("readFile", { read: bytes.length });
+		return bytes;
 	}
 
 	getFile(fileId: string): Promise<DriveFileInfo> {

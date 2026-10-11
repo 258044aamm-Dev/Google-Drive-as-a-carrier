@@ -22,11 +22,13 @@ import { lanLayout, type LanSettingsHost } from "../lan-carrier/lanSettingsRows"
 import { applyLanSetupCode, readLanSetting, writeLanSetting, type LanSettingKey } from "../lan-carrier/lanSettings";
 import { checkHostedToken, normalizeHostedToken } from "../drive-carrier/wizard/validate";
 import {
+	DEFAULT_COMPACTION_MODE,
 	DEFAULT_KEEP_SNAPSHOTS,
 	KEEP_SNAPSHOTS_MAX,
 	KEEP_SNAPSHOTS_MIN,
 	clampKeepSnapshots,
 } from "../drive-carrier/driveTransport";
+import type { DriveCompactionMode } from "../drive-carrier/carrierSettings";
 import { isDetailedStatusShown, isStatusIconShown } from "../status/simpleStatus";
 import { CUSTOM_LIMITS, currentSyncPace, isSyncPaceProfile, resolveCloudflareBatchMs, resolveDrivePace, type SyncPaceCustom, type SyncPaceProfile } from "./syncPace";
 import { PairDeviceModal } from "./PairDeviceModal";
@@ -66,6 +68,7 @@ type DeclarativeSettingKey =
 	| "drivePaceFullCheck"
 	| "driveKeepSnapshots"
 	| "driveVerifyBeforePrune"
+	| "driveCompaction"
 	| "cloudflarePaceBatch"
 	| "showStatusIcon"
 	| "detailedStatus"
@@ -138,6 +141,10 @@ const DRIVE_PACE_KEYS = {
 	drivePaceBatch: "driveBatchSec",
 	drivePaceFullCheck: "driveFullCheckMin",
 } as const satisfies Record<string, keyof SyncPaceCustom>;
+const DRIVE_COMPACTION_OPTIONS: Record<DriveCompactionMode, string> = {
+	adaptive: "Merge changed files (recommended)",
+	legacy: "Take full copies (like earlier versions)",
+};
 const EXTERNAL_EDIT_OPTIONS: Record<ExternalEditPolicy, string> = {
 	always: "Always import",
 	"closed-only": "Only when file is closed",
@@ -692,9 +699,15 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "Check a restore point before deleting",
-						desc: "After writing a full restore point, YAOS reads it back and checks it against the document before removing the older sync files it covers. One extra download per compaction. Off skips the check, as earlier versions did.",
+						desc: "After writing a full restore point or a merged change file, YAOS reads it back and checks it before removing the older sync files it covers. One extra download per compaction. Off skips the check, as earlier versions did.",
 						visible: () => isDriveCarrier(this.host.settings),
 						control: { type: "toggle", key: "driveVerifyBeforePrune" },
+					},
+					{
+						name: "Compact changes",
+						desc: "How the sync folder is tidied when it fills up. Merge (recommended): the change files are merged into one, so Drive receives about as many bytes as you changed. Full copies (like earlier versions): every compaction uploads a copy of the whole vault, which can write many times your edits. Both keep the same restore points.",
+						visible: () => isDriveCarrier(this.host.settings),
+						control: { type: "dropdown", key: "driveCompaction", options: DRIVE_COMPACTION_OPTIONS },
 					},
 				],
 			},
@@ -872,6 +885,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			case "driveClientId": return this.host.settings.driveClientId ?? "";
 			case "driveFolderId": return this.host.settings.driveFolderId ?? "";
 			case "driveKeepSnapshots": return clampKeepSnapshots(this.host.settings.driveKeepSnapshots);
+			case "driveCompaction": return this.host.settings.driveCompaction === "legacy" ? "legacy" : DEFAULT_COMPACTION_MODE;
 			case "driveVerifyBeforePrune": return this.host.settings.driveVerifyBeforePrune !== false;
 			case "driveClientSecret": return this.host.settings.driveClientSecret ?? "";
 			case "driveHostedToken": return this.host.settings.driveRefreshToken ?? "";
@@ -1086,6 +1100,12 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 				await this.host.updateSettings((settings) => { settings.driveVerifyBeforePrune = expectBooleanValue(key, value); }, "settings:drive-verify-before-prune");
 				this.update();
 				return;
+			case "driveCompaction": {
+				if (value !== "adaptive" && value !== "legacy") throw new TypeError(`${key} must be "adaptive" or "legacy"`);
+				await this.host.updateSettings((settings) => { settings.driveCompaction = value; }, "settings:drive-compaction");
+				this.update();
+				return;
+			}
 			case "driveFolderId": {
 				// F5: an emptied field makes the carrier look the folder up by name
 				// again; a wrong id is harmless (it is checked before use, and the

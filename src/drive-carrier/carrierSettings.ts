@@ -7,6 +7,9 @@
  */
 export type CarrierKind = "cloudflare" | "drive" | "lan";
 
+/** F1: the two compaction modes. */
+export type DriveCompactionMode = "adaptive" | "legacy";
+
 export interface DriveCarrierSettings {
 	carrier?: CarrierKind;
 	driveClientId?: string;
@@ -38,6 +41,13 @@ export interface DriveCarrierSettings {
 	 * as 2.1.22 did (for metered connections).
 	 */
 	driveVerifyBeforePrune?: boolean;
+	/**
+	 * F1: how compaction works. Absent = "adaptive": the change files are merged
+	 * into one and a full snapshot is only written when it is really smaller.
+	 * "legacy" is 2.1.22: a full snapshot at the first trigger. See
+	 * DEFAULT_COMPACTION_MODE.
+	 */
+	driveCompaction?: DriveCompactionMode;
 	/**
 	 * F5: the Drive folder this vault lives in, remembered after the first sync so
 	 * the carrier follows the folder id instead of searching by name. Absent on a

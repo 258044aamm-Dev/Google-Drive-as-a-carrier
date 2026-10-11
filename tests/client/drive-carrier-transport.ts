@@ -345,7 +345,9 @@ s.section("Test 14: a new device with its own content joins an existing vault");
 s.section("Test 15: compaction writes a snapshot, deletes covered segments, a fresh device still loads everything");
 {
 	const drive = new FakeDrive();
-	const opts = { compactSegmentCount: 3 };
+	// This test is about snapshots: pin the tier F1 calls "legacy" (a full copy at
+	// the first trigger). The adaptive default is covered by drive-carrier-compaction-cost.
+	const opts = { compactSegmentCount: 3, compaction: "legacy" as const };
 	const a = makeDevice(drive, "A", opts);
 	const b = makeDevice(drive, "B", opts);
 	await a.transport.connect();

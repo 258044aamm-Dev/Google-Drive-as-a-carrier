@@ -288,13 +288,22 @@ s.section("Test 6: the meter");
 	let st = meter.stats();
 	s.check(st.total === 6 && st.lastMinute === 6, "every call is counted");
 	s.check(st.byOperation.createFile === 1 && st.byOperation.listFiles === 1 && st.byOperation.deleteFile === 1, "per operation");
+	s.check(st.bytesWritten === 1 && st.bytesRead === 1, `payload bytes are counted per direction (${st.bytesWritten} written, ${st.bytesRead} read)`);
+	s.check(st.bytesByOperation.createFile?.written === 1 && st.bytesByOperation.readFile?.read === 1, "and per operation");
+	s.check(Object.keys(st.bytesByOperation).length === 2, "requests without a payload do not appear in the byte table");
 	clock.t += 61 * SEC;
 	await meter.listFiles(folder.id);
 	st = meter.stats();
 	s.check(st.total === 7 && st.lastMinute === 1, "the last-minute figure forgets old requests");
+	s.check(st.bytesWritten === 1 && st.bytesRead === 1, "and the byte figures keep their totals");
 	drive.offline = true;
 	const err = await meter.listFiles(folder.id).catch((e: unknown) => e);
 	s.check(err instanceof Error && meter.stats().total === 8, "failed requests are counted too");
+	const before = meter.stats().bytesRead;
+	drive.offline = false;
+	await meter.createFile(folder.id, "b", new Uint8Array(4096));
+	s.check(meter.stats().bytesWritten === 4096 + 1, "a large upload is counted in full");
+	s.check(meter.stats().bytesRead === before, "and writing does not touch the read figure");
 }
 
 s.section("Test 7: the carrier applies the production policy");

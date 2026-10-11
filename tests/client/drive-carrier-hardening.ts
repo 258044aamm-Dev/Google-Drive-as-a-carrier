@@ -72,8 +72,10 @@ s.section("F1b: the first meta.json write failing does not leave an unusable vau
 s.section("F2: a device whose clock runs ahead cannot make snapshot pruning delete the newest data");
 {
 	const drive = new FakeDrive();
-	const A = dev(drive, "A", 1_700_000_000_000, { compactSegmentCount: 2, reconcileIntervalMs: 0 });
-	const B = dev(drive, "B", 2_200_000_000_000, { compactSegmentCount: 2, reconcileIntervalMs: 0 });
+	// Snapshots are this test's subject: F1's adaptive default would merge instead,
+	// so ask for the tier that always writes one.
+	const A = dev(drive, "A", 1_700_000_000_000, { compactSegmentCount: 2, reconcileIntervalMs: 0, compaction: "legacy" });
+	const B = dev(drive, "B", 2_200_000_000_000, { compactSegmentCount: 2, reconcileIntervalMs: 0, compaction: "legacy" });
 	await A.t.connect(); await B.t.connect();
 	for (let i = 0; i < 4; i++) { B.text.insert(B.text.length, `b${i} `); await cycle(B); }
 	await cycle(B, 40_000);
@@ -88,7 +90,7 @@ s.section("F2: a device whose clock runs ahead cannot make snapshot pruning dele
 	const before = names(drive).join(",");
 	await A.t.reconcile();
 	s.check(names(drive).join(",") === before, "after its own deletions A needs no repair upload: its picture of Drive is right");
-	const C2 = dev(drive, "C2", 1_700_000_200_000);
+	const C2 = dev(drive, "C2", 1_700_000_200_000, { compaction: "legacy" });
 	await C2.t.connect(); await cycle(C2);
 	s.check(sv(C2.doc) === sv(A.doc), "Drive holds everything A holds (receipts rely on it)");
 	C2.t.destroy();

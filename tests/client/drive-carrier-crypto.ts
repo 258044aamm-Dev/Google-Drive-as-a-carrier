@@ -293,6 +293,8 @@ s.section("Test 7: compaction and a new device joining from an encrypted snapsho
 	const a = device(drive, "A", "pw");
 	const small = new DriveTransport(a.doc, drive.client(), {
 		vaultId: VAULT, deviceId: "A2", autoTimers: false, now: () => clock, compactSegmentCount: 3,
+		// A snapshot is what this test is about; F1's adaptive mode would merge instead.
+		compaction: "legacy",
 		keyring: new DriveKeyring(drive.client(), { vaultId: VAULT, passphrase: "pw", kdfIterations: ITER }),
 	});
 	a.transport.destroy();

@@ -418,7 +418,7 @@ s.section("Test 10: the beginner view of the Drive screen");
 		const defs = own.tab.getSettingDefinitions();
 		s.check(groupHeadings(defs).includes("Storage on Google Drive"), `the storage group is on the Drive screen (${groupHeadings(defs).join()})`);
 		const rows = groupItems(defs, "Storage on Google Drive");
-		s.check(rows.join("|") === "Restore points kept|Check a restore point before deleting", `the group holds the two rows (${rows.join("|")})`);
+		s.check(rows.join("|") === "Restore points kept|Check a restore point before deleting|Compact changes", `the group holds its three rows (${rows.join("|")})`);
 		s.check(own.tab.getControlValue("driveKeepSnapshots") === 4, "an unset retention reads as the default 4");
 		s.check(own.tab.getControlValue("driveVerifyBeforePrune") === true, "the read-back is on unless it is turned off");
 		await own.tab.setControlValue("driveKeepSnapshots", 2);
@@ -430,6 +430,12 @@ s.section("Test 10: the beginner view of the Drive screen");
 		s.check(refused === 3, "1, 11 and a fraction are all refused");
 		await own.tab.setControlValue("driveVerifyBeforePrune", false);
 		s.check(own.tab.getControlValue("driveVerifyBeforePrune") === false, "the read-back can be turned off for metered connections");
+		s.check(own.tab.getControlValue("driveCompaction") === "adaptive", "compaction defaults to merging (F1)");
+		await own.tab.setControlValue("driveCompaction", "legacy");
+		s.check(own.tab.getControlValue("driveCompaction") === "legacy", "and 'legacy' (a full copy every time, like 2.1.22) can be chosen");
+		let badCompaction = 0;
+		try { await own.tab.setControlValue("driveCompaction", "turbo"); } catch { badCompaction++; }
+		s.check(badCompaction === 1, "anything else is refused");
 		const row = flatten(defs).find((d) => d.control?.key === "driveKeepSnapshots");
 		const validate = row?.control && "validate" in row.control
 			? (row.control.validate as ((value: number) => string | undefined) | undefined)
@@ -447,7 +453,7 @@ s.section("Test 10: the beginner view of the Drive screen");
 
 	// Every control is still reachable, so nothing was lost.
 	const keys = flatten(signedOut.tab.getSettingDefinitions()).map((d) => d.control?.key);
-	for (const key of ["vaultId", "driveClientId", "driveClientSecret", "driveFolderId", "driveKeepSnapshots", "driveVerifyBeforePrune", "driveEncryptionPassphrase", "excludePatterns", "maxFileSizeKB", "enableAttachmentSync"]) {
+	for (const key of ["vaultId", "driveClientId", "driveClientSecret", "driveFolderId", "driveKeepSnapshots", "driveVerifyBeforePrune", "driveCompaction", "driveEncryptionPassphrase", "excludePatterns", "maxFileSizeKB", "enableAttachmentSync"]) {
 		s.check(keys.includes(key), `the control "${key}" is still reachable`);
 	}
 	s.check(keys.filter((k) => k === "vaultId").length === 1, "and the vault ID control exists exactly once");
