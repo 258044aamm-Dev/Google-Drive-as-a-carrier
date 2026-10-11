@@ -19,6 +19,7 @@ import { DriveTransport } from "../../src/drive-carrier/driveTransport";
 import { KIND_SEGMENT, encodeFile } from "../../src/drive-carrier/fileFormat";
 import { SCHEMA_VERSION, schemaAdmissionError } from "../../src/sync/schema";
 import { FakeDrive } from "../mocks/fakeDrive";
+import { generateLanKey, makeNode, waitFor, type RigNode } from "../mocks/lanRig";
 import { suite } from "../harness.ts";
 
 const s = suite("schema-admission-carriers");
@@ -196,6 +197,47 @@ s.section("Test 5: a real Drive folder written by a newer plugin is refused, the
 	s.check(fatal.length === 1, "only the refused transport told the owner");
 	transport.destroy();
 	fresh.destroy();
+}
+
+// ---------------------------------------------------------------------------
+s.section("Test 6: the Local network carrier refuses the same vault (real loopback links)");
+{
+	const key = generateLanKey();
+	const newerSchema = `CRDT schema version ${SCHEMA_VERSION + 1} is newer than this plugin supports (v${SCHEMA_VERSION}). Update the plugin or risk data corruption.`;
+
+	const refused = makeNode("sa-lan-a", key, { guardSchema: () => newerSchema });
+	await refused.transport.connect();
+	s.check(refused.transport.wsconnected === false, "refused vault: not connected");
+	s.check(refused.transport.synced === false, "refused vault: not synced");
+	s.check(refused.port() === 0, "refused vault: the link server never started");
+	s.check(
+		refused.problems.length === 1 && refused.problems[0] === newerSchema,
+		`refused vault: the owner is told once (${refused.problems.length})`,
+	);
+	// A second start attempt stays quiet: one notice per transport, not one per retry.
+	await refused.transport.connect();
+	s.check(refused.problems.length === 1, "a repeated start does not repeat the notice");
+	refused.stop();
+
+	// Two nodes whose guard admits the vault both sync over a real loopback link,
+	// so the guard only ever refuses the vault it is told to refuse.
+	let viewedSchema: number | null = null; // null: no version marker, admitted
+	const a = makeNode("sa-lan-c", key, { guardSchema: () => schemaAdmissionError(viewedSchema) });
+	const b = makeNode("sa-lan-d", key, { guardSchema: () => schemaAdmissionError(viewedSchema) });
+	a.doc.getText("t").insert(0, "hello over the LAN. ");
+	await a.transport.connect();
+	await b.transport.connect();
+	b.linkTo(a);
+	s.check(await waitFor(() => a.transport.synced && b.transport.synced), "readable vault: both devices report synced");
+	s.check(b.doc.getText("t").toString() === "hello over the LAN. ", "readable vault: the note travelled");
+	s.check(a.problems.length === 0 && b.problems.length === 0, "readable vault: no problem reported");
+	a.doc.getText("t").insert(0, "a edit, ");
+	s.check(
+		await waitFor(() => b.doc.getText("t").toString().includes("a edit")),
+		"readable vault: edits keep flowing",
+	);
+	a.stop();
+	b.stop();
 }
 
 await s.done();
