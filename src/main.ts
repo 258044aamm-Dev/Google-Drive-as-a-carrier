@@ -634,6 +634,17 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				return true;
 			},
 		});
+		// F6: a dry run for attachments on Drive. It only counts and lists what
+		// nothing refers to; there is no delete path behind this command.
+		this.addCommand({
+			id: "drive-find-unused-attachments",
+			name: "Find unused attachments on Google Drive (dry run)",
+			checkCallback: (checking: boolean) => {
+				if (!isDriveCarrier(this.settings) || !this.settings.vaultId) return false;
+				if (!checking) void this.findUnusedDriveAttachments();
+				return true;
+			},
+		});
 
 		this.statusBarEl = this.addStatusBarItem();
 		this.setupHeaderStatusIcons();
@@ -2379,6 +2390,74 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				}
 			},
 		}).open();
+	}
+
+	/**
+	 * F6: what the attachment dry run found. The reference set is everything the
+	 * live document mentions (pathToBlob, blobMeta) together with what every
+	 * retained restore point mentions, so a blob only an old snapshot needs is
+	 * never called unused. Nothing is deleted; the names go to the log, the
+	 * counts to a notice.
+	 */
+	async findUnusedDriveAttachments(): Promise<void> {
+		const carrier = this.getDriveCarrier();
+		const vaultSync = this.vaultSync;
+		if (!carrier || !vaultSync) {
+			new Notice("The Google Drive carrier is not running.", 8000);
+			return;
+		}
+		const hashes = new Set<string>();
+		vaultSync.pathToBlob.forEach((ref, path) => {
+			if (typeof path === "string" && typeof ref?.hash === "string") hashes.add(ref.hash);
+		});
+		vaultSync.blobMeta.forEach((_meta, hash) => {
+			if (typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash)) hashes.add(hash);
+		});
+		let restorePoints = 0;
+		try {
+			// The snapshots folder is created if this vault has none yet (the same
+			// thing the carrier does when it writes its first restore point).
+			for (const index of await carrier.snapshotBackend(this.settings.vaultId, () => vaultSync.ydoc).list()) {
+				restorePoints++;
+				for (const hash of index.referencedBlobHashes) {
+					if (typeof hash === "string") hashes.add(hash);
+				}
+			}
+		} catch (err) {
+			this.log(`Drive attachment audit: restore points could not be listed (${err instanceof Error ? err.message : String(err)})`);
+		}
+		try {
+			const audit = await carrier.auditAttachments(this.settings.vaultId, Array.from(hashes));
+			const mb = (bytes: number): string => `${(bytes / 1_048_576).toFixed(2)} MB`;
+			this.trace("trace", "drive-attachment-audit", {
+				stored: audit.stored,
+				storedBytes: audit.storedBytes,
+				referenced: audit.referenced,
+				missing: audit.missing,
+				restorePoints,
+				referencedHashes: hashes.size,
+				unused: audit.unused.length,
+				unusedBytes: audit.unusedBytes,
+			});
+			this.log(
+				`Drive attachment audit: ${audit.stored} file(s), ${mb(audit.storedBytes)}; ${audit.referenced} referenced, `
+				+ `${audit.missing} referenced but missing, ${audit.unused.length} unused (${mb(audit.unusedBytes)}). Nothing was deleted.`,
+			);
+			if (audit.unused.length > 0) {
+				const sample = audit.unused.slice(0, 20).map((entry) => `${entry.name} (${entry.size} bytes)`).join(", ");
+				this.log(`Drive attachment audit: unused files: ${sample}${audit.unused.length > 20 ? `, and ${audit.unused.length - 20} more` : ""}`);
+			}
+			new Notice(
+				`YAOS: Google Drive holds ${audit.stored} attachment file(s) (${mb(audit.storedBytes)}). ${audit.unused.length} of them (${mb(audit.unusedBytes)}) are not referenced by this vault or its ${restorePoints} restore point(s). Nothing was deleted; this was a dry run.`,
+				20000,
+			);
+			if (audit.missing > 0) {
+				new Notice(`YAOS: ${audit.missing} referenced attachment(s) are not on Drive. They are re-uploaded when the file is synced again.`, 15000);
+			}
+		} catch (err) {
+			this.log(`Drive attachment audit failed: ${err instanceof Error ? err.message : String(err)}`);
+			new Notice(`YAOS: the attachment check could not finish: ${err instanceof Error ? err.message : String(err)}`, 15000);
+		}
 	}
 
 	private async applyDriveWizardSettings(patch: WizardSettingsPatch): Promise<void> {

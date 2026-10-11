@@ -233,9 +233,19 @@ export class DriveSnapshotBackend implements SnapshotBackend {
 		let failed = 0;
 		let unpinnedSeen = 0;
 		const dataByName = new Map(files.map((f) => [f.name, f] as const));
-		for (const { file, index } of entries) {
+		for (let at = 0; at < entries.length; at++) {
+			const { file, index } = entries[at] as { file: DriveFileInfo; index: SnapshotIndex };
 			if (index.pinned === true || unpinnedSeen < KEEP_UNPINNED_SNAPSHOTS) {
 				if (index.pinned !== true) unpinnedSeen++;
+				kept++;
+				continue;
+			}
+			// F6: a restore point is only dropped while a newer readable one stays.
+			// (The list is newest-first and the keep window is above 0, so this can
+			// only bite when a listing lost its newer indexes - in which case the
+			// safe answer is to keep what is left.)
+			const newerReadable = entries.slice(0, at).some((e) => e.index.createdAt > index.createdAt);
+			if (!newerReadable) {
 				kept++;
 				continue;
 			}

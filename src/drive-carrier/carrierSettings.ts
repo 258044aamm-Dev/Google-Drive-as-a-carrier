@@ -28,6 +28,17 @@ export interface DriveCarrierSettings {
 	 */
 	driveEncryptionPassphrase?: string;
 	/**
+	 * F6: how many restore points (snapshots) one compaction keeps, 2 to 10.
+	 * Absent = 4. 2 is exactly what 2.1.22 kept; more costs Drive space, nothing else.
+	 */
+	driveKeepSnapshots?: number;
+	/**
+	 * F6: read a new restore point back from Drive and check it before deleting the
+	 * sync files it covers. Absent = on. Set to false to skip the readback exactly
+	 * as 2.1.22 did (for metered connections).
+	 */
+	driveVerifyBeforePrune?: boolean;
+	/**
 	 * F5: the Drive folder this vault lives in, remembered after the first sync so
 	 * the carrier follows the folder id instead of searching by name. Absent on a
 	 * device that has not synced yet, or after the field is cleared: the folder is

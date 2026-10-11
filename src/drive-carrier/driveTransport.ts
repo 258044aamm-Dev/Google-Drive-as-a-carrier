@@ -57,6 +57,13 @@ export interface DriveTransportOptions {
 	compactSegmentBytes?: number;
 	/** Check that Drive holds everything we hold, this often (ms). 0 disables. */
 	reconcileIntervalMs?: number;
+	/** F6: how many snapshots to keep when compacting (2-10). Default 4; 2 is 2.1.22 exactly. */
+	keepSnapshots?: number;
+	/**
+	 * F6: read the snapshot back and check it against the document before any
+	 * segment is deleted. Default true (safety); false skips the readback.
+	 */
+	verifyBeforePrune?: boolean;
 	/** Largest wait after repeated failures. */
 	maxBackoffMs?: number;
 	/** One whole cycle (upload, poll, repair, compact) may take this long before it counts as a failure. Default 5 minutes (a large first snapshot on a slow link must still fit). */
@@ -112,10 +119,29 @@ interface KnownFile {
 	payload?: Uint8Array;
 }
 
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+	if (a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+	return true;
+}
+
 const MIN_BACKOFF_MS = 1000;
 const FAILURES_BEFORE_OFFLINE = 2;
 const DOWNLOAD_PARALLELISM = 4;
-const KEEP_SNAPSHOTS = 2;
+/**
+ * F6: how many snapshots are kept by one compaction. Four is the default: the
+ * snapshot just written, plus three older ones to fall back on, at the cost of
+ * one extra document-sized file per compaction. 2 restores 2.1.22 exactly.
+ */
+export const DEFAULT_KEEP_SNAPSHOTS = 4;
+export const KEEP_SNAPSHOTS_MIN = 2;
+export const KEEP_SNAPSHOTS_MAX = 10;
+
+/** Clamp the `driveKeepSnapshots` setting into its allowed range. */
+export function clampKeepSnapshots(value: number | undefined): number {
+	if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_KEEP_SNAPSHOTS;
+	return Math.min(KEEP_SNAPSHOTS_MAX, Math.max(KEEP_SNAPSHOTS_MIN, Math.floor(value)));
+}
 const MAX_PENDING_PARTS = 200;
 /** How many times one cycle re-reads Drive while the picture is incomplete. */
 const MAX_COMPLETE_POLLS = 3;
@@ -240,6 +266,8 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			listingGraceMs: options.listingGraceMs ?? 60_000,
 			compactSegmentCount: options.compactSegmentCount ?? 50,
 			compactSegmentBytes: options.compactSegmentBytes ?? 1_000_000,
+			keepSnapshots: clampKeepSnapshots(options.keepSnapshots),
+			verifyBeforePrune: options.verifyBeforePrune ?? true,
 			reconcileIntervalMs: options.reconcileIntervalMs ?? 5 * 60_000,
 			maxBackoffMs: options.maxBackoffMs ?? 60_000,
 			autoTimers: options.autoTimers ?? true,
@@ -996,8 +1024,27 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			if (entry[1].kind === "segment" && entry[1].state === "applied") covered.push(entry);
 		}
 		if (covered.length === 0) return;
+		// The state vector is taken before the encode and compared after the read
+		// back: it says exactly which document the snapshot must hold, and stays
+		// right when the user keeps editing while the upload and readback run.
+		const vector = Y.encodeStateVector(this.doc);
 		const written = await this.uploadUpdate(KIND_SNAPSHOT, Y.encodeStateAsUpdate(this.doc), op);
 		op.check();
+		if (this.opts.verifyBeforePrune) {
+			const verdict = await this.verifySnapshot(written, vector, op);
+			op.check();
+			if (verdict !== true) {
+				// Nothing is deleted on an unproven snapshot: the segments stay, and
+				// the next compaction cycle (bounded by MIN_COMPACT_GAP_MS) tries again.
+				const detail = typeof verdict === "string" ? verdict : "the snapshot did not read back";
+				this.opts.log(`drive carrier: keeping every segment because ${detail}`);
+				this.reportNotice(
+					"snapshot-verify-failed",
+					`YAOS: a full restore point could not be read back from Google Drive (${detail}), so no older sync files were removed. Sync keeps working; the plugin will try again.`,
+				);
+				return;
+			}
+		}
 		for (const [name, file] of covered) {
 			const deleted = await this.deleteQuiet(file.id, op);
 			op.check();
@@ -1010,7 +1057,7 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			.filter(([, f]) => f.kind === "snapshot" && f.state === "applied" && f.id !== written.id)
 			.sort((a, b) => ((a[1].created ?? 0) - (b[1].created ?? 0)) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
 		// The snapshot just written always stays; keep the newest of the others beside it.
-		const keepOthers = Math.max(0, KEEP_SNAPSHOTS - 1);
+		const keepOthers = Math.max(0, this.opts.keepSnapshots - 1);
 		for (const [name, file] of snaps.slice(0, Math.max(0, snaps.length - keepOthers))) {
 			const deleted = await this.deleteQuiet(file.id, op);
 			op.check();
@@ -1020,6 +1067,35 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		// from what remains, or the repair pass and the "saved" receipt would read stale data.
 		this.remoteDirty = true;
 		this.rebuildRemoteIfDirty();
+	}
+
+	/**
+	 * F6: read the snapshot just written and prove it holds the document state
+	 * that was encoded, before any segment it covers is deleted. Returns true
+	 * when the snapshot is proven, or the reason as a string when it is not.
+	 */
+	private async verifySnapshot(file: DriveFileInfo, vector: Uint8Array, op: DriveOperation): Promise<true | string> {
+		let result: Awaited<ReturnType<DriveTransport["download"]>>;
+		try {
+			result = await this.download(file, op);
+		} catch (err) {
+			// A failed read is no proof either: keep the segments and try again later.
+			op.check();
+			return `the snapshot could not be read back (${err instanceof Error ? err.message : String(err)})`;
+		}
+		op.check();
+		if (result.state !== "ok") return result.state === "corrupt" ? `the snapshot reads back damaged (${result.reason})` : "the snapshot is no longer on Drive";
+		if (result.kind !== KIND_SNAPSHOT) return "the file is not a snapshot";
+		const probe = new Y.Doc();
+		try {
+			Y.applyUpdate(probe, result.payload, this);
+			if (!sameBytes(Y.encodeStateVector(probe), vector)) return "the snapshot does not hold the document that was encoded";
+			return true;
+		} catch (err) {
+			return `the snapshot could not be applied (${err instanceof Error ? err.message : String(err)})`;
+		} finally {
+			probe.destroy();
+		}
 	}
 
 	private async deleteQuiet(id: string, op: DriveOperation): Promise<boolean> {

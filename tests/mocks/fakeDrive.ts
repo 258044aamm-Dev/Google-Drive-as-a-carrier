@@ -59,6 +59,8 @@ export class FakeDrive {
 	private nextId = 1;
 	private readonly failures: { op: FakeOp; status: number; count: number }[] = [];
 	private readonly loseResponse: { count: number }[] = [];
+	/** Bytes a reader sees instead of the stored ones, once, for files whose name matches. */
+	private readonly readCorruptions: { pattern: RegExp; mutate: (data: Uint8Array) => Uint8Array }[] = [];
 
 	failNext(op: FakeOp, status: number, count = 1): void {
 		this.failures.push({ op, status, count });
@@ -66,6 +68,23 @@ export class FakeDrive {
 
 	loseResponseNext(count = 1): void {
 		this.loseResponse.push({ count });
+	}
+
+	/**
+	 * The next read of a file whose name matches `pattern` hands the reader
+	 * damaged bytes. The stored file is left alone, so the damage is gone by the
+	 * next read — a damaged download, not a damaged file.
+	 */
+	corruptOnNextRead(pattern: RegExp, mutate: (data: Uint8Array) => Uint8Array): void {
+		this.readCorruptions.push({ pattern, mutate });
+	}
+
+	/** One-shot: the mutation a read of `name` should apply, if any. */
+	consumeReadCorruption(name: string): ((data: Uint8Array) => Uint8Array) | null {
+		const index = this.readCorruptions.findIndex((r) => r.pattern.test(name));
+		if (index < 0) return null;
+		const [rule] = this.readCorruptions.splice(index, 1);
+		return rule?.mutate ?? null;
 	}
 
 	/** Make a client's view of this drive. */
@@ -201,7 +220,9 @@ export class FakeDriveClient implements DriveApi {
 		await this.drive.enter("readFile");
 		const file = this.drive.files.get(fileId);
 		if (!file) throw new DriveError(404, "file not found");
-		return file.data.slice();
+		const damage = this.drive.consumeReadCorruption(file.name);
+		const bytes = file.data.slice();
+		return damage ? damage(bytes) : bytes;
 	}
 
 	async getFile(fileId: string): Promise<DriveFileInfo> {

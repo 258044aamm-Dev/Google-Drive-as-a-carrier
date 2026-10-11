@@ -8,6 +8,20 @@ const HEX_64 = /^[0-9a-f]{64}$/;
 /** How long a listing of the blob folder is trusted before a "not found" is re-checked. */
 const LISTING_MAX_AGE_MS = 30_000;
 
+/** F6: what an attachment audit found. Nothing in here implies a deletion: the command is a dry run. */
+export interface AttachmentAudit {
+	/** Attachment files in the vault's Drive folder. */
+	stored: number;
+	storedBytes: number;
+	/** Referenced attachments that are there. */
+	referenced: number;
+	/** Referenced attachments that are missing (informational; the carrier re-uploads those). */
+	missing: number;
+	/** Stored files nothing refers to (name is the stored file name: the hash, or its keyed form). */
+	unused: { name: string; size: number }[];
+	unusedBytes: number;
+}
+
 export interface DriveBlobStoreOptions {
 	vaultId: string;
 	now?: () => number;
@@ -121,6 +135,30 @@ export class DriveBlobStore implements BlobStoreClient {
 			throw new DriveError(502, `Attachment ${hash.slice(0, 12)} was stored with a different size (${info.size} != ${stored.length})`);
 		}
 		this.known.set(name, info.id);
+	}
+
+	/**
+	 * F6: list the attachments on Drive and say which of them nothing references.
+	 * `referencedHashes` is the union of what the live document and the retained
+	 * restore points mention. Read-only: this method has no delete path at all,
+	 * and the file names it reports are the stored names, so an encrypted vault
+	 * never leaks a plain hash.
+	 */
+	async audit(referencedHashes: string[]): Promise<AttachmentAudit> {
+		const sealer = await this.sealer();
+		const folderId = await this.folder();
+		const files = oldestFirst(await this.api.listFiles(folderId)).filter((f) => HEX_64.test(f.name));
+		const names = new Set(await Promise.all(referencedHashes.filter((h) => HEX_64.test(h)).map((h) => this.nameFor(h, sealer))));
+		const present = new Set(files.map((f) => f.name));
+		const unused = files.filter((f) => !names.has(f.name)).map((f) => ({ name: f.name, size: f.size }));
+		return {
+			stored: files.length,
+			storedBytes: files.reduce((sum, f) => sum + f.size, 0),
+			referenced: Array.from(names).filter((n) => present.has(n)).length,
+			missing: Array.from(names).filter((n) => !present.has(n)).length,
+			unused,
+			unusedBytes: unused.reduce((sum, entry) => sum + entry.size, 0),
+		};
 	}
 
 	async download(hash: string, timeoutMs: number): Promise<ArrayBuffer> {

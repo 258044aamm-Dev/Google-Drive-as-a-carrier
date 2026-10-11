@@ -413,6 +413,31 @@ s.section("Test 10: the beginner view of the Drive screen");
 	const own = makeFixture({ carrier: "drive", driveClientId: "i", driveClientSecret: "x", driveRefreshToken: "r" }, true, []);
 	s.check(manualRows(own).join("|") === "Vault ID|Google client ID|Google client secret|Google Drive folder|Encryption passphrase|Signed in to Google", "manual page, own client signed in");
 	s.check(mainRows(own).includes("Sign out"), "Sign out is shown on the main screen once signed in");
+	{
+		// F6: the two storage rows, and the rule that neither can make anything worse silently.
+		const defs = own.tab.getSettingDefinitions();
+		s.check(groupHeadings(defs).includes("Storage on Google Drive"), `the storage group is on the Drive screen (${groupHeadings(defs).join()})`);
+		const rows = groupItems(defs, "Storage on Google Drive");
+		s.check(rows.join("|") === "Restore points kept|Check a restore point before deleting", `the group holds the two rows (${rows.join("|")})`);
+		s.check(own.tab.getControlValue("driveKeepSnapshots") === 4, "an unset retention reads as the default 4");
+		s.check(own.tab.getControlValue("driveVerifyBeforePrune") === true, "the read-back is on unless it is turned off");
+		await own.tab.setControlValue("driveKeepSnapshots", 2);
+		s.check(own.tab.getControlValue("driveKeepSnapshots") === 2, "2 (what 2.1.22 kept) can be chosen");
+		let refused = 0;
+		for (const bad of [1, 11, 4.5]) {
+			try { await own.tab.setControlValue("driveKeepSnapshots", bad); } catch { refused++; }
+		}
+		s.check(refused === 3, "1, 11 and a fraction are all refused");
+		await own.tab.setControlValue("driveVerifyBeforePrune", false);
+		s.check(own.tab.getControlValue("driveVerifyBeforePrune") === false, "the read-back can be turned off for metered connections");
+		const row = flatten(defs).find((d) => d.control?.key === "driveKeepSnapshots");
+		const validate = row?.control && "validate" in row.control
+			? (row.control.validate as ((value: number) => string | undefined) | undefined)
+			: undefined;
+		s.check(!!validate && validate(4) === undefined && typeof validate(1) === "string", "the row's own validator agrees with the setter");
+		const cf = makeFixture({ carrier: "cloudflare" });
+		s.check(!groupHeadings(cf.tab.getSettingDefinitions()).includes("Storage on Google Drive"), "and it exists only on the Drive screen");
+	}
 	const pageOwn = manualPage(own);
 	s.check(!!pageOwn && "status" in pageOwn && typeof pageOwn.status === "function" && pageOwn.status() === null, "no warning mark when signed in");
 
@@ -422,7 +447,7 @@ s.section("Test 10: the beginner view of the Drive screen");
 
 	// Every control is still reachable, so nothing was lost.
 	const keys = flatten(signedOut.tab.getSettingDefinitions()).map((d) => d.control?.key);
-	for (const key of ["vaultId", "driveClientId", "driveClientSecret", "driveFolderId", "driveEncryptionPassphrase", "excludePatterns", "maxFileSizeKB", "enableAttachmentSync"]) {
+	for (const key of ["vaultId", "driveClientId", "driveClientSecret", "driveFolderId", "driveKeepSnapshots", "driveVerifyBeforePrune", "driveEncryptionPassphrase", "excludePatterns", "maxFileSizeKB", "enableAttachmentSync"]) {
 		s.check(keys.includes(key), `the control "${key}" is still reachable`);
 	}
 	s.check(keys.filter((k) => k === "vaultId").length === 1, "and the vault ID control exists exactly once");

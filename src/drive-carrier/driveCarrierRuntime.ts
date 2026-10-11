@@ -2,7 +2,7 @@ import type * as Y from "yjs";
 import type { BlobStoreClient } from "../sync/blobSync";
 import type { SnapshotBackend } from "../snapshots/snapshotBackend";
 import type { SyncTransportFactory } from "../sync/transport";
-import { DriveBlobStore } from "./driveBlobStore";
+import { DriveBlobStore, type AttachmentAudit } from "./driveBlobStore";
 import { DriveSnapshotBackend } from "./driveSnapshotBackend";
 import { DriveKeyring } from "./driveKeyring";
 import { DriveTransport } from "./driveTransport";
@@ -64,6 +64,8 @@ export interface DriveCarrier {
 	requestStats(): RequestStats | null;
 	/** Re-read the "sync speed" setting and apply it to the running transports. */
 	applyPace(): void;
+	/** F6: list the attachments on Drive and say which nothing references. Never deletes. */
+	auditAttachments(vaultId: string, referencedHashes: string[]): Promise<AttachmentAudit>;
 }
 
 /**
@@ -103,9 +105,17 @@ export function createDriveCarrier(deps: DriveCarrierRuntimeDeps): DriveCarrier 
 	// One live transport per vault (a reload replaces the old one), so a settings change reaches the running one.
 	const transports = new Map<string, DriveTransport>();
 	const currentPace = () => resolveDrivePace(deps.getSettings(), deps.isMobile?.() ?? false);
-	const blobStores = new Map<string, BlobStoreClient>();
+	const blobStores = new Map<string, DriveBlobStore>();
 	const snapshotBackends = new Map<string, SnapshotBackend>();
 
+	const blobStoreFor = (vaultId: string): DriveBlobStore => {
+		let store = blobStores.get(vaultId);
+		if (!store) {
+			store = new DriveBlobStore(getApi(), { vaultId, keyring: keyringFor(vaultId) });
+			blobStores.set(vaultId, store);
+		}
+		return store;
+	};
 	return {
 		transportFactory: ({ doc, vaultId, isLocalStoreOrigin }) => {
 			activity ??= deps.activity ?? browserActivity();
@@ -121,6 +131,8 @@ export function createDriveCarrier(deps: DriveCarrierRuntimeDeps): DriveCarrier 
 				reconcileIntervalMs: pace.reconcileIntervalMs,
 				activity,
 				keyring: keyringFor(vaultId),
+				keepSnapshots: deps.getSettings().driveKeepSnapshots,
+				verifyBeforePrune: deps.getSettings().driveVerifyBeforePrune !== false,
 				onFatal: deps.onFatal,
 				onNotice: deps.onNotice,
 				folderIdentity: deps.folderIdentity,
@@ -131,14 +143,7 @@ export function createDriveCarrier(deps: DriveCarrierRuntimeDeps): DriveCarrier 
 			transports.set(vaultId, transport);
 			return transport;
 		},
-		blobStore(vaultId) {
-			let store = blobStores.get(vaultId);
-			if (!store) {
-				store = new DriveBlobStore(getApi(), { vaultId, keyring: keyringFor(vaultId) });
-				blobStores.set(vaultId, store);
-			}
-			return store;
-		},
+		blobStore: (vaultId) => blobStoreFor(vaultId),
 		snapshotBackend(vaultId, getDoc) {
 			let backend = snapshotBackends.get(vaultId);
 			if (!backend) {
@@ -146,6 +151,9 @@ export function createDriveCarrier(deps: DriveCarrierRuntimeDeps): DriveCarrier 
 				snapshotBackends.set(vaultId, backend);
 			}
 			return backend;
+		},
+		async auditAttachments(vaultId: string, referencedHashes: string[]): Promise<AttachmentAudit> {
+			return await blobStoreFor(vaultId).audit(referencedHashes);
 		},
 		requestStats: () => api?.stats() ?? null,
 		applyPace() {

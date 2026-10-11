@@ -21,6 +21,12 @@ import {
 import { lanLayout, type LanSettingsHost } from "../lan-carrier/lanSettingsRows";
 import { applyLanSetupCode, readLanSetting, writeLanSetting, type LanSettingKey } from "../lan-carrier/lanSettings";
 import { checkHostedToken, normalizeHostedToken } from "../drive-carrier/wizard/validate";
+import {
+	DEFAULT_KEEP_SNAPSHOTS,
+	KEEP_SNAPSHOTS_MAX,
+	KEEP_SNAPSHOTS_MIN,
+	clampKeepSnapshots,
+} from "../drive-carrier/driveTransport";
 import { isDetailedStatusShown, isStatusIconShown } from "../status/simpleStatus";
 import { CUSTOM_LIMITS, currentSyncPace, isSyncPaceProfile, resolveCloudflareBatchMs, resolveDrivePace, type SyncPaceCustom, type SyncPaceProfile } from "./syncPace";
 import { PairDeviceModal } from "./PairDeviceModal";
@@ -58,6 +64,8 @@ type DeclarativeSettingKey =
 	| "drivePaceHidden"
 	| "drivePaceBatch"
 	| "drivePaceFullCheck"
+	| "driveKeepSnapshots"
+	| "driveVerifyBeforePrune"
 	| "cloudflarePaceBatch"
 	| "showStatusIcon"
 	| "detailedStatus"
@@ -662,6 +670,34 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 					...this.drivePaceCustomRows(),
 				],
 			},
+			{
+				type: "group",
+				heading: "Storage on Google Drive",
+				items: [
+					{
+						name: "Restore points kept",
+						desc: `How many full copies of the vault one compaction keeps on Drive: ${KEEP_SNAPSHOTS_MIN} to ${KEEP_SNAPSHOTS_MAX}. Default ${DEFAULT_KEEP_SNAPSHOTS}. More restore points cost Drive space (each is about the size of your vault); ${KEEP_SNAPSHOTS_MIN} is what earlier versions kept.`,
+						visible: () => isDriveCarrier(this.host.settings),
+						control: {
+							type: "number",
+							key: "driveKeepSnapshots",
+							min: KEEP_SNAPSHOTS_MIN,
+							step: 1,
+							validate: (value) => {
+								if (!Number.isInteger(value)) return "Enter a whole number.";
+								if (value < KEEP_SNAPSHOTS_MIN || value > KEEP_SNAPSHOTS_MAX) return `Enter a number from ${KEEP_SNAPSHOTS_MIN} to ${KEEP_SNAPSHOTS_MAX}.`;
+								return undefined;
+							},
+						},
+					},
+					{
+						name: "Check a restore point before deleting",
+						desc: "After writing a full restore point, YAOS reads it back and checks it against the document before removing the older sync files it covers. One extra download per compaction. Off skips the check, as earlier versions did.",
+						visible: () => isDriveCarrier(this.host.settings),
+						control: { type: "toggle", key: "driveVerifyBeforePrune" },
+					},
+				],
+			},
 		];
 	}
 
@@ -835,6 +871,8 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			}
 			case "driveClientId": return this.host.settings.driveClientId ?? "";
 			case "driveFolderId": return this.host.settings.driveFolderId ?? "";
+			case "driveKeepSnapshots": return clampKeepSnapshots(this.host.settings.driveKeepSnapshots);
+			case "driveVerifyBeforePrune": return this.host.settings.driveVerifyBeforePrune !== false;
 			case "driveClientSecret": return this.host.settings.driveClientSecret ?? "";
 			case "driveHostedToken": return this.host.settings.driveRefreshToken ?? "";
 			case "driveEncryptionPassphrase": return this.host.settings.driveEncryptionPassphrase ?? "";
@@ -1033,6 +1071,19 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			}
 			case "driveClientId":
 				await this.host.updateSettings((settings) => { settings.driveClientId = expectStringValue(key, value).trim(); }, "settings:drive-client-id");
+				this.update();
+				return;
+			case "driveKeepSnapshots": {
+				const nextValue = expectFiniteNumber(key, value);
+				if (!Number.isInteger(nextValue) || nextValue < KEEP_SNAPSHOTS_MIN || nextValue > KEEP_SNAPSHOTS_MAX) {
+					throw new RangeError(`driveKeepSnapshots must be a whole number from ${KEEP_SNAPSHOTS_MIN} to ${KEEP_SNAPSHOTS_MAX}`);
+				}
+				await this.host.updateSettings((settings) => { settings.driveKeepSnapshots = nextValue; }, "settings:drive-keep-snapshots");
+				this.update();
+				return;
+			}
+			case "driveVerifyBeforePrune":
+				await this.host.updateSettings((settings) => { settings.driveVerifyBeforePrune = expectBooleanValue(key, value); }, "settings:drive-verify-before-prune");
 				this.update();
 				return;
 			case "driveFolderId": {

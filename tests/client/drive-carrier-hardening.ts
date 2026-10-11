@@ -3,7 +3,7 @@
  * against the earlier code. See docs/drive-carrier.md ("Hardening").
  */
 import * as Y from "yjs";
-import { DriveTransport, type DriveTransportOptions } from "../../src/drive-carrier/driveTransport";
+import { DEFAULT_KEEP_SNAPSHOTS, DriveTransport, type DriveTransportOptions } from "../../src/drive-carrier/driveTransport";
 import { DriveKeyring } from "../../src/drive-carrier/driveKeyring";
 import { decodeFile } from "../../src/drive-carrier/fileFormat";
 import { FakeDrive } from "../mocks/fakeDrive";
@@ -93,7 +93,7 @@ s.section("F2: a device whose clock runs ahead cannot make snapshot pruning dele
 	s.check(sv(C2.doc) === sv(A.doc), "Drive holds everything A holds (receipts rely on it)");
 	C2.t.destroy();
 	const snaps = names(drive).filter((n) => n.startsWith("snap-"));
-	s.check(snaps.length <= 2 && snaps.length >= 1, `snapshots are pruned to at most two (${snaps.length})`);
+	s.check(snaps.length <= DEFAULT_KEEP_SNAPSHOTS && snaps.length >= 1, `snapshots are pruned to the default retention (${snaps.length})`);
 	A.t.destroy(); B.t.destroy(); C.t.destroy();
 }
 

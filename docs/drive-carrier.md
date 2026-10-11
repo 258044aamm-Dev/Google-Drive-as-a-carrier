@@ -29,7 +29,10 @@ for changes:
   damaged file is never written into your vault. Identical attachments are
   stored once. Whether an attachment already exists is answered from one
   folder listing that is reused for 30 seconds, to stay within Drive's
-  request limits.
+  request limits. The command **YAOS: Find unused attachments on Google
+  Drive (dry run)** counts and lists attachment files that neither the live document nor
+  any retained restore point mentions. It only lists them: nothing is deleted,
+  and no delete path exists behind it.
 - **Snapshots** (restore points): folder `YAOS <vault id> snapshots`. Each
   snapshot is a data file (`snapdat-<id>.bin`, the whole document, compressed,
   with a checksum) plus a small index file (`snapidx-<id>.json`) that is
@@ -39,8 +42,10 @@ for changes:
   unchanged.
 - **Cleanup** keeps every pinned (manual) snapshot plus the **newest 14**
   daily ones and removes the rest, together with leftovers of interrupted
-  snapshot writes (older than 10 minutes). This is a Drive-carrier choice;
-  it is not the Worker's retention policy.
+  snapshot writes (older than 10 minutes). A restore point is only removed
+  while a *newer readable* one stays, so the newest complete snapshot is never
+  deleted. This is a Drive-carrier choice; it is not the Worker's retention
+  policy.
 - The attachment size limit and concurrency settings apply as before.
 
 Limits: a damaged attachment on Drive keeps failing and is not repaired
@@ -196,11 +201,12 @@ Cloudflare screens and names are unchanged.
 ## Hardening (limits and what is guarded)
 
 - **Key check before any upload.** The folder is used only after the key check (`meta.json`) succeeded; an encrypted vault never receives plaintext, even after a failed start-up call.
+- **A restore point is read back before anything is deleted.** After a compaction writes the full snapshot, the carrier downloads it, checks its checksum and compares the document state it holds with the state that was encoded; only then are the sync files it covers removed. The uploaded file's size is still verified as before. If the read-back fails or the file cannot be read, *every* file is kept, the reason is logged once, and the next compaction (at least 30 s later) tries again. **Restore points kept** (in the Google Drive settings page, 2 to 10, default 4) decides how many full copies one compaction keeps; 2 is exactly what 2.1.22 kept. **Check a restore point before deleting** turns the read-back off for metered connections, which restores 2.1.22's behaviour exactly.
 - **Snapshots are pruned by Drive's creation time**, not by file name, so a wrong device clock cannot delete the newest data. Wrong clocks still affect the note-collision tie-break and snapshot day names (same as with Cloudflare).
 - **Not "synced" while incomplete.** If a file is missing or an update cannot be applied, the carrier stays connected, keeps uploading your edits and does not claim to be synced. Check `unreadableFiles` in diagnostics for damaged files.
 - **Time limit.** One sync cycle may take five minutes; a stuck request then counts as a failure and is retried with back-off.
 - **Deletes (all carriers).** A remote delete is applied when the disk file still matches the last synced content, even if an edit arrived in the same poll. A file you really edited is kept (and the note is revived with your text). A delete removes every active id for the path. A note you deleted while YAOS was off is recorded as deleted at the next full reconcile when its remembered content hash equals the shared text (otherwise it is written back as before).
-- **Not covered:** no garbage collection of attachment files on Drive; memory use grows with vault size (every applied update payload and two snapshots are kept in memory); a plaintext and an encrypted vault started at the same moment in one folder end up split; a stray empty duplicate vault folder is not removed.
+- **Not covered:** no automatic garbage collection of attachment files on Drive (the dry-run command above lists candidates and never deletes); memory use grows with vault size (every applied update payload and two snapshots are kept in memory); a plaintext and an encrypted vault started at the same moment in one folder end up split; a stray empty duplicate vault folder is not removed.
 - **Simulation suite.** `drive-carrier-fuzz` (about 6 s, fixed seeds) must stay green; rerun one configuration with `FUZZ_ONLY=<part of the name> FUZZ_SEEDS=<n>`.
 
 ## Setup (once per Google account)

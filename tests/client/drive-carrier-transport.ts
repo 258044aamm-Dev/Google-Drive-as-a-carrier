@@ -6,7 +6,7 @@
  */
 
 import * as Y from "yjs";
-import { DriveTransport, type DriveTransportOptions } from "../../src/drive-carrier/driveTransport";
+import { DEFAULT_KEEP_SNAPSHOTS, DriveTransport, type DriveTransportOptions } from "../../src/drive-carrier/driveTransport";
 import { KIND_SEGMENT, classifyName, encodeFile } from "../../src/drive-carrier/fileFormat";
 import { FakeDrive } from "../mocks/fakeDrive";
 import { suite } from "../harness.ts";
@@ -354,7 +354,7 @@ s.section("Test 15: compaction writes a snapshot, deletes covered segments, a fr
 		a.text.insert(a.text.length, `line ${i}\n`);
 		await settle(a, b);
 	}
-	s.check(snapCount(drive) >= 1 && snapCount(drive) <= 2, `a snapshot exists and at most two are kept (${snapCount(drive)})`);
+	s.check(snapCount(drive) >= 1 && snapCount(drive) <= DEFAULT_KEEP_SNAPSHOTS, `a snapshot exists and at most the default retention is kept (${snapCount(drive)})`);
 	s.check(segCount(drive) <= 4, `segments were compacted (${segCount(drive)} left)`);
 	const fresh = makeDevice(drive, "C", opts);
 	await fresh.transport.connect();
