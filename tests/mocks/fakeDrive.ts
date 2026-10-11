@@ -14,12 +14,13 @@
 
 import {
 	DriveError,
+	FOLDER_MIME,
 	type DriveApi,
 	type DriveFileInfo,
 	type DriveFolderInfo,
 } from "../../src/drive-carrier/driveApi";
 
-export type FakeOp = "findFolders" | "createFolder" | "listFiles" | "createFile" | "readFile" | "deleteFile";
+export type FakeOp = "findFolders" | "createFolder" | "listFiles" | "createFile" | "readFile" | "getFile" | "deleteFile";
 
 interface StoredFile {
 	id: string;
@@ -33,6 +34,8 @@ interface StoredFolder {
 	id: string;
 	name: string;
 	createdTime: number;
+	/** F5: a trashed folder is invisible to findFolders, like Drive's `trashed = false` query. */
+	trashed?: boolean;
 }
 
 export class FakeDrive {
@@ -47,6 +50,7 @@ export class FakeDrive {
 		listFiles: 0,
 		createFile: 0,
 		readFile: 0,
+		getFile: 0,
 		deleteFile: 0,
 	};
 	latencyHook: ((op: FakeOp) => Promise<void>) | null = null;
@@ -91,6 +95,35 @@ export class FakeDrive {
 		}
 	}
 
+	/** Rename a folder the way the user could in the Drive web app (file ids do not change). */
+	renameFolder(name: string, newName: string): number {
+		let renamed = 0;
+		for (const folder of this.folders.values()) {
+			if (folder.name === name && !folder.trashed) {
+				folder.name = newName;
+				renamed++;
+			}
+		}
+		return renamed;
+	}
+
+	/** Move a folder to the trash. Its id keeps resolving, but with `trashed: true`. */
+	trashFolder(name: string): number {
+		let trashed = 0;
+		for (const folder of this.folders.values()) {
+			if (folder.name === name && !folder.trashed) {
+				folder.trashed = true;
+				trashed++;
+			}
+		}
+		return trashed;
+	}
+
+	/** The folder with this id, or undefined. */
+	folderById(id: string): StoredFolder | undefined {
+		return this.folders.get(id);
+	}
+
 	tick(): number {
 		this.clock += 1;
 		return this.clock;
@@ -130,7 +163,7 @@ export class FakeDriveClient implements DriveApi {
 	async findFolders(name: string): Promise<DriveFolderInfo[]> {
 		await this.drive.enter("findFolders");
 		const found = Array.from(this.drive.folders.values())
-			.filter((f) => f.name === name)
+			.filter((f) => f.name === name && !f.trashed)
 			.map((f) => ({ id: f.id, createdTime: f.createdTime }));
 		return this.reverseFolders ? found.reverse() : found;
 	}
@@ -169,6 +202,19 @@ export class FakeDriveClient implements DriveApi {
 		const file = this.drive.files.get(fileId);
 		if (!file) throw new DriveError(404, "file not found");
 		return file.data.slice();
+	}
+
+	async getFile(fileId: string): Promise<DriveFileInfo> {
+		await this.drive.enter("getFile");
+		const folder = this.drive.folders.get(fileId);
+		if (folder) {
+			const info: DriveFileInfo = { id: folder.id, name: folder.name, size: 0, createdTime: folder.createdTime, mimeType: FOLDER_MIME };
+			if (folder.trashed) info.trashed = true;
+			return info;
+		}
+		const file = this.drive.files.get(fileId);
+		if (!file) throw new DriveError(404, "file not found");
+		return { id: file.id, name: file.name, size: file.data.length, createdTime: file.createdTime, mimeType: "application/octet-stream" };
 	}
 
 	async deleteFile(fileId: string): Promise<void> {

@@ -410,6 +410,58 @@ s.section("Test 8: joining with a setup code");
 	s.check(lean.c.state.joinCheck?.status === "ok" && lean.applied.length === 1 && lean.applied[0]?.driveEncryptionPassphrase === "a long passphrase", "the right passphrase joins");
 }
 
+s.section("Test 8b: a join is refused when the sign-in cannot see the vault (F5)");
+{
+	const first = makeRig();
+	await createOwnVault(first);
+	const ownCode = first.c.state.setupCode ?? "";
+	const hostedCode = encodeSetupCode({ vaultId: FIRST_VAULT, clientId: "", clientSecret: "", bundledClient: false, passphrase: "", encrypted: false, hosted: true });
+
+	// This device is signed in with the easy sign-in; the code is for a vault made
+	// with someone's own Google client. Google shows each sign-in only the files it
+	// created, so joining would look empty (or make a second folder).
+	const hostedDevice = makeRig({ settings: { carrier: "drive", driveAuthMode: "hosted", driveRefreshToken: GOOD_TOKEN } });
+	await hostedDevice.c.next();
+	hostedDevice.c.choosePath("join");
+	await tick();
+	hostedDevice.c.setFieldByKey("setupCodeText", ownCode);
+	s.check(!hostedDevice.c.canNext(), "the join cannot continue");
+	const refused = String(hostedDevice.c.blocker());
+	s.check(/already signed in with the easy sign-in/.test(refused), `the device's own mode is named (${refused})`);
+	s.check(/made with its own Google client/.test(refused), "and the code's mode");
+	s.check(/files it created/.test(refused), "and the reason (Drive shows an app only the files it created)");
+	s.check(hostedDevice.applied.length === 0, "nothing is saved");
+	const codeField = buildScreen(hostedDevice.c).fields.find((f) => f.key === "setupCodeText");
+	s.check(/already signed in with the easy sign-in/.test(String(codeField?.problem)), `the screen shows the refusal next to the code box (${String(codeField?.problem)})`);
+
+	// The other direction: this device uses its own client and the code is the easy sign-in.
+	const ownDevice = makeRig({ settings: { carrier: "drive", driveClientId: OWN_ID, driveClientSecret: OWN_SECRET, driveRefreshToken: "refresh-own" } });
+	await ownDevice.c.next();
+	ownDevice.c.choosePath("join");
+	await tick();
+	ownDevice.c.setFieldByKey("setupCodeText", hostedCode);
+	s.check(!ownDevice.c.canNext(), "the reverse mismatch is refused too");
+	const reverse = String(ownDevice.c.blocker());
+	s.check(/already signed in with your own Google client/.test(reverse) && /made with the easy sign-in/.test(reverse), `both modes are named (${reverse})`);
+	s.check(ownDevice.applied.length === 0, "nothing is saved there either");
+
+	// A device that has not signed in yet is not refused: the code decides.
+	const fresh = makeRig({ drive: first.drive, settings: { vaultId: "someOtherVaultIdXXXXXXX" } });
+	await fresh.c.next();
+	fresh.c.choosePath("join");
+	await tick();
+	fresh.c.setFieldByKey("setupCodeText", ownCode);
+	s.check(fresh.c.canNext(), `a device with no sign-in yet follows the code (${String(fresh.c.blocker())})`);
+
+	// A device already signed in the same way as the code continues as before.
+	const sameMode = makeRig({ drive: first.drive, settings: { carrier: "drive", driveClientId: OWN_ID, driveClientSecret: OWN_SECRET, driveRefreshToken: "refresh-same" } });
+	await sameMode.c.next();
+	sameMode.c.choosePath("join");
+	await tick();
+	sameMode.c.setFieldByKey("setupCodeText", ownCode);
+	s.check(sameMode.c.canNext(), `the same mode is not refused (${String(sameMode.c.blocker())})`);
+}
+
 s.section("Test 9: joining by hand, and joining problems");
 {
 	const first = makeRig({ bundled: true });

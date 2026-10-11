@@ -27,6 +27,13 @@ export interface DriveCarrierSettings {
 	 * Kept in the plugin's data like the Google sign-in; it is the same on every device.
 	 */
 	driveEncryptionPassphrase?: string;
+	/**
+	 * F5: the Drive folder this vault lives in, remembered after the first sync so
+	 * the carrier follows the folder id instead of searching by name. Absent on a
+	 * device that has not synced yet, or after the field is cleared: the folder is
+	 * then found by name again. Clearing it is always safe.
+	 */
+	driveFolderId?: string;
 }
 
 export function currentCarrier(settings: DriveCarrierSettings): CarrierKind {

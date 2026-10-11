@@ -62,6 +62,7 @@ type DeclarativeSettingKey =
 	| "showStatusIcon"
 	| "detailedStatus"
 	| "driveClientId"
+	| "driveFolderId"
 	| "driveClientSecret"
 	| "driveHostedToken"
 	| "driveEncryptionPassphrase"
@@ -771,6 +772,11 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 					control: { type: "text", key: "driveHostedToken", placeholder: "Paste the sign-in code" },
 				},
 				{
+					name: "Google Drive folder",
+					desc: "The folder YAOS uses for this vault, filled in automatically after the first sync. Renaming the folder in Drive is safe: this device keeps using the same folder. Empty it to make the plugin look for the folder by name again (for example after moving the vault to another Google account). Reload the plugin after changing it.",
+					control: { type: "text", key: "driveFolderId", placeholder: "Found automatically" },
+				},
+				{
 					name: "Encryption passphrase",
 					desc: "Optional. Encrypts everything YAOS stores on Drive. Set it before the first sync of a new vault and use the same passphrase on every device; it cannot be added to a vault that already exists on Drive, and a lost passphrase cannot be recovered. Reload the plugin after changing it.",
 					control: { type: "text", key: "driveEncryptionPassphrase", placeholder: "Leave empty for no encryption" },
@@ -828,6 +834,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 				return shown[key as keyof typeof shown];
 			}
 			case "driveClientId": return this.host.settings.driveClientId ?? "";
+			case "driveFolderId": return this.host.settings.driveFolderId ?? "";
 			case "driveClientSecret": return this.host.settings.driveClientSecret ?? "";
 			case "driveHostedToken": return this.host.settings.driveRefreshToken ?? "";
 			case "driveEncryptionPassphrase": return this.host.settings.driveEncryptionPassphrase ?? "";
@@ -1028,6 +1035,18 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 				await this.host.updateSettings((settings) => { settings.driveClientId = expectStringValue(key, value).trim(); }, "settings:drive-client-id");
 				this.update();
 				return;
+			case "driveFolderId": {
+				// F5: an emptied field makes the carrier look the folder up by name
+				// again; a wrong id is harmless (it is checked before use, and the
+				// name search takes over when it does not resolve).
+				const pasted = expectStringValue(key, value).trim();
+				await this.host.updateSettings((settings) => {
+					if (pasted) settings.driveFolderId = pasted;
+					else delete settings.driveFolderId;
+				}, "settings:drive-folder-id");
+				this.update();
+				return;
+			}
 			case "driveClientSecret":
 				await this.host.updateSettings((settings) => { settings.driveClientSecret = expectStringValue(key, value).trim(); }, "settings:drive-client-secret");
 				this.update();

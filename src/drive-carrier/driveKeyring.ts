@@ -1,4 +1,5 @@
 import { DriveError, type DriveApi, type DriveFileInfo } from "./driveApi";
+import { randomId } from "../utils/randomId";
 import { ensureFolder, oldestFirst } from "./driveFolders";
 import {
 	DEFAULT_KDF_ITERATIONS,
@@ -12,6 +13,14 @@ import { META_NAME } from "./fileFormat";
 
 /** Schema of the Drive layout. A device refuses a vault folder written with another one. */
 export const DRIVE_LAYOUT_SCHEMA = 1;
+
+/**
+ * F5: length of the random `installId` written into `meta.json` when the vault
+ * folder is created. It says "this folder was made by that same setup", so two
+ * folders with the same vault id can be told apart from two folders that happen
+ * to share a name. Older folders simply do not have the field.
+ */
+export const INSTALL_ID_LENGTH = 16;
 
 /** A problem that retrying cannot fix (another layout, encryption mismatch, wrong passphrase). */
 export class FatalCarrierError extends Error {
@@ -51,6 +60,14 @@ export class DriveKeyring {
 		this.folderName = options.folderName ?? `YAOS ${options.vaultId}`;
 	}
 
+	/**
+	 * How many files the folder held the first time its meta file was checked this
+	 * session (null before the check). 0 means the folder was empty before YAOS
+	 * wrote its meta file: for a large local document that is the signature of a
+	 * device joining a vault its Google sign-in cannot see (F5).
+	 */
+	listedFileCount: number | null = null;
+
 	/** The sealer, once `ensureMeta` has succeeded. Null: the vault is not encrypted. */
 	get sealer(): DriveSealer | null {
 		return this.resolvedSealer;
@@ -80,6 +97,7 @@ export class DriveKeyring {
 		if (this.resolved) return;
 		const files = await this.api.listFiles(folderId);
 		check();
+		this.listedFileCount ??= files.length;
 		const metas = oldestFirst(files.filter((f) => f.name === META_NAME));
 		const passphrase = this.options.passphrase;
 		const first = metas[0];
@@ -92,7 +110,14 @@ export class DriveKeyring {
 
 	private async createMeta(folderId: string, passphrase: string, check: () => void): Promise<void> {
 		check();
-		const body: Record<string, unknown> = { app: "yaos-drive", schema: DRIVE_LAYOUT_SCHEMA, vaultId: this.options.vaultId };
+		// `installId` marks this exact folder (see INSTALL_ID_LENGTH); `vaultId` says
+		// which vault it holds. Both are written once, when the folder is created.
+		const body: Record<string, unknown> = {
+			app: "yaos-drive",
+			schema: DRIVE_LAYOUT_SCHEMA,
+			vaultId: this.options.vaultId,
+			installId: randomId(INSTALL_ID_LENGTH),
+		};
 		if (!passphrase) {
 			await this.api.createFile(folderId, META_NAME, new TextEncoder().encode(JSON.stringify(body)));
 			check();
@@ -133,6 +158,15 @@ export class DriveKeyring {
 		if (record.schema !== DRIVE_LAYOUT_SCHEMA) {
 			throw new FatalCarrierError(
 				`This vault folder on Drive uses layout ${String(record.schema)}, but this plugin understands layout ${DRIVE_LAYOUT_SCHEMA}. Update the plugin on all devices.`,
+			);
+		}
+		// F5: the folder says which vault it holds. Uploading this device's document
+		// into a folder that belongs to another vault would merge two vaults, so the
+		// folder is refused the same way an unknown layout is. A meta file without
+		// the field is old, not wrong: the check only applies when it is there.
+		if (typeof record.vaultId === "string" && record.vaultId !== this.options.vaultId) {
+			throw new FatalCarrierError(
+				`This folder on Drive holds a different vault (its meta.json says "${record.vaultId}", this device expects "${this.options.vaultId}"). Nothing was read or written. Check the Vault ID in the YAOS settings, or set this device up for the right vault.`,
 			);
 		}
 		if (record.encryption === undefined) {

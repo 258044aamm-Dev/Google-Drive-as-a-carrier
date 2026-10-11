@@ -1,5 +1,5 @@
 import { HostedAuthError } from "./hostedAuth";
-import { DriveError, type DriveApi, type DriveFileInfo, type DriveFolderInfo } from "./driveApi";
+import { DriveError, FOLDER_MIME, type DriveApi, type DriveFileInfo, type DriveFolderInfo } from "./driveApi";
 
 /** One HTTP request. The carrier never sees how it is sent (Obsidian's requestUrl, fetch, a test double). */
 export interface DriveHttpRequest {
@@ -23,7 +23,6 @@ export type AccessTokenProvider = (forceRefresh?: boolean) => Promise<string>;
 
 const API = "https://www.googleapis.com/drive/v3";
 const UPLOAD = "https://www.googleapis.com/upload/drive/v3";
-const FOLDER_MIME = "application/vnd.google-apps.folder";
 const FILE_FIELDS = "id,name,size,createdTime";
 
 /**
@@ -48,6 +47,8 @@ interface RawFile {
 	name?: unknown;
 	size?: unknown;
 	createdTime?: unknown;
+	trashed?: unknown;
+	mimeType?: unknown;
 }
 
 function toFileInfo(raw: RawFile): DriveFileInfo {
@@ -56,7 +57,11 @@ function toFileInfo(raw: RawFile): DriveFileInfo {
 	}
 	const size = typeof raw.size === "string" ? Number(raw.size) : typeof raw.size === "number" ? raw.size : 0;
 	const created = typeof raw.createdTime === "string" ? Date.parse(raw.createdTime) : NaN;
-	return { id: raw.id, name: raw.name, size, createdTime: Number.isFinite(created) ? created : 0 };
+	const info: DriveFileInfo = { id: raw.id, name: raw.name, size, createdTime: Number.isFinite(created) ? created : 0 };
+	// Only the getFile fields below ask for these; a listing leaves them unset.
+	if (typeof raw.trashed === "boolean") info.trashed = raw.trashed;
+	if (typeof raw.mimeType === "string") info.mimeType = raw.mimeType;
+	return info;
 }
 
 /** A response header, matched case-insensitively (HTTP header names are not case-sensitive). */
@@ -161,6 +166,13 @@ export class GoogleDriveRest implements DriveApi {
 		}));
 		const info = toFileInfo(this.json(res) as RawFile);
 		return { id: info.id, createdTime: info.createdTime };
+	}
+
+	async getFile(fileId: string): Promise<DriveFileInfo> {
+		const fields = `${FILE_FIELDS},trashed,mimeType`;
+		const url = `${API}/files/${encodeURIComponent(fileId)}?fields=${encodeURIComponent(fields)}`;
+		const res = await this.send((token) => ({ url, method: "GET", headers: { Authorization: `Bearer ${token}` } }));
+		return toFileInfo(this.json(res) as RawFile);
 	}
 
 	async listFiles(folderId: string): Promise<DriveFileInfo[]> {

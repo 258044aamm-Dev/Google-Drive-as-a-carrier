@@ -24,6 +24,13 @@ export interface DriveCarrierRuntimeDeps {
 	pollIntervalMs?: number;
 	/** Called once when the carrier stops for a reason retrying cannot fix (wrong passphrase, another layout). */
 	onFatal?: (message: string) => void;
+	/** Something worth telling the user that is not an error (a duplicate or empty vault folder, F5). */
+	onNotice?: (message: string) => void;
+	/** F5: the folder id this device used last time, and where a resolved one is saved. */
+	folderIdentity?: {
+		saved(): string | undefined;
+		remember(id: string): void;
+	};
 	/**
 	 * F2: CRDT schema admission. Returns the reason this device must not read or
 	 * write this vault (null when it may). See DriveTransportOptions.guardSchema.
@@ -115,6 +122,8 @@ export function createDriveCarrier(deps: DriveCarrierRuntimeDeps): DriveCarrier 
 				activity,
 				keyring: keyringFor(vaultId),
 				onFatal: deps.onFatal,
+				onNotice: deps.onNotice,
+				folderIdentity: deps.folderIdentity,
 				guardSchema: deps.guardSchema,
 				ignoreOrigin: isLocalStoreOrigin,
 				log: deps.log,

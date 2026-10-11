@@ -194,6 +194,7 @@ s.section("Test 5: interrupted snapshots never show up");
 		createFolder: (name) => api.createFolder(name),
 		listFiles: (folder) => api.listFiles(folder),
 		readFile: (id) => api.readFile(id),
+		getFile: (id) => api.getFile(id),
 		deleteFile: (id) => api.deleteFile(id),
 		createFile: async (folder, name, data) => {
 			if (name.startsWith("snapidx-") && n++ === 0) throw new DriveError(500, "boom");

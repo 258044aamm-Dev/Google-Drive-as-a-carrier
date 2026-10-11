@@ -2,7 +2,7 @@ import type { DriveApi } from "../driveApi";
 import { GoogleAuthError, GoogleTokenManager, type DeviceCodeInfo, type DeviceSignInResult, type GoogleClient } from "../googleAuth";
 import { GoogleDriveRest, type DriveHttp } from "../googleDriveRest";
 import { resolveHostedTokenUrl, HostedTokenManager } from "../hostedAuth";
-import { isDriveCarrier, isDriveSignedIn, type DriveCarrierSettings } from "../carrierSettings";
+import { isDriveCarrier, isDriveSignedIn, isHostedSignIn, type DriveCarrierSettings } from "../carrierSettings";
 import { signInWithGoogle, type SignInUi } from "../signIn";
 import { checkVaultForJoin, createVault, type CheckStep, type JoinCheck } from "./driveSetup";
 import { explainHostedSignInError, explainSetupError } from "./explainError";
@@ -226,7 +226,8 @@ export class WizardController {
 		const { draft } = this.state;
 		if (!draft.manualJoin) {
 			const result = decodeSetupCode(draft.setupCodeText);
-			return result.ok ? null : describeSetupCodeProblem(result.reason);
+			if (!result.ok) return describeSetupCodeProblem(result.reason);
+			return this.signInModeMismatch(result.content.hosted === true);
 		}
 		const vault = checkVaultId(draft.vaultId);
 		if (vault) return vault;
@@ -235,6 +236,26 @@ export class WizardController {
 			return checkClientId(draft.clientId) ?? checkClientSecret(draft.clientSecret);
 		}
 		return null;
+	}
+
+	/**
+	 * F5: a vault is only visible to the Google sign-in that created its folder,
+	 * because the carrier asks for the `drive.file` scope. A device that is already
+	 * signed in the other way would join an empty view of the vault (or make a
+	 * second folder of its own), so the join stops here instead, while the fix is
+	 * still one step away. A device that has not signed in yet has nothing to
+	 * mismatch: the code decides.
+	 */
+	private signInModeMismatch(codeUsesHosted: boolean): string | null {
+		const saved = this.deps.getSettings();
+		if (!isDriveSignedIn(saved)) return null;
+		const deviceUsesHosted = isHostedSignIn(saved);
+		if (deviceUsesHosted === codeUsesHosted) return null;
+		const codeMode = codeUsesHosted ? "the easy sign-in" : "its own Google client";
+		const deviceMode = deviceUsesHosted ? "the easy sign-in" : "your own Google client";
+		return `This device is already signed in with ${deviceMode}, but the setup code was made with ${codeMode}. `
+			+ "Google lets an app see only the files it created, so this vault stays invisible to the other sign-in: joining would look empty, or make a second folder. "
+			+ "Use a code from the same kind of sign-in as this device (or sign in the same way as the device that made this code), or set this device up as a new vault.";
 	}
 
 	canNext(): boolean {

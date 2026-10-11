@@ -405,24 +405,24 @@ s.section("Test 10: the beginner view of the Drive screen");
 	s.check(rows.includes("Status") && rows.includes("Sync carrier (experimental)") && rows.includes("Set up Google Drive"), "status, the carrier dropdown and the guide stay");
 	const page = manualPage(signedOut);
 	s.check(!!page && "status" in page && typeof page.status === "function" && page.status() === "warning", "the manual page shows a warning mark while signed out");
-	s.check(manualRows(signedOut).join("|") === "Vault ID|Google client ID|Google client secret|Encryption passphrase|Sign in with Google", `manual page, signed out (${manualRows(signedOut).join("|")})`);
+	s.check(manualRows(signedOut).join("|") === "Vault ID|Google client ID|Google client secret|Google Drive folder|Encryption passphrase|Sign in with Google", `manual page, signed out (${manualRows(signedOut).join("|")})`);
 	const order = signedOut.tab.getSettingDefinitions().filter((i) => "type" in i && i.type === "page").map((i) => ("name" in i ? i.name : ""));
 	s.check(order.join() === "Manual setup (advanced),Advanced", `the manual page comes right before Advanced (${order.join()})`);
 	s.check(/Manual setup \(advanced\)/.test(String(flatten(signedOut.tab.getSettingDefinitions()).find((d) => d.name === "Status")?.desc)), "the status text points to it");
 
 	const own = makeFixture({ carrier: "drive", driveClientId: "i", driveClientSecret: "x", driveRefreshToken: "r" }, true, []);
-	s.check(manualRows(own).join("|") === "Vault ID|Google client ID|Google client secret|Encryption passphrase|Signed in to Google", "manual page, own client signed in");
+	s.check(manualRows(own).join("|") === "Vault ID|Google client ID|Google client secret|Google Drive folder|Encryption passphrase|Signed in to Google", "manual page, own client signed in");
 	s.check(mainRows(own).includes("Sign out"), "Sign out is shown on the main screen once signed in");
 	const pageOwn = manualPage(own);
 	s.check(!!pageOwn && "status" in pageOwn && typeof pageOwn.status === "function" && pageOwn.status() === null, "no warning mark when signed in");
 
 	const easy = makeFixture({ carrier: "drive", driveAuthMode: "hosted", driveRefreshToken: TOKEN }, true, []);
-	s.check(manualRows(easy).join("|") === "Vault ID|Sign-in code (easy sign-in)|Encryption passphrase", `manual page, easy sign-in (${manualRows(easy).join("|")})`);
+	s.check(manualRows(easy).join("|") === "Vault ID|Sign-in code (easy sign-in)|Google Drive folder|Encryption passphrase", `manual page, easy sign-in (${manualRows(easy).join("|")})`);
 	s.check(!mainRows(easy).includes("Sign-in code (easy sign-in)"), "the easy sign-in code is not on the main screen");
 
 	// Every control is still reachable, so nothing was lost.
 	const keys = flatten(signedOut.tab.getSettingDefinitions()).map((d) => d.control?.key);
-	for (const key of ["vaultId", "driveClientId", "driveClientSecret", "driveEncryptionPassphrase", "excludePatterns", "maxFileSizeKB", "enableAttachmentSync"]) {
+	for (const key of ["vaultId", "driveClientId", "driveClientSecret", "driveFolderId", "driveEncryptionPassphrase", "excludePatterns", "maxFileSizeKB", "enableAttachmentSync"]) {
 		s.check(keys.includes(key), `the control "${key}" is still reachable`);
 	}
 	s.check(keys.filter((k) => k === "vaultId").length === 1, "and the vault ID control exists exactly once");

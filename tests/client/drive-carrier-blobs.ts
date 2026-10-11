@@ -103,6 +103,7 @@ s.section("Test 4: upload verification");
 		listFiles: (f) => real.listFiles(f),
 		createFile: async (f, n, d) => ({ ...(await real.createFile(f, n, d)), size: d.length - 1 }),
 		readFile: (i) => real.readFile(i),
+		getFile: (i) => real.getFile(i),
 		deleteFile: (i) => real.deleteFile(i),
 	};
 	const store = newStore(drive, lying);

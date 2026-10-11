@@ -18,7 +18,14 @@ export interface DriveFileInfo {
 	size: number;
 	/** Creation time, ms since epoch. */
 	createdTime: number;
+	/** Set by `getFile`: the item is in the user's trash. */
+	trashed?: boolean;
+	/** Set by `getFile`: Drive's mime type. Folders use FOLDER_MIME. */
+	mimeType?: string;
 }
+
+/** Drive's mime type for a folder. */
+export const FOLDER_MIME = "application/vnd.google-apps.folder";
 
 export interface DriveApi {
 	/** Folders in the user's Drive with exactly this name (not trashed). */
@@ -28,6 +35,13 @@ export interface DriveApi {
 	listFiles(folderId: string): Promise<DriveFileInfo[]>;
 	createFile(folderId: string, name: string, data: Uint8Array): Promise<DriveFileInfo>;
 	readFile(fileId: string): Promise<Uint8Array>;
+	/**
+	 * One file or folder by id, wherever it is in the user's Drive. File ids
+	 * survive a rename or a move, so a remembered folder id can be checked
+	 * directly instead of searching for its name again. A missing id raises
+	 * DriveError(404); a trashed item comes back with `trashed: true`.
+	 */
+	getFile(fileId: string): Promise<DriveFileInfo>;
 	/** Permanently delete a file or folder. A missing file raises DriveError(404). */
 	deleteFile(fileId: string): Promise<void>;
 }

@@ -2392,6 +2392,9 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			// Only the easy sign-in sets this key; the other two paths clear it, so it never lingers.
 			if (patch.driveAuthMode) settings.driveAuthMode = patch.driveAuthMode;
 			else delete settings.driveAuthMode;
+			// F5: a remembered Drive folder belongs to the vault it was found for.
+			// Setting up another vault must not keep pointing at the old folder.
+			if (settings.vaultId !== patch.vaultId) delete settings.driveFolderId;
 		}, "settings:drive-wizard");
 	}
 
@@ -2590,6 +2593,21 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			},
 			onFatal: (message) => {
 				new Notice(`YAOS: Google Drive sync stopped. ${message}`, 15000);
+			},
+			// F5: something to tell the user that is not an error (a duplicate
+			// vault folder, or an empty one about to receive a large document).
+			onNotice: (message) => {
+				this.trace("trace", "drive-carrier-notice", { message });
+				new Notice(message, 15000);
+			},
+			// F5: remember which Drive folder this vault lives in, so renaming it
+			// in the Drive web app does not make the carrier create a second one.
+			folderIdentity: {
+				saved: () => this.settings.driveFolderId,
+				remember: (id) => {
+					if (!id || this.settings.driveFolderId === id) return;
+					void this.updateSettings((settings) => { settings.driveFolderId = id; }, "settings:drive-folder-id");
+				},
 			},
 			// F2: Drive has no server to refuse a newer-schema vault, so the
 			// carrier asks the engine before every poll-driven read and every

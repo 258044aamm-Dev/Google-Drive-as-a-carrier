@@ -59,6 +59,11 @@ export class MeteredDriveApi implements DriveApi {
 		return this.inner.readFile(fileId);
 	}
 
+	getFile(fileId: string): Promise<DriveFileInfo> {
+		this.count("getFile");
+		return this.inner.getFile(fileId);
+	}
+
 	deleteFile(fileId: string): Promise<void> {
 		this.count("deleteFile");
 		return this.inner.deleteFile(fileId);

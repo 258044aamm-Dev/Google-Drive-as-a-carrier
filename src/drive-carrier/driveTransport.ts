@@ -4,6 +4,7 @@ import { Awareness } from "y-protocols/awareness";
 import type { SyncTransport } from "../sync/transport";
 import { makeSvEchoMessage } from "../sync/svEchoMessage";
 import { DriveError, type DriveApi, type DriveFileInfo } from "./driveApi";
+import { resolveVaultFolder } from "./driveFolders";
 import { EncryptionError } from "./driveCrypto";
 import { DriveOperation, DriveOperationStopped } from "./driveOperation";
 import { DRIVE_LAYOUT_SCHEMA, DriveKeyring, FatalCarrierError } from "./driveKeyring";
@@ -74,6 +75,24 @@ export interface DriveTransportOptions {
 	 * upload. Unset: no check, exactly as before.
 	 */
 	guardSchema?: () => string | null;
+	/**
+	 * F5: a device that saved a folder id for this vault keeps using that folder
+	 * even after it was renamed in Drive, and a newly resolved id is handed back
+	 * to be saved. Unset: the folder is found by name every start, exactly as
+	 * before.
+	 */
+	folderIdentity?: {
+		saved(): string | undefined;
+		remember(id: string): void;
+	};
+	/**
+	 * Told once per session about something the user should know but that is not
+	 * an error (a duplicate vault folder, an empty folder about to receive a
+	 * large local document). Unset: only the log line.
+	 */
+	onNotice?: (message: string) => void;
+	/** Local state above this many bytes in an empty vault folder is worth the F5 warning. Default 1 MB. */
+	splitBrainWarnBytes?: number;
 	now?: () => number;
 	log?: (message: string) => void;
 }
@@ -140,16 +159,21 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	/** Last error seen, for diagnostics. */
 	lastError: string | null = null;
 
-	private readonly opts: Required<Omit<DriveTransportOptions, "ignoreOrigin" | "log" | "folderName" | "idleAfterMs" | "idlePollIntervalMs" | "backgroundPollIntervalMs" | "activity" | "keyring" | "onFatal" | "guardSchema">> & {
+	private readonly opts: Required<Omit<DriveTransportOptions, "ignoreOrigin" | "log" | "folderName" | "idleAfterMs" | "idlePollIntervalMs" | "backgroundPollIntervalMs" | "activity" | "keyring" | "onFatal" | "guardSchema" | "folderIdentity" | "onNotice">> & {
 		idleAfterMs: number | undefined;
 		idlePollIntervalMs: number | undefined;
 		backgroundPollIntervalMs: number | undefined;
 		onFatal: ((message: string) => void) | undefined;
+		onNotice: ((message: string) => void) | undefined;
 		guardSchema: (() => string | null) | undefined;
+		folderIdentity: { saved(): string | undefined; remember(id: string): void } | undefined;
 		folderName: string;
 		ignoreOrigin: (origin: unknown) => boolean;
 		log: (message: string) => void;
 	};
+
+	/** Notices already handed to the owner this session (keyed, so a retry does not repeat them). */
+	private readonly noticesShown = new Set<string>();
 
 	private folderId: string | null = null;
 	private readonly known = new Map<string, KnownFile>();
@@ -207,7 +231,10 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			idlePollIntervalMs: options.idlePollIntervalMs,
 			backgroundPollIntervalMs: options.backgroundPollIntervalMs,
 			onFatal: options.onFatal,
+			onNotice: options.onNotice,
 			guardSchema: options.guardSchema,
+			folderIdentity: options.folderIdentity,
+			splitBrainWarnBytes: options.splitBrainWarnBytes ?? 1_048_576,
 			batchMs: options.batchMs ?? 2000,
 			cycleTimeoutMs: options.cycleTimeoutMs ?? 300_000,
 			listingGraceMs: options.listingGraceMs ?? 60_000,
@@ -623,27 +650,58 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	// ---------------------------------------------------------------------
 
 	private async prepareFolder(op: DriveOperation): Promise<void> {
-		let folders = await op.wait(() => this.api.findFolders(this.opts.folderName));
+		// F5: the remembered folder id wins, so a folder renamed in Drive is used
+		// again instead of a second empty folder being created (and the whole vault
+		// uploaded into it). Duplicates are reported, never deleted.
+		const resolution = await op.wait(() => resolveVaultFolder(this.api, {
+			name: this.opts.folderName,
+			vaultId: this.opts.vaultId,
+			savedId: this.opts.folderIdentity?.saved(),
+		}));
 		op.check();
-		if (folders.length === 0) {
-			const created = await op.wait(() => this.api.createFolder(this.opts.folderName));
-			op.check();
-			folders = await op.wait(() => this.api.findFolders(this.opts.folderName));
-			op.check();
-			if (!folders.some((f) => f.id === created.id)) folders.push(created);
-		}
-		// Two devices may have created the folder at the same moment: everyone picks the
-		// same one (oldest, then lowest id). A stray empty duplicate is left alone.
-		folders.sort((a, b) => a.createdTime - b.createdTime || (a.id < b.id ? -1 : 1));
-		const chosen = folders[0];
-		if (!chosen) throw new DriveError(500, "Could not create the vault folder");
+		if (!resolution.id) throw new DriveError(500, "Could not create the vault folder");
+		if (resolution.warning) this.reportNotice("vault-folder-duplicate", `YAOS: ${resolution.warning}`);
+		// Two devices creating the folder in the same moment leave an empty folder
+		// behind (the choice already converged on the oldest one). That used to be
+		// silent; it is not worth a Notice, but it is worth a line in the log.
+		else if (resolution.folders > 1) this.opts.log(`drive carrier: ${String(resolution.folders)} folders are named "${this.opts.folderName}"; using the oldest one`);
 		// The folder counts as ready only once the keyring knows whether the vault is
 		// encrypted. Setting it first let a later cycle skip this step after one failed
 		// meta.json call and upload plaintext into an encrypted vault.
-		await op.wait(() => this.keyring.ensureMeta(chosen.id, op.check));
+		await op.wait(() => this.keyring.ensureMeta(resolution.id, op.check));
 		op.check();
 		if (!this.keyring.isReady) throw new DriveError(500, "The vault key is not ready");
-		this.folderId = chosen.id;
+		// A folder that held nothing before YAOS wrote its meta file, on a device
+		// that already has a large document: check before the first upload.
+		if (this.keyring.listedFileCount === 0) this.warnAboutEmptyVaultFolder();
+		this.folderId = resolution.id;
+		this.opts.folderIdentity?.remember(resolution.id);
+	}
+
+	/** One notice per key per session; the log line is written every time. */
+	private reportNotice(key: string, message: string): void {
+		this.opts.log(`drive carrier: ${message}`);
+		if (this.noticesShown.has(key)) return;
+		this.noticesShown.add(key);
+		this.opts.onNotice?.(message);
+	}
+
+	private warnAboutEmptyVaultFolder(): void {
+		let bytes: number;
+		try {
+			bytes = Y.encodeStateAsUpdate(this.doc).length;
+		} catch {
+			return;
+		}
+		if (bytes < this.opts.splitBrainWarnBytes) return;
+		const size = `${(bytes / 1_048_576).toFixed(1)} MB`;
+		this.reportNotice(
+			"empty-vault-folder",
+			"YAOS: this device found an empty vault folder on Google Drive and is about to upload its own copy of the vault "
+			+ `(${size} of notes). If this vault already syncs, that is a sign this device cannot see the folder the other devices use: `
+			+ "Google lets a sign-in see only the files it created, so a vault made with a different Google client stays invisible here. "
+			+ "Check your Google Drive for a second folder before letting both sides run.",
+		);
 	}
 
 	// ---------------------------------------------------------------------
