@@ -148,7 +148,7 @@ The existing desktop result does not close this real-device requirement.
 ## Evidence rules
 
 - Preserve raw failing evidence; do not weaken a scenario to obtain green output.
-- A manually ignored expected failure is not a passing regression. `SYNC-01` must become a hard failing test before its fix.
+- A manually ignored expected failure is not a passing regression. `SYNC-01`'s scenario is a hard failure: `qa/controllers/two-device.ts` (scenario `issue-22-disable-reenable-local-delete-remote-unchanged`) pushes to `errors` when a locally deleted file comes back, and `tests/client/engine-offline-delete.ts` holds the model-level regression.
 - Adapter writes do not prove OS watcher behavior.
 - Passive quorum does not prove edit propagation.
 - Unit/model tests do not prove real mobile lifecycle ordering.
