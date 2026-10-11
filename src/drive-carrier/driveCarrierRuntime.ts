@@ -24,6 +24,11 @@ export interface DriveCarrierRuntimeDeps {
 	pollIntervalMs?: number;
 	/** Called once when the carrier stops for a reason retrying cannot fix (wrong passphrase, another layout). */
 	onFatal?: (message: string) => void;
+	/**
+	 * F2: CRDT schema admission. Returns the reason this device must not read or
+	 * write this vault (null when it may). See DriveTransportOptions.guardSchema.
+	 */
+	guardSchema?: () => string | null;
 	/** Phones suspend apps, so polling stops while the window is hidden there. */
 	isMobile?: () => boolean;
 	/** Window visibility and network events. Default: the browser's. */
@@ -110,6 +115,7 @@ export function createDriveCarrier(deps: DriveCarrierRuntimeDeps): DriveCarrier 
 				activity,
 				keyring: keyringFor(vaultId),
 				onFatal: deps.onFatal,
+				guardSchema: deps.guardSchema,
 				ignoreOrigin: isLocalStoreOrigin,
 				log: deps.log,
 			});

@@ -50,6 +50,13 @@ export interface LanTransportOptions {
 	ignoreOrigin?: (origin: unknown) => boolean;
 	/** Called once per start when the link server cannot start (no key, port in use). */
 	onProblem?: (message: string) => void;
+	/**
+	 * F2: CRDT schema admission. Returns the reason this device must not read or
+	 * write this vault (null when it may). A linked device may hold a
+	 * newer-schema document, so the check runs before the carrier starts and
+	 * after every applied update. Unset: no check, exactly as before.
+	 */
+	guardSchema?: () => string | null;
 	ackDelayMs?: number;
 	/** Pause before asking again for updates that could not be applied. */
 	resyncDelayMs?: number;
@@ -111,6 +118,10 @@ export class LanTransport extends ObservableV2<TransportEvents> implements SyncT
 
 	/** Last problem seen, for diagnostics and the settings screen. */
 	lastError: string | null = null;
+	/** F2: set once a schema admission failure stopped this carrier. */
+	private schemaBlocked = false;
+	/** F2: set once the owner has been told, so a repeated check does not repeat the notice. */
+	private schemaReported = false;
 
 	readonly hub: LanHub;
 	private readonly peers = new Map<LanLink, PeerState>();
@@ -201,6 +212,8 @@ export class LanTransport extends ObservableV2<TransportEvents> implements SyncT
 
 	async connect(): Promise<void> {
 		if (this.destroyed || this.started) return;
+		// F2: do not even start the link server for a vault this device cannot read.
+		if (!this.assertSchemaAdmission()) return;
 		this.started = true;
 		this.wsconnecting = true;
 		this.emit("status", [{ status: "connecting" }]);
@@ -363,6 +376,9 @@ export class LanTransport extends ObservableV2<TransportEvents> implements SyncT
 				} finally {
 					this.applyingFrom = null;
 				}
+				// F2: the update just applied may have raised the document's schema
+				// version. Stop before this device acts on data it cannot read.
+				if (!this.assertSchemaAdmission()) return;
 				if (decoded.type === SYNC_STEP2) peer.gotStep2 = true;
 				if (peer.gotStep2 && !peer.synced) this.checkComplete(peer);
 				this.scheduleAck(peer);
@@ -372,6 +388,31 @@ export class LanTransport extends ObservableV2<TransportEvents> implements SyncT
 			this.log(`lan carrier: ${this.lastError}`);
 			peer.link.close("bad sync data");
 		}
+	}
+
+	/**
+	 * F2: true while this device may keep carrying the vault. On the first
+	 * refusal the carrier stops (the link server too), the status becomes
+	 * disconnected and the owner is told once. Later checks stay quiet.
+	 */
+	private assertSchemaAdmission(): boolean {
+		const problem = this.options.guardSchema?.() ?? null;
+		if (problem === null) return true;
+		this.lastError = problem;
+		if (this.schemaBlocked) return false;
+		this.schemaBlocked = true;
+		this.log(`lan carrier: ${problem}`);
+		// stop() rather than disconnect(): a refused vault must not start again
+		// until the plugin is updated (which creates a new transport anyway).
+		this.started = false;
+		this.hub.stop();
+		for (const peer of Array.from(this.peers.values())) this.dropPeer(peer.link);
+		this.updateConnectionState();
+		if (!this.schemaReported) {
+			this.schemaReported = true;
+			this.options.onProblem?.(problem);
+		}
+		return false;
 	}
 
 	/**

@@ -24,6 +24,11 @@ export interface LanCarrierDeps {
 	log: (message: string) => void;
 	/** Called once per start when the carrier cannot start (no key, port in use). */
 	onProblem: (message: string) => void;
+	/**
+	 * F2: CRDT schema admission. Returns the reason this device must not read or
+	 * write this vault (null when it may). See LanTransportOptions.guardSchema.
+	 */
+	guardSchema?: () => string | null;
 }
 
 /** What the settings screen shows. */
@@ -62,6 +67,7 @@ export function createLanCarrier(deps: LanCarrierDeps): LanCarrier {
 			const current = new LanTransport(doc, {
 				ignoreOrigin: isLocalStoreOrigin,
 				onProblem: deps.onProblem,
+				guardSchema: deps.guardSchema,
 				log: deps.log,
 				createHub: (hooks) => {
 					const settings = deps.getSettings();

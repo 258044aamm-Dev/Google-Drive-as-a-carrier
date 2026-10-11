@@ -1155,6 +1155,23 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				`(gen=${this.vaultSync.connectionGeneration})`,
 			);
 
+			// F2: the check above covers the local document, but the carriers
+			// connect while VaultSync is still being built, and a carrier with no
+			// server-side admission (Google Drive, Local network) may have applied a
+			// newer-schema update from another device during its first poll. Check
+			// again now that it has caught up, and refuse before reconciliation
+			// touches disk or the carriers write anything. The carriers stop
+			// themselves on the same check; this is the user-visible backstop.
+			const postSyncSchemaError = this.vaultSync.checkSchemaVersion();
+			if (postSyncSchemaError) {
+				console.error(`[yaos] ${postSyncSchemaError}`);
+				this.log(`Schema admission refused after provider sync: ${postSyncSchemaError}`);
+				this.trace("trace", "startup-schema-admission-refused", { stage: "post-provider-sync" });
+				new Notice(`YAOS: ${postSyncSchemaError}`, 15000);
+				this.updateStatusBar("error");
+				return;
+			}
+
 			if (this.vaultSync.fatalAuthError) {
 				this.updateStatusBar(this.vaultSync.fatalAuthCode === "update_required" ? "error" : "unauthorized");
 				this.showFatalSyncNotice();
@@ -2508,6 +2525,9 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			onProblem: (message) => {
 				new Notice(`YAOS: Local network sync cannot start. ${message}`, 15000);
 			},
+			// F2: same admission rule as the Drive carrier (a linked device may
+			// hold a newer-schema document).
+			guardSchema: () => this.vaultSync?.checkSchemaVersion() ?? null,
 		});
 		return this.lanCarrier;
 	}
@@ -2571,6 +2591,11 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			onFatal: (message) => {
 				new Notice(`YAOS: Google Drive sync stopped. ${message}`, 15000);
 			},
+			// F2: Drive has no server to refuse a newer-schema vault, so the
+			// carrier asks the engine before every poll-driven read and every
+			// write. Lazy lookup: the transport exists before `this.vaultSync`
+			// is assigned, and this closure only runs once it is.
+			guardSchema: () => this.vaultSync?.checkSchemaVersion() ?? null,
 			isMobile: () => Platform.isMobile,
 		});
 		return this.driveCarrier;

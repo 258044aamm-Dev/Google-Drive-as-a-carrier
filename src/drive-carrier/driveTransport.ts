@@ -66,6 +66,14 @@ export interface DriveTransportOptions {
 	autoTimers?: boolean;
 	/** Origins whose Y.Doc updates are NOT local edits (e.g. the IndexedDB persistence). */
 	ignoreOrigin?: (origin: unknown) => boolean;
+	/**
+	 * F2: CRDT schema admission. Returns the reason this device must not read or
+	 * write this vault (null when it may). Cloudflare refuses a newer-schema room
+	 * at socket admission; a carrier with no server has to ask the engine, both
+	 * after a poll (remote data can raise the document's version) and before any
+	 * upload. Unset: no check, exactly as before.
+	 */
+	guardSchema?: () => string | null;
 	now?: () => number;
 	log?: (message: string) => void;
 }
@@ -132,11 +140,12 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	/** Last error seen, for diagnostics. */
 	lastError: string | null = null;
 
-	private readonly opts: Required<Omit<DriveTransportOptions, "ignoreOrigin" | "log" | "folderName" | "idleAfterMs" | "idlePollIntervalMs" | "backgroundPollIntervalMs" | "activity" | "keyring" | "onFatal">> & {
+	private readonly opts: Required<Omit<DriveTransportOptions, "ignoreOrigin" | "log" | "folderName" | "idleAfterMs" | "idlePollIntervalMs" | "backgroundPollIntervalMs" | "activity" | "keyring" | "onFatal" | "guardSchema">> & {
 		idleAfterMs: number | undefined;
 		idlePollIntervalMs: number | undefined;
 		backgroundPollIntervalMs: number | undefined;
 		onFatal: ((message: string) => void) | undefined;
+		guardSchema: (() => string | null) | undefined;
 		folderName: string;
 		ignoreOrigin: (origin: unknown) => boolean;
 		log: (message: string) => void;
@@ -198,6 +207,7 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			idlePollIntervalMs: options.idlePollIntervalMs,
 			backgroundPollIntervalMs: options.backgroundPollIntervalMs,
 			onFatal: options.onFatal,
+			guardSchema: options.guardSchema,
 			batchMs: options.batchMs ?? 2000,
 			cycleTimeoutMs: options.cycleTimeoutMs ?? 300_000,
 			listingGraceMs: options.listingGraceMs ?? 60_000,
@@ -291,6 +301,7 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	async syncNow(): Promise<boolean> {
 		if (this.destroyed || this.fatalError) return false;
 		return this.cycle(async (op) => {
+			this.assertSchemaAdmission();
 			if (this.folderId === null) await this.prepareFolder(op);
 			op.check();
 			await this.flushLocked(op);
@@ -328,6 +339,9 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	private async pollCompleteLocked(op: DriveOperation): Promise<void> {
 		for (let attempt = 0; attempt < MAX_COMPLETE_POLLS; attempt++) {
 			await this.pollLocked(op);
+			// F2: an update we just applied may have raised the document's schema
+			// version. Refuse before reconcile, compaction, a receipt or "synced".
+			this.assertSchemaAdmission();
 			op.check();
 			if (this.isComplete()) return;
 		}
@@ -370,6 +384,7 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		this.wsconnecting = true;
 		this.emit("status", [{ status: "connecting" }]);
 		const ok = await this.cycle(async (op) => {
+			this.assertSchemaAdmission();
 			await this.prepareFolder(op);
 			op.check();
 			await this.flushLocked(op);
@@ -438,14 +453,42 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		this.lastError = message;
 		this.opts.log(`drive carrier: ${message}`);
 		if (err instanceof FatalCarrierError) {
-			this.fatalError = message;
-			this.started = false;
-			this.clearTimers();
-			this.markOffline();
-			this.opts.onFatal?.(message);
+			this.failHard(message);
 			return;
 		}
 		if (this.failures >= FAILURES_BEFORE_OFFLINE) this.markOffline();
+	}
+
+	/**
+	 * Stop the carrier for a reason retrying cannot fix (layout mismatch, wrong
+	 * passphrase, unreadable schema). Idempotent: whichever path noticed first,
+	 * the owner is told once and the counters/timers end up the same.
+	 */
+	private failHard(message: string): void {
+		if (this.fatalError === message) return;
+		this.fatalError = message;
+		this.started = false;
+		this.clearTimers();
+		this.markOffline();
+		this.opts.onFatal?.(message);
+	}
+
+	/**
+	 * F2: refuse a vault whose CRDT schema is newer than this plugin understands.
+	 *
+	 * The Cloudflare Worker rejects such a room at socket admission. Neither the
+	 * Drive carrier nor the Local network carrier has a server, so the check is
+	 * made here: after every poll (an applied remote update can raise the
+	 * document's version) and before every upload (so no data is ever written
+	 * under a schema this device cannot honour). Unset guard: no check at all.
+	 */
+	private assertSchemaAdmission(): void {
+		const problem = this.opts.guardSchema?.() ?? null;
+		if (problem === null) return;
+		this.lastError = problem;
+		this.opts.log(`drive carrier: ${problem}`);
+		this.failHard(problem);
+		throw new FatalCarrierError(problem);
 	}
 
 	// ---------------------------------------------------------------------
@@ -632,6 +675,10 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	}
 
 	private async uploadUpdate(kind: FileKind, update: Uint8Array, op: DriveOperation): Promise<DriveFileInfo> {
+		// F2: the single choke point for every Drive write (segments from edits,
+		// repairs, compaction snapshots). Nothing is written under a schema this
+		// device cannot honour, whichever path (cycle, flush, reconcile) asked.
+		this.assertSchemaAdmission();
 		const folderId = this.folderId;
 		if (folderId === null) throw new DriveError(500, "No vault folder");
 		if (!this.keyring.isReady) throw new DriveError(500, "The vault key is not ready");

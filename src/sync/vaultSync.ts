@@ -42,7 +42,7 @@ import { TICKET_REFRESH_BUFFER_MS, patchTicketInUrl } from "./socketTicket";
 
 /** Current schema version. Stored in sys.schemaVersion. */
 export { SCHEMA_VERSION } from "./schema";
-import { SCHEMA_VERSION } from "./schema";
+import { SCHEMA_VERSION, schemaAdmissionError } from "./schema";
 
 /** Timeouts for the startup sequence. */
 const LOCAL_PERSISTENCE_TIMEOUT_MS = 3_000;
@@ -698,16 +698,7 @@ export class VaultSync {
 	 *   - Version > SCHEMA_VERSION: INCOMPATIBLE (newer plugin wrote this)
 	 */
 	checkSchemaVersion(): string | null {
-		const stored = this.sys.get("schemaVersion");
-		if (stored === undefined || stored === null) return null; // first run
-		if (typeof stored !== "number") return null; // corrupt, treat as first run
-		if (stored > SCHEMA_VERSION) {
-			return (
-				`CRDT schema version ${stored} is newer than this plugin supports (v${SCHEMA_VERSION}). ` +
-				`Update the plugin or risk data corruption.`
-			);
-		}
-		return null; // same or older version, OK
+		return schemaAdmissionError(this.sys.get("schemaVersion"));
 	}
 
 	get supportedSchemaVersion(): number {
