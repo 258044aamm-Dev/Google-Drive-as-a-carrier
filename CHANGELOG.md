@@ -8,6 +8,42 @@ Up to `2.1.1-drive.10` the version number (like `2.1.1-drive.3`) existed only in
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
+## 2.1.23 - 2026-10-11 - TEST RELEASE: Google Drive carrier hardening (bytes, memory, trust), a real-Drive evidence gate, and documentation truth
+
+This release is the Google Drive carrier plus documentation. The Cloudflare carrier and server are unchanged, the Drive carrier is still experimental and off by default, and no vault, CRDT or encryption format changed.
+
+### Cost and memory (F1, F7)
+- **Compaction merges change files instead of re-uploading the vault.** When the folder fills up, the smallest subset of change files that satisfies the cap is merged into one and the originals are removed; a full copy is written only when it is genuinely smaller (at most 60 % of the live change-file bytes, floor 1 MiB, ceiling 64 MiB) rather than as the default reaction to "many files". Measured against the review's probe and asserted with ceilings in `drive-carrier-compaction-cost`: 1.04 MB vault + 0.30 MB of edits was ×4.4 and is now ≤ ×2; 8.29 MB + 0.30 MB was ×28.2 and is now ≤ ×2; 1.04 MB + 3.00 MB was ×3.3, ≤ ×3; 8.29 MB + 3.00 MB was ×10.5, ≤ ×3; 250 edits past the cap cost ≤ ×2.5 of the changed content. The change-file cap in the default mode is 200 (was 50), which bounds listing pages and memory.
+- **"Compact changes" can be restored to 2.1.22 exactly.** *Full copies (like earlier versions)* writes what 2.1.22 wrote (cap 50, a copy on every compaction); the legacy suite asserts that amplification still reproduces the old one.
+- **Memory is bounded (F7).** An applied payload is kept only while it is needed to rebuild the picture of what Drive holds, and never more than 32 MB in total (oldest dropped first); evicted payloads are re-read from Drive when a rebuild needs them, so convergence is unchanged. `requestStats()` now reports `bytesWritten`/`bytesRead` per operation, so what Drive was asked to store can be checked against the meter.
+
+### Trust and safety (F2, F4, F5, F6, F11)
+- **The sign-in address must be a full `https://` address (F4).** Anything else — plain http, another scheme, a bare host, a half-typed address — is refused with a message naming the address and saying nothing was sent, in the wizard, in the join check and in the running carrier, which stops instead of posting the token anywhere. A custom address is named where the user can see it (wizard screen and the easy-sign-in settings row); an address that differs from the one that last issued a token is traced before the first token request, and it is recorded as used only after a token was actually issued.
+- **The easy sign-in now requires a passphrase (F4).** That path is the one case where a service run by someone else takes part in signing in, so the wizard refuses to create a vault through it without encryption and refuses to finish joining one, with a sentence saying why; the encryption tick box cannot be turned off there. The private path (your own Google client) is untouched, and a vault without a passphrase still joins there.
+- **Uploads above Drive's multipart ceiling use resumable uploads (F11).** Google caps simple/multipart uploads at 5 MB; the carrier switches at 4 MiB, and the refusal path is pinned by a test with a scripted double.
+- **The vault folder's identity is remembered (F5).** Renaming the folder in the Drive web app no longer makes the carrier create a second one; a duplicate or empty candidate folder is reported to the user instead of being merged into; a vault never merges with another vault's folder.
+- **A restore point is proved before anything is deleted (F6).** The snapshot is read back, its checksum verified and its document state compared with the state that was encoded; only then are the files it covers removed. If the read-back fails, every file is kept, the reason is logged once, and the next compaction (at least 30 s later) tries again. *Check a restore point before deleting* (default on) and *Restore points kept* (2–10, default 4) are new settings in the Google Drive group; 2 is exactly what 2.1.22 kept.
+- **A carrier with no server refuses an incompatible vault (F2).** The CRDT schema version is checked before anything is read or written, so a newer-schema vault is refused with a clear message instead of being silently merged. Covered for the Drive carrier and, over real loopback TLS, for the local network carrier.
+- **Unused attachments** can be listed with a dry-run command; it never deletes anything.
+
+### Code and evidence (F8, F9)
+- **The completeness check no longer depends on Yjs internals (F9).** `pendingStructs`/`pendingDs` are read through one guarded module; if a future Yjs stops exposing them, the check falls back to comparing the state vectors of the payloads it applied with the document's own, so a waiting document is never reported as synced. File names gain a per-run tag, so two runs starting inside one millisecond can no longer mint the same name (the 13-digit prefix and the ordering are unchanged, and an untagged name is exactly what 2.1.22 wrote); the transport takes its timers from an injected scheduler instead of reaching for `window`; the file and attachment formats document what they do and do not protect.
+- **A real-Drive gate exists and is registered as opt-in (F8).** `tests/live/drive-real.ts` (`YAOS_DRIVE_LIVE=1` plus a token) measures listing latency after a write, duplicate names, the multipart ceiling, error-body shapes, a 6 MB resumable round trip, an attachment round trip and the `drive.file` invisibility rule between two sign-ins; `FakeDrive` gained the listing-lag model. **The run itself was not performed**: `docs/drive-carrier-device-results.md` records Run 1 as *accepted unrun for 2.1.23*, so the Drive data path is verified against a simulated Drive only.
+
+### Documentation truth (F3, F10)
+- `docs/BACKLOG.md`, `docs/sync-contract.md` and `docs/qa.md` no longer describe SYNC-01 and SYNC-02 as open: both are implemented (`offlineDeletePolicy.ts` and `boundDivergencePolicy.ts`) and both the engine suites and the QA scenario fail hard. The resolved entries carry the commits, the suites and what each suite checks, and a new contract suite (`tests/contracts/docs-claim-drift.ts`) fails if one of the stale phrases comes back while the work that closed it still exists.
+- README: a carrier matrix (Cloudflare default · Google Drive experimental, off by default · local network desktop-only) with the honest limits kept, and a development section naming the `npm ci --prefix server` step a fresh clone needs before the server suites can run. `docs/README.md` lists the carrier, device and review documents. The plugin description names the optional carriers instead of only the Cloudflare Worker.
+
+### Compatibility and verification
+- No CRDT schema bump, no encryption-format change, no Cloudflare server change, no new required settings. Every new option is additive: with the option unset, or on a vault that never used these paths, behaviour is what 2.1.22 did.
+- Validation: production build, plugin/tests/QA type checks, all six guards, full lint (**0 errors, 24 warnings** — the 2.1.22 baseline was 28), **all 141 regression suites**, and the local Worker integration gate against a real Wrangler Worker (66 checks plus the ticket-reconnect and WebSocket admission suites, 0 failed).
+- The Drive carrier's automated coverage is fake-Drive coverage. What that does and does not prove is written down in `docs/qa.md` and `docs/drive-carrier-device-results.md`.
+
+### Still unverified
+- **No real Google-account run of the Drive carrier.** Deferred and accepted for this release; Run 1 in `docs/drive-carrier-device-results.md` says so in place. None of the 18 device-checklist sections has been executed on hardware.
+- Real-account sign-in on Android/iPad, and the physical two-PC local-network smoke test, remain manual and unchanged from 2.1.22.
+- The v(403) rate-limit body shape is deliberately unprovoked against a real account, so the backoff path's classification of it stays unverified.
+
 ## 2.1.22 - 2026-10-08 - TEST RELEASE: configuration-sync staging preview
 
 ### Added — gated first increment, not full configuration mirroring

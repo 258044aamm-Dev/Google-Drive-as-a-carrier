@@ -1,9 +1,9 @@
 {
 	"id": "yaos",
 	"name": "YAOS",
-	"version": "2.1.22",
+	"version": "2.1.23",
 	"minAppVersion": "1.13.0",
-	"description": "A zero-terminal, real-time sync engine powered by your own Cloudflare Worker.",
+	"description": "A zero-terminal, real-time sync engine for Obsidian: your own Cloudflare Worker, Google Drive (experimental) or your local network.",
 	"author": "Kavin",
 	"authorUrl": "https://github.com/kavinsood",
 	"isDesktopOnly": false

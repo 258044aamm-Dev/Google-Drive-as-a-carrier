@@ -28,6 +28,18 @@ YAOS uses [Yjs CRDTs](https://yjs.dev) to keep one live vault state moving acros
 
 If you want the official, fully managed experience, pay for Obsidian Sync and support the team. If you want a fast, self-deployed, local-first alternative on your own Cloudflare account, welcome to YAOS!
 
+## Sync carriers
+
+One vault state, three ways to move it. Cloudflare is the default; the other two are opt-in and change nothing unless you choose them.
+
+| Carrier | Status | What it needs | How it behaves |
+|---|---|---|---|
+| **Cloudflare Worker** (default) | Stable | A Cloudflare account, a Worker you deploy (button above) | Real-time over WebSockets, live cursors, attachments and daily snapshots via an optional R2 bucket |
+| **Google Drive** | Experimental, off by default | A Google account; an OAuth client you create once | Polls (changes arrive in seconds), attachments and snapshots in a folder in your own Drive, optional passphrase encryption. Setup and limits: [docs/drive-carrier.md](docs/drive-carrier.md) |
+| **Local network (LAN)** | Desktop only, off by default | Nothing else — devices on the same network | Devices talk to each other directly over TLS; no server and no account. Phones/tablets are not supported. See [docs/lan-carrier.md](docs/lan-carrier.md) |
+
+Honest limits, unchanged by this fork: the Cloudflare carrier is the only one with live cursors and the only one proven on real devices across Android/iPad; the Drive carrier is verified against a simulated Drive in CI and its real-account run is still outstanding ([device results](docs/drive-carrier-device-results.md)); the LAN carrier is desktop-only and needs both devices awake on the same network.
+
 ## Get started
 
 YAOS has two parts: an Obsidian plugin and a small Cloudflare server you deploy to your own account. The Worker setup page walks you through the remaining steps, so you don't need to memorize this.
@@ -83,6 +95,18 @@ If you're building agentic workflows on top of Obsidian vaults, YAOS gives you t
 **Files not syncing**: Check exclude patterns. Files over max size are skipped. Use debug logging to see what's happening, and then raise an issue on GitHub.
 
 **Diagnostics**: Use **Show sync debug info** for local inspection. Safe diagnostics exports redact server URL, vault ID, device name, and vault paths.
+
+## Development
+
+```sh
+npm ci                 # plugin: build, lint, tests
+npm ci --prefix server # server suites (miniflare) — without it one suite fails
+npm run build          # type check + production bundle
+npm run test:regressions
+npm run lint
+```
+
+`npm ci` alone is not enough: the server suites need their own dependencies, and a fresh clone that skips `npm ci --prefix server` fails one suite with `MODULE_NOT_FOUND: miniflare`. The Worker integration gate (`npm run test:integration:worker`) additionally needs a local Wrangler login. Ground rules and every gate: [docs/qa.md](docs/qa.md).
 
 ## License
 

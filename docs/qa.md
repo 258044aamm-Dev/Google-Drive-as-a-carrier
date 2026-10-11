@@ -8,6 +8,8 @@ Generated bundles, reports, and device artifacts belong under ignored `qa-runs/`
 
 `npm run test:regressions` discovers suites under `tests/client`, `tests/server`, `tests/contracts`, and eligible `tests/live` files. `tests/suites.json` records helpers and suites requiring another driver. Discovery guards reject unaccounted inert suites and stale exemptions.
 
+A fresh clone needs **both** dependency sets before any of this is meaningful: `npm ci` and `npm ci --prefix server`. The server suites run on `miniflare` from the second one; without it exactly one suite fails with `MODULE_NOT_FOUND: miniflare` while everything else is green, which reads like a real failure. The Worker integration gate additionally needs a local Wrangler login.
+
 `npm run test:ci` also starts a real local Wrangler Worker and runs:
 
 - schema admission;
