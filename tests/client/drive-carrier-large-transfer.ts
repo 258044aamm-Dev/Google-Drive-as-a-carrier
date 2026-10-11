@@ -18,6 +18,12 @@
  *   carrier layer (FakeDrive, no HTTP):
  *     - a document larger than 5 MB is created by one device, uploaded, and
  *       reconstructed from Drive alone by a fresh device that never saw it.
+ *
+ * The ceiling itself is enforced where it exists: multipart and resumable are
+ * properties of Drive's HTTP API, which is what the scripted double above
+ * models. FakeDrive speaks DriveApi, an interface with no upload-type notion,
+ * so a limit there would model a constraint the interface does not have; the
+ * carrier-layer case instead proves the data path end to end.
  */
 import * as Y from "yjs";
 import { DriveTransport } from "../../src/drive-carrier/driveTransport";
@@ -135,6 +141,26 @@ s.section("Test 3: a reply we cannot vouch for is refused, not followed");
 		);
 		s.check(requests.length === 1, `${label}: the payload was never sent anywhere`);
 	}
+}
+
+// ---------------------------------------------------------------------------
+s.section("Test 5: if Drive refuses an upload, the refusal surfaces once and is not retried in a loop");
+{
+	// Google's own answer when a multipart body is over the ceiling. It must
+	// reach the caller as a clear DriveError, and the REST layer must not answer
+	// it with a retry storm (the sync loop decides when to come back).
+	const refusal = "Bad Request. File exceeds the maximum size for uploadType=multipart.";
+	const { api, requests } = makeApi(() => jsonResponse(400, { error: { message: refusal } }));
+	let error: unknown = null;
+	try {
+		await api.createFile("folder-1", "seg-small.ydu", new Uint8Array(1024).fill(3));
+	} catch (err) {
+		error = err;
+	}
+	s.check(error instanceof DriveError && error.status === 400, "the refusal is a DriveError with Drive's status");
+	s.check(error instanceof DriveError && error.message.includes(refusal), `the reason is carried to the caller (${error instanceof Error ? error.message : String(error)})`);
+	s.check(error instanceof DriveError && error.retryable === false, "a 400 is not classified as automatically retryable");
+	s.check(requests.length === 1, `exactly one request was made, no loop (${requests.length})`);
 }
 
 // ---------------------------------------------------------------------------
