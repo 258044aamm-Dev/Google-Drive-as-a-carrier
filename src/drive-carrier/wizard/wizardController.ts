@@ -16,6 +16,17 @@ export type StepId =
 	| "join-code" | "existing" | "signin"
 	| "encryption" | "create" | "join-check" | "code" | "done";
 
+/**
+ * F4, decision 4 (2.1.23). The easy sign-in hands the sign-in to a service run by
+ * someone else, so a vault that uses it has to be encrypted: otherwise that service
+ * holds a token to a vault whose files anyone with the Google account can read. The
+ * wizard refuses to create such a vault, and refuses to finish a join into one.
+ */
+export const HOSTED_NEEDS_PASSPHRASE =
+	"The easy sign-in goes through a service run by someone else, so a vault that uses it has to be encrypted. Keep \"Encrypt my notes in Google Drive\" ticked and choose a passphrase, or go back and use your own Google client.";
+export const HOSTED_JOIN_NEEDS_ENCRYPTION =
+	"This vault was created without encryption. The easy sign-in goes through a service run by someone else, so it will not sync a vault whose files are readable in Google Drive. Use \"Private sign-in (your own Google client)\" for this vault, or create a new vault with a passphrase.";
+
 export type WizardPath = "new" | "join";
 /** hosted = the easy sign-in page, bundled = the client built into the plugin, own = the user's own Google client. */
 export type ClientMode = "hosted" | "bundled" | "own";
@@ -203,6 +214,9 @@ export class WizardController {
 	}
 
 	setField<K extends keyof WizardDraft>(key: K, value: WizardDraft[K]): void {
+		// F4 (decision 4): on the easy-sign-in path encryption is a rule, not a default,
+		// so this tick box cannot be turned off there. The encryption screen says why.
+		if (key === "encrypt" && value === false && this.state.draft.clientMode === "hosted") return;
 		this.state.draft[key] = value;
 		this.state.error = null;
 		if (key === "includePassphrase") this.refreshSetupCode();
@@ -222,13 +236,30 @@ export class WizardController {
 			case "join-code": return this.joinInputProblem();
 			case "existing": return draft.existingAccepted ? null : "Tick the box to continue.";
 			case "encryption":
+				// F4 (decision 4): the easy sign-in is refused for a vault that would be plain
+				// in Google Drive, so the step cannot be passed with encryption off.
+				if (draft.clientMode === "hosted" && !draft.encrypt) return HOSTED_NEEDS_PASSPHRASE;
 				if (!draft.encrypt) return null;
 				return checkNewPassphrase(draft.passphrase, draft.passphraseConfirm) ?? (draft.riskAccepted ? null : "Tick the box to confirm you understand.");
 			case "signin": return this.state.draft.refreshToken ? null : "Waiting for you to sign in.";
 			case "create": return this.state.setupCode ? null : "The vault is not ready yet.";
-			case "join-check": return this.state.joinCheck?.status === "ok" ? null : "The vault is not checked yet.";
+			case "join-check": {
+				// F4 (decision 4): a vault without encryption is not joined through the easy sign-in.
+				const refusal = this.hostedJoinRefusal(this.state.joinCheck);
+				if (refusal) return refusal;
+				return this.state.joinCheck?.status === "ok" ? null : "The vault is not checked yet.";
+			}
 			default: return null;
 		}
+	}
+
+	/**
+	 * F4 (decision 4): why a checked vault may not be joined with the easy sign-in, or
+	 * null. Screens and the step rule both ask this, so the wording cannot drift.
+	 */
+	hostedJoinRefusal(check: JoinCheck | null): string | null {
+		if (check?.status !== "ok" || check.encrypted) return null;
+		return this.state.draft.clientMode === "hosted" ? HOSTED_JOIN_NEEDS_ENCRYPTION : null;
 	}
 
 	private joinInputProblem(): string | null {
@@ -326,6 +357,9 @@ export class WizardController {
 
 	private async go(step: StepId): Promise<void> {
 		this.state.error = null;
+		// F4 (decision 4): a draft that reached "encryption" another way (exported state,
+		// an older wizard session) is corrected here too, so the rule holds for every path.
+		if (step === "encryption" && this.state.draft.clientMode === "hosted") this.state.draft.encrypt = true;
 		this.state.step = step;
 		this.changed();
 		if (step === "signin") {
@@ -494,6 +528,13 @@ export class WizardController {
 	async runCreate(): Promise<void> {
 		const token = ++this.running;
 		const { draft } = this.state;
+		// F4 (decision 4): never create a plain vault through the easy sign-in, whatever
+		// route reached this method.
+		if (draft.clientMode === "hosted" && !(draft.encrypt && draft.passphrase.trim() !== "")) {
+			this.state.error = HOSTED_NEEDS_PASSPHRASE;
+			this.changed();
+			return;
+		}
 		this.state.error = null;
 		this.state.busy = "Setting things up in your Google Drive...";
 		this.state.checklist = [];
@@ -538,7 +579,8 @@ export class WizardController {
 			const check = await checkVaultForJoin(api, draft.vaultId.trim(), draft.encrypt ? draft.passphrase : "");
 			if (token !== this.running) return;
 			this.state.joinCheck = check;
-			if (check.status === "ok") {
+			const refusal = this.hostedJoinRefusal(check);
+			if (check.status === "ok" && !refusal) {
 				await this.deps.applySettings(this.patch());
 				this.vaultReady = true;
 				this.refreshSetupCode();

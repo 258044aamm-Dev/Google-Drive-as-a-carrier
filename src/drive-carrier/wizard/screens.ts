@@ -1,6 +1,6 @@
 import { checkClientId, checkClientSecret, checkHostedToken, checkNewPassphrase, checkVaultId } from "./validate";
 import { SETUP_CODE_PREFIX } from "./setupCode";
-import type { WizardController, StepId } from "./wizardController";
+import { HOSTED_NEEDS_PASSPHRASE, type WizardController, type StepId } from "./wizardController";
 import { driveFolderLabel } from "../carrierSettings";
 import { HOSTED_SIGNIN_URL } from "../hostedAuth";
 
@@ -155,7 +155,7 @@ export function buildScreen(c: WizardController): Screen {
 					"Come back here and paste it below.",
 				] },
 				link("Open the sign-in page", HOSTED_SIGNIN_URL),
-				{ kind: "note", tone: "info", text: "That page is run by the author of the Obsidian Google Drive plugin, not by YAOS. It only trades your sign-in for short-lived access, and its own page says your notes never pass through it. Because it takes part in signing in, turn encryption on in the next steps: then even your files in Google Drive stay unreadable to anyone else." },
+				{ kind: "note", tone: "info", text: "That page is run by the author of the Obsidian Google Drive plugin, not by YAOS. It only trades your sign-in for short-lived access, and its own page says your notes never pass through it. Because it takes part in signing in, encryption is required on this path: then even your files in Google Drive stay unreadable to anyone else." },
 			];
 			// F4: name the address that will receive the token, and refuse a custom one that is
 			// not a full https address (the problem is shown on the field, so Next stays blocked).
@@ -329,8 +329,15 @@ export function buildScreen(c: WizardController): Screen {
 				{ kind: "p", text: "Encryption scrambles your notes in Google Drive, so nobody without the passphrase can read them, not even someone with access to your Google account." },
 				{ kind: "note", tone: "warn", text: "You can only choose this now, when the vault is created. If you lose the passphrase, your notes in Google Drive cannot be recovered. Your devices keep their own copies." },
 			];
-			screen.fields = [{ key: "encrypt", label: "Encrypt my notes in Google Drive (recommended)", type: "checkbox", value: draft.encrypt }];
-			if (draft.encrypt) {
+			// F4 (decision 4): the easy sign-in only works with a passphrase, so on that path the
+			// choice is stated instead of offered (the tick box could not be turned off anyway).
+			if (draft.clientMode === "hosted") {
+				screen.body.push({ kind: "note", tone: "info", text: HOSTED_NEEDS_PASSPHRASE });
+				screen.fields = [];
+			} else {
+				screen.fields = [{ key: "encrypt", label: "Encrypt my notes in Google Drive (recommended)", type: "checkbox", value: draft.encrypt }];
+			}
+			if (draft.encrypt || draft.clientMode === "hosted") {
 				screen.fields.push(
 					{ key: "passphrase", label: "Passphrase", type: "password", value: draft.passphrase, help: "At least 8 characters. Use a long phrase you will remember." },
 					{
@@ -361,7 +368,12 @@ export function buildScreen(c: WizardController): Screen {
 		case "join-check": {
 			screen.title = "Checking your vault";
 			const check = state.joinCheck;
-			if (check?.status === "ok") {
+			// F4 (decision 4): a vault that is not encrypted cannot be joined with the easy
+			// sign-in, so the screen says why instead of offering Next.
+			const hostedRefusal = c.hostedJoinRefusal(check ?? null);
+			if (hostedRefusal) {
+				screen.body = [{ kind: "note", tone: "warn", text: hostedRefusal }];
+			} else if (check?.status === "ok") {
 				screen.body = [{ kind: "note", tone: "info", text: `Found it${check.encrypted ? " (encrypted, the passphrase fits)" : ""}. Press Next to start syncing.` }];
 			} else if (check) {
 				screen.body = [{ kind: "note", tone: "warn", text: joinProblemText(check.status === "other-layout" ? `${check.status}:${check.found}` : check.status) }];
@@ -376,7 +388,7 @@ export function buildScreen(c: WizardController): Screen {
 				if (check?.status === "not-encrypted") retryButton.push({ label: "Clear the passphrase and check again", action: "clear-join-passphrase", kind: "primary" });
 				else retryButton.push({ label: "Check again", action: "retry", kind: "primary" });
 			}
-			screen.buttons = [cancel, back, ...(retryButton.length ? retryButton : [next()])];
+			screen.buttons = hostedRefusal ? [cancel, back] : [cancel, back, ...(retryButton.length ? retryButton : [next()])];
 			break;
 		}
 		case "code": {

@@ -69,11 +69,15 @@ a real token, so the regression run must never pick it up. It is *not* run by
 
 ## Run 1 — (not yet recorded)
 
-Status: **not run.** The user deferred the live-account probe on 2026-10-11
-("skip for now"). This section stays empty until the gate runs; the numbers it
-prints (listing latency, the multipart ceiling, byte totals) get pinned into
-`FakeDrive.listingLagTicks` and the tables above, and the test release notes must
-list the Drive data path as verified by fake only.
+Status: **not run — accepted for 2.1.23.** The live-account probe was deferred by
+the maintainer on 2026-10-11 ("skip for now") and, asked again at the release
+gate, deliberately left unrun so that 2.1.23 can ship: the fake-Drive suites stay
+the only automated evidence for the Drive data path, and the release notes must
+say so. Nothing here counts as observed. When the gate is finally run — by anyone
+with a Google account and the client id/secret — its printed numbers (listing
+latency, the multipart ceiling, byte totals) get pinned into
+`FakeDrive.listingLagTicks` and the tables above, and this section stops saying
+"accepted".
 
 ---
 

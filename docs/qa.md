@@ -51,8 +51,10 @@ For the Google Drive carrier specifically (F8):
   `skip`) measures the things the fake cannot: listing latency after a write,
   duplicate names, the multipart ceiling, error-body shapes, a 6 MB resumable
   round trip and, with a second token, the `drive.file` invisibility rule.
-  Results are recorded in `docs/drive-carrier-device-results.md`. **Not yet run**
-  (deferred on 2026-10-11). The fake now models the measured listing lag behind
+  Results are recorded in `docs/drive-carrier-device-results.md`. **Not yet run**:
+  deferred on 2026-10-11 and, at the 2.1.23 release gate, deliberately accepted
+  unrun (see "Run 1 — accepted for 2.1.23" there), so 2.1.23 ships with the Drive
+  data path verified by fake only. The fake models listing lag behind
   `FakeDrive.listingLagTicks`, which stays off until the gate prints a number.
 - **a real-device checklist run for the Drive carrier** — the 18 sections listed
   in `docs/drive-carrier-device-results.md`, none of which has been executed on

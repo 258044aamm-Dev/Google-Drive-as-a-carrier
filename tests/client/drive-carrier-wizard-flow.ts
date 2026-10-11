@@ -11,6 +11,8 @@ import { BUNDLED_GOOGLE_CLIENT } from "../../src/drive-carrier/wizard/bundledCli
 import { buildScreen, type Screen } from "../../src/drive-carrier/wizard/screens";
 import { decodeSetupCode, encodeSetupCode } from "../../src/drive-carrier/wizard/setupCode";
 import {
+	HOSTED_JOIN_NEEDS_ENCRYPTION,
+	HOSTED_NEEDS_PASSPHRASE,
 	WizardController,
 	stepsFor,
 	type FinishResult,
@@ -666,7 +668,7 @@ s.section("Test 14: the easy sign-in, new vault");
 	s.check(buildScreen(rig.c).progress === "Step 4 of 9", `only nine steps (${String(buildScreen(rig.c).progress)})`);
 	const page = buildScreen(rig.c);
 	s.check(page.body.some((b) => b.kind === "link" && b.url === "https://ogd.richardxiong.com"), "a button opens the sign-in page");
-	s.check(/run by the author of the Obsidian Google Drive plugin, not by YAOS/.test(JSON.stringify(page.body)) && /turn encryption on/.test(JSON.stringify(page.body)), "it says who runs the page and recommends encryption");
+	s.check(/run by the author of the Obsidian Google Drive plugin, not by YAOS/.test(JSON.stringify(page.body)) && /encryption is required on this path/.test(JSON.stringify(page.body)), "it says who runs the page and that encryption is required here");
 	s.check(page.fields.length === 1 && page.fields[0]?.type === "password", "the code goes into a hidden field");
 	s.check(!rig.c.canNext(), "Next waits for a code");
 	for (const [bad, part] of [["http://example.com", "web address"], ["short", "too short"], ["has space inside the code that is long enough", "no spaces"], ["YAOS-DRIVE1:abcdefghijklmnopqrstuvwxyz", "setup code"]] as const) {
@@ -819,8 +821,13 @@ s.section("Test 17: a device that is already set up, then the easy sign-in");
 	s.check(rig.c.state.step === "hosted-token", "then the sign-in code");
 	rig.c.setFieldByKey("hostedToken", GOOD_TOKEN);
 	await rig.c.next();
+	// F4 (decision 4): this path requires a passphrase now, so the tick box stays on.
 	rig.c.setFieldByKey("encrypt", false);
+	rig.c.setFieldByKey("passphrase", "a long passphrase");
+	rig.c.setFieldByKey("passphraseConfirm", "a long passphrase");
+	rig.c.setFieldByKey("riskAccepted", true);
 	await rig.c.next();
+	s.check(rig.c.state.draft.encrypt === true, "the easy sign-in keeps encryption on");
 	s.check(rig.applied[0]?.driveClientId === OWN_ID && rig.applied[0]?.driveClientSecret === OWN_SECRET, "the earlier client details are kept, not erased");
 	s.check(rig.applied[0]?.driveAuthMode === "hosted" && rig.applied[0]?.vaultId === "brandNewVaultIdYYYYYYYY", "new vault, easy sign-in");
 
@@ -954,6 +961,113 @@ s.section("Test 22: F4 — the wizard refuses a sign-in address that is not http
 	s.check(!okField?.problem && /private-token\.test/.test(JSON.stringify(buildScreen(ok.c).body)), "an https custom address has no problem and is named on screen");
 	await ok.c.next();
 	s.check(ok.httpCalls.length === 1 && ok.httpCalls[0]?.url === "https://private-token.test/api/access" && ok.c.state.step === "encryption", "and is used exactly as before");
+}
+
+s.section("Test 23: F4 — the easy sign-in requires a passphrase");
+{
+	// A new vault on the easy path: encryption is a rule, not a tick box.
+	const rig = makeRig();
+	await toHostedToken(rig);
+	rig.c.setFieldByKey("hostedToken", GOOD_TOKEN);
+	await rig.c.next();
+	s.check(rig.c.state.step === "encryption", "the easy sign-in reaches the encryption step");
+	rig.c.setFieldByKey("encrypt", false);
+	s.check(rig.c.state.draft.encrypt === true, "the tick box cannot be turned off on this path");
+	const screen = buildScreen(rig.c);
+	s.check(!screen.fields.some((f) => f.key === "encrypt"), "the screen does not offer the choice at all");
+	s.check(JSON.stringify(screen.body).includes("goes through a service run by someone else") && JSON.stringify(screen.body).includes("has to be encrypted"), "and states the rule in one sentence");
+	s.check(screen.fields.some((f) => f.key === "passphrase") && screen.fields.some((f) => f.key === "passphraseConfirm"), "the passphrase fields are still asked for");
+	s.check(!rig.c.canNext() && String(rig.c.blocker()).includes("Choose a passphrase") === false, "Next waits for the passphrase itself");
+	s.check(String(rig.c.blocker()).length > 0, "with a reason while they are empty");
+	rig.c.setFieldByKey("passphrase", "short");
+	rig.c.setFieldByKey("passphraseConfirm", "short");
+	s.check(!rig.c.canNext(), "a too-short passphrase is still refused");
+	rig.c.setFieldByKey("passphrase", "a long passphrase");
+	rig.c.setFieldByKey("passphraseConfirm", "a long passphrase");
+	rig.c.setFieldByKey("riskAccepted", true);
+	await rig.c.next();
+	s.check(rig.c.state.step === "create" && rig.applied.length === 1 && rig.applied[0]?.driveEncryptionPassphrase === "a long passphrase", "with a passphrase the vault is created, encrypted");
+	s.check(rig.drive.namesIn(`YAOS ${FIRST_VAULT}`).join() === "meta.json", "and the passphrase is what sealed it");
+
+	// Defence in depth: the create call itself refuses a hosted vault with no passphrase.
+	const bare = makeRig();
+	await toHostedToken(bare);
+	bare.c.setFieldByKey("hostedToken", GOOD_TOKEN);
+	await bare.c.next();
+	bare.c.state.draft.encrypt = false;
+	bare.c.state.draft.passphrase = "";
+	await bare.c.runCreate();
+	s.check(bare.applied.length === 0 && bare.drive.folders.size === 0 && bare.c.state.error === HOSTED_NEEDS_PASSPHRASE, "a plain hosted vault cannot be created even if asked directly");
+
+	// The private path is untouched: encryption stays optional there.
+	const own = makeRig();
+	await toPaste(own);
+	own.c.setFieldByKey("clientId", OWN_ID);
+	own.c.setFieldByKey("clientSecret", OWN_SECRET);
+	await own.c.next();
+	own.c.setFieldByKey("encrypt", false);
+	s.check(own.c.state.draft.encrypt === false && own.c.canNext(), "the private path can still turn encryption off");
+	await own.c.next();
+	s.check(own.applied.length === 1 && own.applied[0]?.driveEncryptionPassphrase === "", "and creates a vault without a passphrase as before");
+
+	// Joining a vault without encryption through the easy sign-in is refused.
+	const plainDrive = new FakeDrive();
+	const maker = makeRig({ drive: plainDrive });
+	await toPaste(maker);
+	maker.c.setFieldByKey("clientId", OWN_ID);
+	maker.c.setFieldByKey("clientSecret", OWN_SECRET);
+	await maker.c.next();
+	maker.c.setFieldByKey("encrypt", false);
+	await maker.c.next();
+	s.check(maker.applied.length === 1 && maker.applied[0]?.driveEncryptionPassphrase === "" && maker.drive.namesIn(`YAOS ${FIRST_VAULT}`).join() === "meta.json", "a plain vault exists to join");
+	const hostedCode = encodeSetupCode({ vaultId: FIRST_VAULT, clientId: "", clientSecret: "", bundledClient: false, passphrase: "", encrypted: false, hosted: true });
+	const joiner = makeRig({ drive: plainDrive });
+	await joiner.c.next();
+	joiner.c.choosePath("join");
+	await tick();
+	joiner.c.setFieldByKey("setupCodeText", hostedCode);
+	await joiner.c.next();
+	joiner.c.setFieldByKey("hostedToken", GOOD_TOKEN);
+	await joiner.c.next();
+	s.check(joiner.c.state.joinCheck?.status === "ok" && joiner.c.state.joinCheck.encrypted === false, "the vault is found and is not encrypted");
+	s.check(!joiner.c.canNext() && joiner.c.blocker() === HOSTED_JOIN_NEEDS_ENCRYPTION, "the step cannot be passed, with the reason");
+	const joinScreen = buildScreen(joiner.c);
+	s.check(JSON.stringify(joinScreen.body).includes("was created without encryption") && JSON.stringify(joinScreen.body).includes("own Google client"), "the screen says why instead of offering Next");
+	s.check(!joinScreen.buttons.some((b) => b.action === "next"), "and Next is not offered");
+	s.check(joiner.applied.length === 0 && joiner.c.state.result === null, "nothing is saved and the wizard does not finish");
+
+	// The same plain vault joined with the private path still works.
+	const privateJoiner = makeRig({ drive: plainDrive });
+	await privateJoiner.c.next();
+	privateJoiner.c.choosePath("join");
+	await tick();
+	privateJoiner.c.setFieldByKey("manualJoin", true);
+	privateJoiner.c.setFieldByKey("vaultId", FIRST_VAULT);
+	privateJoiner.c.setFieldByKey("clientId", OWN_ID);
+	privateJoiner.c.setFieldByKey("clientSecret", OWN_SECRET);
+	await privateJoiner.c.next();
+	s.check(privateJoiner.c.state.joinCheck?.status === "ok" && privateJoiner.c.canNext(), "the private path joins the same vault");
+	await privateJoiner.c.next();
+	s.check(privateJoiner.applied.length === 1 && privateJoiner.applied[0]?.driveEncryptionPassphrase === "", "and saves it as before");
+
+	// An encrypted vault joined through the easy sign-in is unaffected.
+	const encDrive = new FakeDrive();
+	const encMaker = makeRig({ drive: encDrive });
+	await createOwnVault(encMaker);
+	await encMaker.c.next();
+	await encMaker.c.next();
+	const encCode = encodeSetupCode({ vaultId: FIRST_VAULT, clientId: "", clientSecret: "", bundledClient: false, passphrase: "a long passphrase", encrypted: true, hosted: true });
+	const encJoiner = makeRig({ drive: encDrive });
+	await encJoiner.c.next();
+	encJoiner.c.choosePath("join");
+	await tick();
+	encJoiner.c.setFieldByKey("setupCodeText", encCode);
+	await encJoiner.c.next();
+	encJoiner.c.setFieldByKey("hostedToken", GOOD_TOKEN);
+	await encJoiner.c.next();
+	s.check(encJoiner.c.state.joinCheck?.status === "ok" && encJoiner.c.state.joinCheck.encrypted === true && encJoiner.c.canNext(), "an encrypted vault is joined through the easy sign-in");
+	await encJoiner.c.next();
+	s.check(encJoiner.applied.length === 1 && encJoiner.applied[0]?.driveEncryptionPassphrase === "a long passphrase", "with its passphrase");
 }
 
 await s.done();

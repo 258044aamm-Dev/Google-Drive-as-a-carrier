@@ -77,6 +77,14 @@ names become keyed hashes, so even the content hash is not visible).
   recovered**; the data on Drive is then unreadable.
 - Reload the plugin after changing the passphrase.
 - Notes on your devices are not encrypted by YAOS (they are your normal files).
+- **The easy sign-in requires a passphrase (F4, 2.1.23).** That path is the one
+  case where a service run by someone else takes part in signing in, so the
+  wizard will not create a vault through it without encryption, and will not
+  finish joining a vault that has none: a third party would otherwise hold a
+  token while the files sat readable in the Drive web app. The private path
+  (your own Google client) keeps encryption optional, and a vault without a
+  passphrase can still be created and joined there; only the easy sign-in
+  refuses it, with a message saying so.
 
 ## Request budget, background and phones
 
@@ -176,7 +184,7 @@ the command **YAOS: Set up Google Drive**. A short wizard walks you through:
      access token, because only the service holds the Google client secret.
      Your notes never pass through it: Drive requests go from your device
      straight to Google. Because the service takes part in signing in,
-     **turn encryption on**.
+     **encryption is required on this path**.
    - **Private sign-in (your own Google client).** The wizard shows each
      Google Cloud page with a button and asks for the client ID and secret you
      create (the same five steps as "Setup" below). You make the Google project
@@ -186,8 +194,9 @@ the command **YAOS: Set up Google Drive**. A short wizard walks you through:
 3. **Sign in with Google** (private and own-client paths): a code appears;
    open google.com/device on any device and enter it. On the easy path this
    step only checks the pasted code with the service.
-4. **Encryption** (new vault only; on by default). The passphrase cannot be
-   recovered; without it nobody, including you, can read the notes on Drive.
+4. **Encryption** (new vault only; on by default, and required on the easy
+   sign-in path — see below). The passphrase cannot be recovered; without it
+   nobody, including you, can read the notes on Drive.
 5. **Create.** The wizard checks that it can create, read and delete a file in
    a new `YAOS <vault id>` folder, writes `meta.json`, and only then saves your
    settings. Nothing is saved or written to Drive if you cancel earlier.
@@ -260,7 +269,9 @@ Cloudflare screens and names are unchanged.
 - **File names carry a per-run tag (F9).** `seg-<13-digit ms>-<device>-<counter>-<tag>.ydu`; two runs starting inside the same millisecond can no longer mint the same name. The 13-digit stamp still leads, so name order is unchanged and an untagged name is what 2.1.22 wrote.
 - **Timers come from the host (F9).** `DriveTransportOptions.scheduler` (default `window`) is where every timeout is set and cleared, so a fake clock can drive a whole cycle and the carrier is not bound to a browser global.
 - **The formats say what they do and do not protect (F9).** A change file's kind and flags sit outside its checksum by design, and each consequence fails closed (kind flip: the same bytes apply; flag flip: the vault's key refuses the file; another vault: the associated data refuses it). An attachment is named by its hash and verified on download, so a second checksum there would protect the same bytes twice.
-- **Not verified against a real account yet (F8).** Every Drive suite runs against `FakeDrive`; the opt-in gate `tests/live/drive-real.ts` (registered under `skip`) measures listing latency, duplicate names, the multipart ceiling, error bodies, a 6 MB resumable round trip and the `drive.file` invisibility rule. Its results belong in `docs/drive-carrier-device-results.md`, which is still empty: the run was deferred, so treat the Drive data path as fake-verified only.
+- **The sign-in address must be a full https address (F4).** A `driveHostedUrl` that is not `https://…` (plain http, another scheme, a bare host, a relative path) is refused with a message naming the address and saying nothing was sent — in the wizard, in the join check and in the running carrier, which stops instead of posting the token anywhere. A custom address is always named where the user can see it (wizard screen and the easy-sign-in settings row), and one that differs from the address that last issued a token is traced before the first token request of the session; the address is recorded as used only after a token was actually issued.
+- **The easy sign-in requires a passphrase (F4, decision 4).** That path hands the sign-in to a service run by someone else, so the wizard refuses to create a vault through it without encryption and refuses to finish joining one, with a message saying so; the encryption tick box cannot be turned off there. The private path (own Google client) keeps encryption optional, and plain vaults still join there.
+- **Not verified against a real account yet (F8).** Every Drive suite runs against `FakeDrive`; the opt-in gate `tests/live/drive-real.ts` (registered under `skip`) measures listing latency, duplicate names, the multipart ceiling, error bodies, a 6 MB resumable round trip and the `drive.file` invisibility rule. Its results belong in `docs/drive-carrier-device-results.md`, which records the run as **accepted unrun for 2.1.23** (deferred at the release gate on 2026-10-11): treat the Drive data path as fake-verified only.
 - **Simulation suite.** `drive-carrier-fuzz` (about 6 s, fixed seeds) must stay green; rerun one configuration with `FUZZ_ONLY=<part of the name> FUZZ_SEEDS=<n>`.
 
 ## Setup (once per Google account)
