@@ -16,9 +16,71 @@ import type { AccessTokenProvider, DriveHttp } from "./googleDriveRest";
 export const HOSTED_SIGNIN_URL = "https://ogd.richardxiong.com";
 export const HOSTED_TOKEN_URL = "https://ogd-server.richardxiong.com/api/access";
 
-/** Shared by setup and runtime; never fall back to a second service after a failure. */
+/**
+ * F4: the refresh token is sent to this address, so it must be a full https
+ * address and nothing else. Raised by resolveHostedTokenUrl and shown to the
+ * user as-is (see explainError), because the fix is always a settings edit.
+ */
+export class HostedEndpointError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "HostedEndpointError";
+	}
+}
+
+function refusedEndpoint(raw: string, reason: string): HostedEndpointError {
+	return new HostedEndpointError(
+		`The sign-in address "${raw}" cannot be used because ${reason}. Your sign-in code is sent there, so it must be a full https:// address such as https://token.example.com/api/access. Correct driveHostedUrl in this vault's plugin data (or clear it to use the default service). Nothing was sent.`,
+	);
+}
+
+/**
+ * Shared by setup and runtime; never fall back to a second service after a failure.
+ * F4: anything that is not an absolute https address is refused here, so no code
+ * path in the wizard, the join check or the running carrier can send a refresh
+ * token in cleartext or to a half-typed address.
+ */
 export function resolveHostedTokenUrl(override?: string): string {
-	return override?.trim() || HOSTED_TOKEN_URL;
+	const raw = override?.trim();
+	if (!raw) return HOSTED_TOKEN_URL;
+	let parsed: URL;
+	try {
+		parsed = new URL(raw);
+	} catch {
+		throw refusedEndpoint(raw, "it is not a complete web address");
+	}
+	if (parsed.protocol !== "https:") {
+		throw refusedEndpoint(raw, `it uses ${parsed.protocol.replace(/:$/, "")} instead of https`);
+	}
+	return raw;
+}
+
+/** F4: what the user is told about where their sign-in code goes. Never throws. */
+export interface HostedEndpointInfo {
+	/** The address that would be used. */
+	url: string;
+	/** The part shown to the user (scheme, host and port). */
+	origin: string;
+	/** True when a custom address is configured instead of the default service. */
+	custom: boolean;
+	/** Why the configured address cannot be used, or null when it can. */
+	problem: string | null;
+}
+
+/** Wizard screens and the settings row both use this, so the wording cannot drift. */
+export function describeHostedEndpoint(override?: string): HostedEndpointInfo {
+	const raw = override?.trim() ?? "";
+	try {
+		const url = resolveHostedTokenUrl(override);
+		return { url, origin: new URL(url).origin, custom: url !== HOSTED_TOKEN_URL, problem: null };
+	} catch (err) {
+		return {
+			url: raw || HOSTED_TOKEN_URL,
+			origin: raw || HOSTED_TOKEN_URL,
+			custom: raw !== "" && raw !== HOSTED_TOKEN_URL,
+			problem: err instanceof Error ? err.message : String(err),
+		};
+	}
 }
 
 type HostedResponseKind = "oauth-json" | "other-json" | "non-json";
@@ -57,11 +119,21 @@ export class HostedTokenManager {
 
 	constructor(
 		private readonly http: DriveHttp,
-		private readonly endpoint: string,
+		private readonly endpointUrl: string,
 		private readonly refreshToken: string,
 		private readonly now: () => number = () => Date.now(),
 		private readonly onRevoked: () => void = () => undefined,
+		/**
+		 * F4 change detection: called after this service issues an access token,
+		 * so the caller can remember which address actually served this sign-in.
+		 */
+		private readonly onTokenIssued: (endpoint: string) => void = () => undefined,
 	) {}
+
+	/** The address this manager sends the refresh token to. */
+	get endpoint(): string {
+		return this.endpointUrl;
+	}
 
 	/** Use as the `AccessTokenProvider` of GoogleDriveRest. */
 	readonly provider: AccessTokenProvider = (forceRefresh = false) => this.get(forceRefresh);
@@ -83,7 +155,7 @@ export class HostedTokenManager {
 		let responseKind: HostedResponseKind = "non-json";
 		try {
 			const res = await this.http({
-				url: this.endpoint,
+				url: this.endpointUrl,
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				// Same body the Obsidian Google Drive plugin sends to this service.
@@ -107,6 +179,7 @@ export class HostedTokenManager {
 			this.accessToken = accessToken;
 			const expires = typeof json.expires_in === "number" && Number.isFinite(json.expires_in) ? json.expires_in : 3600;
 			this.expiresAt = this.now() + expires * 1000;
+			this.onTokenIssued(this.endpointUrl);
 			return accessToken;
 		}
 		this.accessToken = null;

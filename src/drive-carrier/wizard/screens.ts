@@ -2,7 +2,7 @@ import { checkClientId, checkClientSecret, checkHostedToken, checkNewPassphrase,
 import { SETUP_CODE_PREFIX } from "./setupCode";
 import type { WizardController, StepId } from "./wizardController";
 import { driveFolderLabel } from "../carrierSettings";
-import { HOSTED_SIGNIN_URL, HOSTED_TOKEN_URL } from "../hostedAuth";
+import { HOSTED_SIGNIN_URL } from "../hostedAuth";
 
 /**
  * What each wizard screen says and offers, as plain data. The Obsidian window
@@ -144,7 +144,7 @@ export function buildScreen(c: WizardController): Screen {
 				back,
 			];
 			break;
-		case "hosted-token":
+		case "hosted-token": {
 			screen.title = "Sign in on the sign-in page";
 			screen.body = [
 				{ kind: "steps", items: [
@@ -157,16 +157,21 @@ export function buildScreen(c: WizardController): Screen {
 				link("Open the sign-in page", HOSTED_SIGNIN_URL),
 				{ kind: "note", tone: "info", text: "That page is run by the author of the Obsidian Google Drive plugin, not by YAOS. It only trades your sign-in for short-lived access, and its own page says your notes never pass through it. Because it takes part in signing in, turn encryption on in the next steps: then even your files in Google Drive stay unreadable to anyone else." },
 			];
-			if (c.hostedTokenUrl !== HOSTED_TOKEN_URL) {
-				let destination = "the custom endpoint configured on this device";
-				try { destination = new URL(c.hostedTokenUrl).origin; } catch { /* HTTP adapter will report an invalid URL. */ }
-				screen.body.push({ kind: "note", tone: "info", text: `Your refresh token will be sent to ${destination}, not the default token service. Continue only if you trust this service and the token was issued for its Google client.` });
+			// F4: name the address that will receive the token, and refuse a custom one that is
+			// not a full https address (the problem is shown on the field, so Next stays blocked).
+			const endpoint = c.hostedEndpoint;
+			if (endpoint.custom) {
+				screen.body.push({ kind: "note", tone: "info", text: `Your refresh token will be sent to ${endpoint.origin}, not the default token service. Continue only if you trust this service and the token was issued for its Google client.` });
+			}
+			if (endpoint.problem) {
+				screen.body.push({ kind: "note", tone: "warn", text: endpoint.problem });
 			}
 			screen.fields = [
-				{ key: "hostedToken", label: "Sign-in token (Your Refresh Token)", type: "password", value: draft.hostedToken, placeholder: "Paste the complete refresh token here", problem: typed(draft.hostedToken, checkHostedToken) },
+				{ key: "hostedToken", label: "Sign-in token (Your Refresh Token)", type: "password", value: draft.hostedToken, placeholder: "Paste the complete refresh token here", problem: endpoint.problem ?? typed(draft.hostedToken, checkHostedToken) },
 			];
 			screen.buttons = standard();
 			break;
+		}
 		case "guide-project":
 			screen.title = "Make a Google project";
 			screen.body = [

@@ -21,6 +21,7 @@ import {
 import { lanLayout, type LanSettingsHost } from "../lan-carrier/lanSettingsRows";
 import { applyLanSetupCode, readLanSetting, writeLanSetting, type LanSettingKey } from "../lan-carrier/lanSettings";
 import { checkHostedToken, normalizeHostedToken } from "../drive-carrier/wizard/validate";
+import { describeHostedEndpoint } from "../drive-carrier/hostedAuth";
 import {
 	DEFAULT_COMPACTION_MODE,
 	DEFAULT_KEEP_SNAPSHOTS,
@@ -786,6 +787,19 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 		];
 	}
 
+	/**
+	 * F4: the easy sign-in row says exactly where the sign-in code is sent. A custom
+	 * address is named (with the reason it cannot be used, if that is the case).
+	 */
+	private buildHostedSignInDesc(): string {
+		const endpoint = describeHostedEndpoint(this.host.settings.driveHostedUrl);
+		if (endpoint.problem) return endpoint.problem;
+		if (endpoint.custom) {
+			return `Only shown for the easy sign-in. This device asks ${endpoint.origin} for short-lived access; your sign-in code is sent there, not to the default service. If sync says access was lost, sign in again there and paste the new code here, then reload the plugin.`;
+		}
+		return "Only shown for the easy sign-in. If sync says access was lost, sign in again at https://ogd.richardxiong.com and paste the new code here, then reload the plugin.";
+	}
+
 	/** Everything the wizard fills in, for people who join by hand or need to repair a sign-in. */
 	private driveManualPage(): SettingDefinitionPage {
 		const settings = this.host.settings;
@@ -816,7 +830,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 				},
 				{
 					name: "Sign-in code (easy sign-in)",
-					desc: "Only shown for the easy sign-in. If sync says access was lost, sign in again at https://ogd.richardxiong.com and paste the new code here, then reload the plugin.",
+					desc: this.buildHostedSignInDesc(),
 					visible: () => isHostedSignIn(this.host.settings),
 					control: { type: "text", key: "driveHostedToken", placeholder: "Paste the sign-in code" },
 				},

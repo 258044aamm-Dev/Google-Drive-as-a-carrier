@@ -4,6 +4,17 @@ import { EncryptionError, type DriveSealer } from "./driveCrypto";
 import { ensureFolder, oldestFirst, sha256Hex } from "./driveFolders";
 import type { DriveKeyring } from "./driveKeyring";
 
+/**
+ * F9e: an attachment is stored as its own bytes, and its name is the SHA-256 of
+ * those bytes (HMAC-keyed with the vault when the vault is encrypted). That name
+ * is the integrity check: a download is hashed and compared with the name before
+ * it is handed on, so a damaged or swapped file is refused. Adding a header with
+ * a second checksum would protect exactly the same bytes with the same strength
+ * while changing every existing file, so the format is left as it is. The
+ * envelope with kind and flags (fileFormat.ts) exists for updates and snapshots
+ * because those are read as Yjs data, where there is no such name to check.
+ */
+
 const HEX_64 = /^[0-9a-f]{64}$/;
 /** How long a listing of the blob folder is trusted before a "not found" is re-checked. */
 const LISTING_MAX_AGE_MS = 30_000;

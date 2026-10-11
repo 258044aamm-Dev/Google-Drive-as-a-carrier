@@ -4,7 +4,7 @@
  */
 
 import { GoogleAuthError, GoogleTokenManager, GOOGLE_TOKEN_URL } from "../../src/drive-carrier/googleAuth";
-import { HOSTED_TOKEN_URL, HOSTED_SIGNIN_URL, HostedTokenManager, HostedAuthError, resolveHostedTokenUrl } from "../../src/drive-carrier/hostedAuth";
+import { HOSTED_TOKEN_URL, HOSTED_SIGNIN_URL, HostedTokenManager, HostedAuthError, HostedEndpointError, resolveHostedTokenUrl, describeHostedEndpoint } from "../../src/drive-carrier/hostedAuth";
 import { isDriveSignedIn, isHostedSignIn, type DriveCarrierSettings } from "../../src/drive-carrier/carrierSettings";
 import { createDriveCarrier } from "../../src/drive-carrier/driveCarrierRuntime";
 import type { DriveHttp, DriveHttpRequest } from "../../src/drive-carrier/googleDriveRest";
@@ -233,6 +233,95 @@ s.section("Test 8: service failures never falsely revoke or leak credentials");
 	s.check(await manager.provider() === "fresh", "failed forced refresh clears cached access and permits recovery");
 	s.check(resolveHostedTokenUrl(undefined) === HOSTED_TOKEN_URL && resolveHostedTokenUrl("  ") === HOSTED_TOKEN_URL, "missing or blank endpoint uses default");
 	s.check(resolveHostedTokenUrl(" https://custom.test/access ") === "https://custom.test/access", "custom endpoint is trimmed without fallback to another domain");
+}
+
+s.section("Test 9: F4 — the sign-in address must be https, and a change is reported");
+{
+	const refused = ["http://token.test/api/access", "http://localhost:8787/api/access", "ftp://token.test/access", "//token.test/access", "/api/access", "token.test/access", "https://", "javascript:alert(1)"];
+	for (const raw of refused) {
+		let thrown: unknown = null;
+		try { resolveHostedTokenUrl(raw); } catch (e) { thrown = e; }
+		s.check(thrown instanceof HostedEndpointError, `refused before anything is sent: ${raw}`);
+		s.check(thrown instanceof Error && thrown.message.includes(raw.trim()) && thrown.message.includes("https") && thrown.message.includes("Nothing was sent"), "the reason names the address, https and that nothing was sent");
+	}
+	for (const good of ["https://token.test/api/access", "https://token.test/api/access?x=1", " https://token.test:8443/api/access "]) {
+		s.check(resolveHostedTokenUrl(good) === good.trim(), `accepted unchanged: ${good.trim()}`);
+	}
+	const blank = describeHostedEndpoint(undefined);
+	s.check(blank.problem === null && !blank.custom && blank.url === HOSTED_TOKEN_URL, "no custom address: the default service, no problem");
+	const broken = describeHostedEndpoint("http://token.test/api/access");
+	s.check(broken.problem !== null && broken.custom && broken.origin === "http://token.test/api/access", "a refused address is described, never thrown, so screens can show it");
+	s.check(describeHostedEndpoint("https://token.test/api/access").origin === "https://token.test" && describeHostedEndpoint("https://token.test/api/access").custom, "a custom address is named by origin");
+	s.check(explainHostedSignInError(new HostedEndpointError("The sign-in address \"x\" cannot be used because it uses http instead of https.")).startsWith("The sign-in address"), "the refusal keeps its own wording in the UI");
+	s.check(explainSetupError(new HostedEndpointError("The sign-in address \"x\" cannot be used because it is not a complete web address.")).includes("cannot be used"), "vault setup shows the same wording");
+
+	function driveReply(req: DriveHttpRequest): Reply {
+		if (req.url.startsWith("https://www.googleapis.com/")) return { status: 200, json: { files: [] } };
+		return { status: 200, json: { access_token: `token-from-${req.url}`, expires_in: 3600 } };
+	}
+
+	// The running carrier refuses a plain-http address: no request is made at all.
+	const refusedHttp = fakeHttp(() => ({ status: 200, json: { access_token: "never-used" } }));
+	const fatals: string[] = [];
+	const refusalLogs: string[] = [];
+	const refusedCarrier = createDriveCarrier({
+		getSettings: () => ({ driveAuthMode: "hosted", driveRefreshToken: TOKEN, driveDeviceId: "dev", driveHostedUrl: " http://token.test/api/access " }),
+		http: refusedHttp.http, log: (m) => refusalLogs.push(m), onSignInLost: () => undefined, onFatal: (m) => fatals.push(m),
+	});
+	let refusedThrew = false;
+	try { await refusedCarrier.blobStore("vault-1").exists([HASH]); } catch { refusedThrew = true; }
+	s.check(refusedThrew && refusedHttp.calls.length === 0, "runtime: nothing is sent to a refused address");
+	const refusal = fatals[0] ?? "";
+	s.check(fatals.length === 1 && refusal.includes("https") && refusal.includes("Nothing was sent"), "runtime: the user is told why, in the same words");
+	s.check(refusalLogs.some((m) => m.includes("refused")) && !refusalLogs.some((m) => m.includes(TOKEN)), "runtime: traced, without ever naming the token");
+
+	// A custom https address is used, and the change from the remembered one is traced.
+	const changeLogs: string[] = [];
+	const remembered: string[] = [];
+	const customHttp = fakeHttp(driveReply);
+	const customCarrier = createDriveCarrier({
+		getSettings: () => ({ driveAuthMode: "hosted", driveRefreshToken: TOKEN, driveDeviceId: "dev", driveHostedUrl: "https://custom.test/api/access", driveHostedUrlUsed: "https://old.test/api/access" }),
+		http: customHttp.http, log: (m) => changeLogs.push(m), onSignInLost: () => undefined,
+		hostedEndpointIdentity: { used: () => "https://old.test/api/access", remember: (url) => { remembered.push(url); } },
+	});
+	await customCarrier.blobStore("vault-1").exists([HASH]).catch(() => []);
+	s.check(customHttp.calls[0]?.url === "https://custom.test/api/access", "a custom https address is still honoured exactly as before");
+	s.check(changeLogs.some((m) => m.includes("changed from https://old.test to https://custom.test")), "the change is traced with both addresses");
+	s.check(remembered.length === 1 && remembered[0] === "https://custom.test/api/access", "the address is remembered only once the service has issued a token");
+
+	// Nothing is recorded when the address did not change, when it is the default, or when it failed.
+	const unchanged: string[] = [];
+	const sameHttp = fakeHttp(driveReply);
+	const sameCarrier = createDriveCarrier({
+		getSettings: () => ({ driveAuthMode: "hosted", driveRefreshToken: TOKEN, driveDeviceId: "dev", driveHostedUrl: "https://custom.test/api/access", driveHostedUrlUsed: " https://custom.test/api/access " }),
+		http: sameHttp.http, log: () => undefined, onSignInLost: () => undefined,
+		hostedEndpointIdentity: { used: () => "https://custom.test/api/access", remember: (url) => { unchanged.push(url); } },
+	});
+	await sameCarrier.blobStore("vault-1").exists([HASH]).catch(() => []);
+	s.check(unchanged.length === 0, "an unchanged address is not recorded again");
+
+	const fromDefault: string[] = [];
+	const defaultHttp = fakeHttp(driveReply);
+	const defaultCarrier = createDriveCarrier({
+		getSettings: () => ({ driveAuthMode: "hosted", driveRefreshToken: TOKEN, driveDeviceId: "dev" }),
+		http: defaultHttp.http, log: () => undefined, onSignInLost: () => undefined,
+		hostedEndpointIdentity: { used: () => undefined, remember: (url) => { fromDefault.push(url); } },
+	});
+	await defaultCarrier.blobStore("vault-1").exists([HASH]).catch(() => []);
+	s.check(defaultHttp.calls[0]?.url === HOSTED_TOKEN_URL && fromDefault.length === 0, "the default service is used but never recorded as a custom address");
+
+	const failed: string[] = [];
+	const failHttp = fakeHttp(() => ({ status: 500, raw: "service down" }));
+	const failing = createDriveCarrier({
+		getSettings: () => ({ driveAuthMode: "hosted", driveRefreshToken: TOKEN, driveDeviceId: "dev", driveHostedUrl: "https://custom.test/api/access" }),
+		http: failHttp.http, log: () => undefined, onSignInLost: () => undefined,
+		hostedEndpointIdentity: { used: () => undefined, remember: (url) => { failed.push(url); } },
+	});
+	await failing.blobStore("vault-1").exists([HASH]).catch(() => []);
+	s.check(failed.length === 0 && failHttp.calls.length === 1, "a service failure records nothing, so an unusable address is never called used");
+
+	const plain = new HostedTokenManager(defaultHttp.http, HOSTED_TOKEN_URL, TOKEN);
+	s.check(plain.endpoint === HOSTED_TOKEN_URL, "the manager says which address it posts the token to");
 }
 
 await s.done();

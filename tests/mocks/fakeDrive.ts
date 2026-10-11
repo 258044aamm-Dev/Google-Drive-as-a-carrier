@@ -56,6 +56,18 @@ export class FakeDrive {
 	latencyHook: ((op: FakeOp) => Promise<void>) | null = null;
 	/** Files for which this returns true are missing from listings (a lagging file listing); reads still work. */
 	hideFromListing: ((name: string) => boolean) | null = null;
+	/**
+	 * F8: how long a write takes to appear in (or disappear from) a listing, in
+	 * this fake's clock. Zero by default, so every existing suite keeps the old
+	 * "listings are immediate" behaviour; tests that care set it and advance
+	 * `clock`. The real gate measures the same latency on a real account
+	 * (tests/live/drive-real.ts); the number it prints belongs here.
+	 */
+	listingLagTicks = 0;
+	/** Files that are stored but not listed yet (created inside the lag window). */
+	private readonly listingNotYet = new Map<string, number>();
+	/** Files that are deleted but still listed (deleted inside the lag window). */
+	private readonly listingGhosts = new Map<string, { file: StoredFile; until: number; parent: string }>();
 	private nextId = 1;
 	private readonly failures: { op: FakeOp; status: number; count: number }[] = [];
 	private readonly loseResponse: { count: number }[] = [];
@@ -148,6 +160,36 @@ export class FakeDrive {
 		return this.clock;
 	}
 
+	/** F8: is this file id visible in listings right now? */
+	isListed(fileId: string): boolean {
+		const from = this.listingNotYet.get(fileId);
+		return from === undefined || this.clock >= from;
+	}
+
+	/** F8: hold a file back from listings until the clock reaches `from`. */
+	holdListing(fileId: string, from: number): void {
+		this.listingNotYet.set(fileId, from);
+	}
+
+	/** F8: keep a deleted file in listings until the clock reaches `until`. */
+	holdGhost(file: StoredFile, until: number): void {
+		this.listingGhosts.set(file.id, { file, until, parent: file.parent });
+	}
+
+	/** F8: the ghost listings still shown, as DriveFileInfo. */
+	ghostsIn(folderId: string): DriveFileInfo[] {
+		this.expireListings();
+		return Array.from(this.listingGhosts.values())
+			.filter((g) => g.parent === folderId && this.clock < g.until)
+			.map((g) => ({ id: g.file.id, name: g.file.name, size: g.file.data.length, createdTime: g.file.createdTime }));
+	}
+
+	/** F8: forget published and ghost listings whose window has passed. */
+	expireListings(): void {
+		for (const [id, from] of this.listingNotYet) if (this.clock >= from) this.listingNotYet.delete(id);
+		for (const [id, ghost] of this.listingGhosts) if (this.clock >= ghost.until) this.listingGhosts.delete(id);
+	}
+
 	newId(prefix: string): string {
 		return `${prefix}${this.nextId++}`;
 	}
@@ -196,9 +238,13 @@ export class FakeDriveClient implements DriveApi {
 
 	async listFiles(folderId: string): Promise<DriveFileInfo[]> {
 		await this.drive.enter("listFiles");
-		return Array.from(this.drive.files.values())
+		this.drive.expireListings();
+		const here = Array.from(this.drive.files.values())
 			.filter((f) => f.parent === folderId && !(this.drive.hideFromListing?.(f.name) ?? false))
+			.filter((f) => this.drive.isListed(f.id))
 			.map((f) => ({ id: f.id, name: f.name, size: f.data.length, createdTime: f.createdTime }));
+		for (const ghost of this.drive.ghostsIn(folderId)) here.push(ghost);
+		return here;
 	}
 
 	async createFile(folderId: string, name: string, data: Uint8Array): Promise<DriveFileInfo> {
@@ -212,6 +258,7 @@ export class FakeDriveClient implements DriveApi {
 			createdTime: this.drive.tick(),
 		};
 		this.drive.files.set(stored.id, stored);
+		if (this.drive.listingLagTicks > 0) this.drive.holdListing(stored.id, this.drive.clock + this.drive.listingLagTicks);
 		if (this.drive.consumeLostResponse()) throw new DriveError(0, "response lost");
 		return { id: stored.id, name, size: stored.data.length, createdTime: stored.createdTime };
 	}
@@ -240,7 +287,12 @@ export class FakeDriveClient implements DriveApi {
 
 	async deleteFile(fileId: string): Promise<void> {
 		await this.drive.enter("deleteFile");
-		if (this.drive.files.delete(fileId)) return;
+		const file = this.drive.files.get(fileId);
+		if (file) {
+			if (this.drive.listingLagTicks > 0) this.drive.holdGhost(file, this.drive.clock + this.drive.listingLagTicks);
+			this.drive.files.delete(fileId);
+			return;
+		}
 		if (this.drive.folders.delete(fileId)) return;
 		throw new DriveError(404, "file not found");
 	}

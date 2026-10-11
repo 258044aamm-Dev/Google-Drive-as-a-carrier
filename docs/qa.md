@@ -44,6 +44,22 @@ Still missing:
 - real Node-filesystem watcher proof;
 - original-reporter confirmation.
 
+For the Google Drive carrier specifically (F8):
+
+- **a real-account run of the Drive data path.** Every Drive suite runs against
+  `FakeDrive`; the opt-in gate `tests/live/drive-real.ts` (registered under
+  `skip`) measures the things the fake cannot: listing latency after a write,
+  duplicate names, the multipart ceiling, error-body shapes, a 6 MB resumable
+  round trip and, with a second token, the `drive.file` invisibility rule.
+  Results are recorded in `docs/drive-carrier-device-results.md`. **Not yet run**
+  (deferred on 2026-10-11). The fake now models the measured listing lag behind
+  `FakeDrive.listingLagTicks`, which stays off until the gate prints a number.
+- **a real-device checklist run for the Drive carrier** — the 18 sections listed
+  in `docs/drive-carrier-device-results.md`, none of which has been executed on
+  hardware yet.
+- a provoked **403 rate-limit** response: deliberately not done against a real
+  account, so the backoff path's body classification stays unverified.
+
 ## Prepare a fixture vault
 
 Only prepare a brand-new path:

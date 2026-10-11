@@ -6,6 +6,7 @@ import * as Y from "yjs";
 import { DEFAULT_KEEP_SNAPSHOTS, DriveTransport, type DriveTransportOptions } from "../../src/drive-carrier/driveTransport";
 import { DriveKeyring } from "../../src/drive-carrier/driveKeyring";
 import { decodeFile } from "../../src/drive-carrier/fileFormat";
+import { readPendingState } from "../../src/drive-carrier/yjsPending";
 import { FakeDrive } from "../mocks/fakeDrive";
 import { suite } from "../harness.ts";
 
@@ -209,5 +210,145 @@ s.section("F6: closing the app sends what is still waiting");
 	s.check(B.text.toString() === "typed just before closing", "another device sees the last edit without waiting for A's next start");
 	B.t.destroy();
 }
+
+s.section("F9a: completeness survives a Yjs that no longer shows its internals");
+{
+	// The guard: this fails in CI if a Yjs upgrade stops exposing the internals,
+	// instead of quietly calling a waiting document complete (see yjsPending.ts).
+	const fresh = new Y.Doc();
+	s.check(readPendingState(fresh).known, "this Yjs still exposes pendingStructs/pendingDs");
+	s.check(!readPendingState(fresh).pending, "a caught-up document reports nothing pending");
+
+	// A document that really is waiting for an update it never received.
+	const source = new Y.Doc();
+	source.getText("t").insert(0, "first");
+	const base = Y.encodeStateAsUpdate(source);
+	source.getText("t").insert(5, " second");
+	const dependent = Y.encodeStateAsUpdate(source, Y.encodeStateVectorFromUpdate(base));
+	const waiting = new Y.Doc();
+	Y.applyUpdate(waiting, dependent);
+	const state = readPendingState(waiting);
+	s.check(state.known && state.pending, "a document missing an update is reported as pending");
+	Y.applyUpdate(waiting, base);
+	s.check(!readPendingState(waiting).pending && waiting.getText("t").toString() === "first second", "and is complete once the missing update arrives");
+
+	// The fallback path (what a future Yjs would get) must give the same answer as
+	// the internals path on a real half-synced vault.
+	const drive = new FakeDrive();
+	const A = dev(drive, "A", 1_700_000_000_000, { compactSegmentCount: 100, reconcileIntervalMs: 0 });
+	await A.t.connect();
+	for (let i = 0; i < 4; i++) { A.text.insert(A.text.length, `w${i} `); await cycle(A, 1000); }
+	const segs = names(drive).filter((n) => n.startsWith("seg-"));
+	drive.remove(segs[1] as string);
+	A.t.destroy();
+	const internals = dev(drive, "R", 1_700_000_900_000, { pendingState: readPendingState });
+	const fallback = dev(drive, "F", 1_700_000_900_000, { pendingState: () => ({ known: false, pending: false }) });
+	await internals.t.connect(); await cycle(internals);
+	await fallback.t.connect(); await cycle(fallback);
+	s.check(!internals.t.synced && !fallback.t.synced, "both readers agree: a device missing an update is not synced");
+	s.check(internals.text.toString() === fallback.text.toString(), `and both hold the same document (${internals.text.toString()})`);
+	internals.t.destroy(); fallback.t.destroy();
+}
+
+s.section("F9a2: the state-vector fallback converges like the internals path");
+{
+	const drive = new FakeDrive();
+	const a = dev(drive, "A", 1_700_000_000_000, { reconcileIntervalMs: 0 });
+	const b = dev(drive, "B", 1_700_000_000_000, { reconcileIntervalMs: 0, pendingState: () => ({ known: false, pending: false }) });
+	await a.t.connect();
+	a.text.insert(0, "from A");
+	await cycle(a);
+	await b.t.connect();
+	await cycle(b);
+	s.check(a.text.toString() === "from A" && b.text.toString() === "from A", "the fallback device receives the update");
+	s.check(a.t.synced && b.t.synced, "and both are reported synced");
+	b.text.insert(b.text.length, " plus B");
+	await cycle(b);
+	await cycle(a);
+	s.check(a.text.toString() === "from A plus B", "and an edit from the fallback device comes back to the other one");
+	a.t.destroy(); b.t.destroy();
+}
+
+s.section("F9c: the carrier runs on the host's scheduler, not on window");
+{
+	const drive = new FakeDrive();
+	const scheduled: { handler: () => void; at: number; id: number }[] = [];
+	let nextId = 1;
+	let clock = 1_700_000_000_000;
+	const run = async (): Promise<void> => {
+		for (let i = 0; i < 40 && scheduled.length > 0; i++) {
+			scheduled.sort((x, y) => x.at - y.at || x.id - y.id);
+			const next = scheduled.shift() as { handler: () => void; at: number; id: number };
+			clock = Math.max(clock, next.at);
+			next.handler();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+	};
+	const scheduler = {
+		setTimeout: (handler: () => void, ms: number): number => {
+			const id = nextId++;
+			scheduled.push({ handler, at: clock + ms, id });
+			return id;
+		},
+		clearTimeout: (id: number): void => {
+			const at = scheduled.findIndex((s) => s.id === id);
+			if (at >= 0) scheduled.splice(at, 1);
+		},
+	};
+	const doc = new Y.Doc();
+	const t = new DriveTransport(doc, drive.client(), { vaultId: VAULT, deviceId: "S", now: () => clock, scheduler, log: () => undefined });
+	s.check(scheduled.length === 0, "nothing is scheduled before connecting");
+	await t.connect();
+	s.check(scheduled.length > 0, "connecting schedules its first poll through the host scheduler");
+	doc.getText("t").insert(0, "scheduled edit");
+	await run();
+	s.check(drive.namesIn(FOLDER).some((n) => n.startsWith("seg-")), "the scheduled work uploads the edit");
+	t.destroy();
+	s.check(scheduled.length === 0, "destroying clears everything through the same scheduler");
+}
+
+s.section("F9b: two runs starting in the same millisecond do not collide on a name");
+{
+	const drive = new FakeDrive();
+	const start = 1_700_000_000_000;
+	const one = dev(drive, "same", start, { reconcileIntervalMs: 0 });
+	const two = dev(drive, "same", start, { reconcileIntervalMs: 0 });
+	await one.t.connect();
+	one.text.insert(0, "one");
+	await cycle(one, 1000);
+	await two.t.connect();
+	two.text.insert(0, "two");
+	await cycle(two, 1000);
+	const segs = names(drive).filter((n) => n.startsWith("seg-"));
+	s.check(segs.length === 2, `both runs stored a change file (${segs.join()})`);
+	s.check(new Set(segs).size === 2, "with two different names");
+	s.check(segs.every((n) => n.startsWith("seg-1700000001000-same-")), "both keep the device and the 13-digit stamp in the name");
+	one.t.destroy(); two.t.destroy();
+}
+
+
+s.section("F8: the fake can model Drive's listing lag (off by default)");
+{
+	const plain = new FakeDrive();
+	const plainClient = plain.client();
+	const plainFolder = await plainClient.createFolder("YAOS v1");
+	await plainClient.createFile(plainFolder.id, "seg-0000000000001-a-0.ydu", new Uint8Array([1]));
+	s.check((await plainClient.listFiles(plainFolder.id)).length === 1, "by default a created file is listed immediately, as before");
+
+	const drive = new FakeDrive();
+	drive.listingLagTicks = 100;
+	const client = drive.client();
+	const folder = await client.createFolder("YAOS v1");
+	const file = await client.createFile(folder.id, "seg-0000000000002-a-0.ydu", new Uint8Array([1, 2]));
+	s.check((await client.listFiles(folder.id)).length === 0, "inside the lag a created file is not listed yet");
+	s.check((await client.readFile(file.id)).length === 2, "but a read by id already works, like Drive");
+	drive.clock += 100;
+	s.check((await client.listFiles(folder.id)).length === 1, "once the lag has passed it appears");
+	await client.deleteFile(file.id);
+	s.check((await client.listFiles(folder.id)).length === 1, "a just-deleted file is still listed for the lag");
+	drive.clock += 100;
+	s.check((await client.listFiles(folder.id)).length === 0, "and disappears afterwards");
+}
+
 
 await s.done();

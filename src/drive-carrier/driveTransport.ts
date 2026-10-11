@@ -5,6 +5,7 @@ import type { SyncTransport } from "../sync/transport";
 import { makeSvEchoMessage } from "../sync/svEchoMessage";
 import { DriveError, type DriveApi, type DriveFileInfo } from "./driveApi";
 import { resolveVaultFolder } from "./driveFolders";
+import { readPendingState, type PendingState } from "./yjsPending";
 import { EncryptionError } from "./driveCrypto";
 import { DriveOperation, DriveOperationStopped } from "./driveOperation";
 import { DRIVE_LAYOUT_SCHEMA, DriveKeyring, FatalCarrierError } from "./driveKeyring";
@@ -17,6 +18,7 @@ import {
 	decodeFile,
 	encodeFile,
 	segmentName,
+	sessionTag,
 	snapshotName,
 	type FileKind,
 } from "./fileFormat";
@@ -91,6 +93,19 @@ export interface DriveTransportOptions {
 	listingGraceMs?: number;
 	/** false: no timers at all; the owner drives the transport with syncNow(). */
 	autoTimers?: boolean;
+	/**
+	 * F9c: where the transport's timers come from. Default: the browser's
+	 * `window`, which is what Obsidian is. A host with a different timing API (a
+	 * test fake, or a Node process) passes its own, so the carrier is no longer
+	 * bound to a global it does not own.
+	 */
+	scheduler?: TimerScheduler;
+	/**
+	 * F9a: how the transport asks whether the document is still waiting for an
+	 * update. Default: `readPendingState` (the guarded read of Yjs internals);
+	 * tests pass a stub to exercise the state-vector fallback.
+	 */
+	pendingState?: (doc: Y.Doc) => PendingState;
 	/** Origins whose Y.Doc updates are NOT local edits (e.g. the IndexedDB persistence). */
 	ignoreOrigin?: (origin: unknown) => boolean;
 	/**
@@ -124,6 +139,15 @@ export interface DriveTransportOptions {
 }
 
 type FileState = "applied" | "corrupt" | "gone";
+
+/**
+ * F9c: the timing surface the transport needs. `window` (the default) matches
+ * this shape, and so does a test fake.
+ */
+export interface TimerScheduler {
+	setTimeout(handler: () => void, ms: number): number;
+	clearTimeout(id: number): void;
+}
 
 interface KnownFile {
 	id: string;
@@ -180,6 +204,12 @@ function stateVectorCovers(cover: Uint8Array, part: Uint8Array): boolean {
 	}
 	return true;
 }
+
+/**
+ * F9b: counts the runs of this module, so two transports created in the same
+ * millisecond (a reload, or two windows) cannot mint the same file names.
+ */
+let sessionOrdinal = 0;
 
 const MAX_PENDING_PARTS = 200;
 /** How many times one cycle re-reads Drive while the picture is incomplete. */
@@ -250,12 +280,16 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	private pollSawGone = false;
 	/** F7: bytes of retained update payloads, so the memory bound can be enforced. */
 	private retainedBytes = 0;
+	/** F9a: union of the state vectors of every payload applied this run, client -> clock. */
+	private readonly appliedVector = new Map<number, number>();
 	private pending: Uint8Array[] = [];
 	private counter = 0;
 	/** Number of files this session has stored on Drive. Reported as the "persistence generation" in receipts. */
 	private storedGeneration = 0;
 	/** Names this session's receipts, so a restart re-baselines the receipt tracker instead of confusing it. */
 	private readonly receiptEpoch: string;
+	/** F9b: this run's tag inside file names, so a restart cannot repeat a name. */
+	private readonly fileSessionTag: string;
 	private lastReconcileAt = 0;
 	private lastCompactAt = -Infinity;
 
@@ -320,8 +354,13 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			ignoreOrigin: options.ignoreOrigin ?? (() => false),
 			now: options.now ?? (() => Date.now()),
 			log: options.log ?? (() => undefined),
+			scheduler: options.scheduler ?? window,
+			pendingState: options.pendingState ?? readPendingState,
 		};
 		this.receiptEpoch = `drive:${options.deviceId}:${this.opts.now()}`;
+		// F9b: built from the same session epoch the receipts use, plus a per-run
+		// counter, so names stay unique across restarts and cheap to derive.
+		this.fileSessionTag = sessionTag(this.opts.now(), ++sessionOrdinal);
 		this.lastActivityAt = this.opts.now();
 		this.keyring = options.keyring ?? new DriveKeyring(api, {
 			vaultId: options.vaultId,
@@ -370,7 +409,7 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			const folderId = this.folderId;
 			const sealer = this.keyring.sealer;
 			const api = this.api;
-			const name = segmentName(this.opts.now(), this.opts.deviceId, this.counter++);
+			const name = segmentName(this.opts.now(), this.opts.deviceId, this.counter++, this.fileSessionTag);
 			void (async () => {
 				const body = sealer ? await sealer.seal(update, "segment") : update;
 				const data = await encodeFile(KIND_SEGMENT, body, sealer !== null);
@@ -451,7 +490,46 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	/** True when every update this device has read could be applied and nothing is waiting for a missing file. */
 	private isComplete(): boolean {
 		if (this.pollSawGone || this.unreadableFiles > 0) return false;
-		return this.doc.store.pendingStructs === null && this.doc.store.pendingDs === null;
+		// F9a: the fast path reads Yjs internals through one guarded module. When a
+		// Yjs upgrade stops exposing them we fall back to state vectors instead of
+		// silently deciding that a waiting document is complete.
+		const pending = this.opts.pendingState(this.doc);
+		if (pending.known) return !pending.pending;
+		return this.documentCoversAppliedPayloads();
+	}
+
+	/**
+	 * F9a fallback: every payload this device has applied this run must be
+	 * covered by the document's own state vector. A payload whose structs are
+	 * waiting for a dependency it never received is not integrated, so the
+	 * document's vector stays behind the union and this returns false.
+	 * Nothing applied yet means nothing known to be waiting.
+	 */
+	private documentCoversAppliedPayloads(): boolean {
+		if (this.appliedVector.size === 0) return true;
+		const whole = Y.decodeStateVector(Y.encodeStateVector(this.doc));
+		for (const [client, clock] of this.appliedVector) {
+			if ((whole.get(client) ?? 0) < clock) return false;
+		}
+		return true;
+	}
+
+	/**
+	 * F9a: remember the structs this payload contained, for the fallback above.
+	 * The end clock of every struct is what the document's state vector has to
+	 * reach for the payload to be fully integrated; a diff update that itself
+	 * depends on a missing file has no state vector of its own, which is exactly
+	 * the case the fallback has to see.
+	 */
+	private noteAppliedPayload(payload: Uint8Array): void {
+		try {
+			for (const struct of Y.decodeUpdate(payload).structs) {
+				const end = struct.id.clock + struct.length;
+				if ((this.appliedVector.get(struct.id.client) ?? 0) < end) this.appliedVector.set(struct.id.client, end);
+			}
+		} catch {
+			// A payload that cannot describe itself: the fast path still answers.
+		}
 	}
 
 	/** F7: how many bytes of applied update payloads are held in memory right now. */
@@ -607,8 +685,8 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 	// ---------------------------------------------------------------------
 
 	private clearTimers(): void {
-		if (this.tickTimer !== null) window.clearTimeout(this.tickTimer);
-		if (this.flushTimer !== null) window.clearTimeout(this.flushTimer);
+		if (this.tickTimer !== null) this.opts.scheduler.clearTimeout(this.tickTimer);
+		if (this.flushTimer !== null) this.opts.scheduler.clearTimeout(this.flushTimer);
 		this.tickTimer = null;
 		this.flushTimer = null;
 	}
@@ -662,11 +740,11 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 
 	private scheduleTick(): void {
 		if (!this.opts.autoTimers || !this.started || this.destroyed || this.fatalError) return;
-		if (this.tickTimer !== null) window.clearTimeout(this.tickTimer);
+		if (this.tickTimer !== null) this.opts.scheduler.clearTimeout(this.tickTimer);
 		this.tickTimer = null;
 		const delay = this.nextPollDelayMs();
 		if (delay === null) return;
-		this.tickTimer = window.setTimeout(() => {
+		this.tickTimer = this.opts.scheduler.setTimeout(() => {
 			this.tickTimer = null;
 			void this.syncNow().then(() => this.scheduleTick());
 		}, delay);
@@ -687,7 +765,7 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			this.lastActivityAt = this.opts.now();
 			if (!this.started || this.fatalError || !this.visible) return;
 			// Back in front or back online: look right now instead of waiting for the next timer.
-			if (this.tickTimer !== null) window.clearTimeout(this.tickTimer);
+			if (this.tickTimer !== null) this.opts.scheduler.clearTimeout(this.tickTimer);
 			this.tickTimer = null;
 			void this.syncNow().then(() => this.scheduleTick());
 		}
@@ -695,7 +773,7 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 
 	private scheduleFlush(): void {
 		if (!this.opts.autoTimers || !this.started || this.destroyed || this.flushTimer !== null) return;
-		this.flushTimer = window.setTimeout(() => {
+		this.flushTimer = this.opts.scheduler.setTimeout(() => {
 			this.flushTimer = null;
 			// A cycle also polls, so restart the poll timer from the (now busy) state.
 			void this.syncNow().then(() => this.scheduleTick());
@@ -714,12 +792,12 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 			this.activeOperation = op;
 			const ms = this.opts.cycleTimeoutMs;
 			const timer = ms > 0 && Number.isFinite(ms)
-				? window.setTimeout(() => op.cancel(new DriveError(408, `Timeout (${ms} ms) during a Drive operation`)), ms)
+				? this.opts.scheduler.setTimeout(() => op.cancel(new DriveError(408, `Timeout (${ms} ms) during a Drive operation`)), ms)
 				: null;
 			try {
 				return await op.wait(() => task(op));
 			} finally {
-				if (timer !== null) window.clearTimeout(timer);
+				if (timer !== null) this.opts.scheduler.clearTimeout(timer);
 				op.cancel();
 				if (this.activeOperation === op) this.activeOperation = null;
 			}
@@ -831,8 +909,8 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		op.check();
 		const now = this.opts.now();
 		const name = nameOverride ?? (kind === KIND_SEGMENT
-			? segmentName(now, this.opts.deviceId, this.counter++)
-			: snapshotName(now, this.opts.deviceId, this.counter++));
+			? segmentName(now, this.opts.deviceId, this.counter++, this.fileSessionTag)
+			: snapshotName(now, this.opts.deviceId, this.counter++, this.fileSessionTag));
 		const info = await op.wait(() => this.api.createFile(folderId, name, data));
 		op.check();
 		if (info.size !== data.length) {
@@ -1071,6 +1149,8 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		}
 		try {
 			Y.applyUpdate(this.doc, result.payload, this);
+			// F9a: remember what this payload claimed, for the completeness fallback.
+			this.noteAppliedPayload(result.payload);
 		} catch (err) {
 			this.opts.log(`drive carrier: skipping ${name}: update could not be applied (${err instanceof Error ? err.message : String(err)})`);
 			this.setKnown(name, { id: info.id, size: info.size, kind: nameKind, state: "corrupt" });
@@ -1233,7 +1313,7 @@ export class DriveTransport extends ObservableV2<TransportEvents> implements Syn
 		// The merged file carries the newest stamp of its inputs, so reading files
 		// in name order still ends with the file that holds all of their content.
 		const stamp = ready.reduce((newest, [name]) => Math.max(newest, DriveTransport.stampOf(name)), 0);
-		const written = await this.uploadUpdate(KIND_SEGMENT, merged, op, segmentName(stamp, this.opts.deviceId, this.counter++));
+		const written = await this.uploadUpdate(KIND_SEGMENT, merged, op, segmentName(stamp, this.opts.deviceId, this.counter++, this.fileSessionTag));
 		op.check();
 		if (this.opts.verifyBeforePrune) {
 			const verdict = await this.verifyReplacement(written, merged, op);

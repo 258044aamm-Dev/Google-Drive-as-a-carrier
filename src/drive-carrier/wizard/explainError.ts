@@ -1,4 +1,4 @@
-import { HostedAuthError } from "../hostedAuth";
+import { HostedAuthError, HostedEndpointError } from "../hostedAuth";
 import { DriveError } from "../driveApi";
 import { GoogleAuthError } from "../googleAuth";
 import { FatalCarrierError } from "../driveKeyring";
@@ -6,6 +6,7 @@ import { EncryptionError } from "../driveCrypto";
 
 /** Turns what Google or Drive said into a sentence a beginner can act on. */
 export function explainSetupError(err: unknown): string {
+	if (err instanceof HostedEndpointError) return err.message;
 	if (err instanceof HostedAuthError) return explainHostedSignInError(err);
 	if (err instanceof GoogleAuthError) {
 		switch (err.code) {
@@ -52,6 +53,8 @@ export function explainSetupError(err: unknown): string {
 
 /** Problems from the easy sign-in service, in plain words. */
 export function explainHostedSignInError(err: unknown): string {
+	// F4: a refused address is a settings mistake, so its own wording is the explanation.
+	if (err instanceof HostedEndpointError) return err.message;
 	if (err instanceof HostedAuthError) {
 		const detail = ` (HTTP ${err.status}; ${err.responseKind}; ${err.code}).`;
 		if (err.code === "network") return "No connection to the sign-in service. Check your internet and try again.";

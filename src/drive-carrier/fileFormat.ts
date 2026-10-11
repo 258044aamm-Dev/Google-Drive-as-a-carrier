@@ -12,6 +12,23 @@
  *
  * The checksum lets a reader reject a damaged or truncated file instead of
  * applying garbage. An unknown version or kind is rejected the same way.
+ *
+ * F9d: the kind, the flags and the file name sit outside that checksum and are
+ * not signed, so anyone who can write to the folder can change them without it
+ * being noticed. Every consequence fails closed, which is why they are left
+ * unprotected rather than given a second checksum that would protect the same
+ * bytes the SHA-256 already covers:
+ *
+ *   - kind flipped between segment and snapshot: the payload is a Yjs update
+ *     either way and is applied exactly as it would have been. Nothing new can
+ *     be smuggled in, and which of the two it is counts only for tidying.
+ *   - encrypted flag flipped: the reader then treats the bytes as sealed (or as
+ *     plain) and the vault's key refuses to open them, so the file counts as
+ *     damaged and is skipped; it is never read as data.
+ *   - the file copied into another vault: the payload is sealed with the vault
+ *     and purpose as associated data, so it cannot be opened there.
+ * tests/client/drive-carrier-format.ts and drive-carrier-crypto.ts test each of
+ * these; the header has no other meaning to defend.
  */
 
 export const FORMAT_VERSION = 1;
@@ -87,12 +104,23 @@ function stamp(ms: number): string {
 	return String(Math.max(0, Math.floor(ms))).padStart(13, "0");
 }
 
-export function segmentName(ms: number, deviceId: string, counter: number): string {
-	return `seg-${stamp(ms)}-${deviceId}-${counter}.ydu`;
+/**
+ * F9b: a short tag for the current run of the plugin, appended after the
+ * counter. Two runs can otherwise produce the same name (the counter restarts
+ * at 0, and two runs can start inside the same millisecond), which makes Drive
+ * hold two files with one name and makes every device re-read both. The
+ * 13-digit millisecond stamp stays in front, so name order is unchanged.
+ */
+export function sessionTag(nowMs: number, ordinal: number): string {
+	return `${nowMs.toString(36)}${ordinal.toString(36)}`;
 }
 
-export function snapshotName(ms: number, deviceId: string, counter: number): string {
-	return `snap-${stamp(ms)}-${deviceId}-${counter}.yds`;
+export function segmentName(ms: number, deviceId: string, counter: number, tag = ""): string {
+	return `seg-${stamp(ms)}-${deviceId}-${counter}${tag === "" ? "" : `-${tag}`}.ydu`;
+}
+
+export function snapshotName(ms: number, deviceId: string, counter: number, tag = ""): string {
+	return `snap-${stamp(ms)}-${deviceId}-${counter}${tag === "" ? "" : `-${tag}`}.yds`;
 }
 
 export function classifyName(name: string): FileNameKind {

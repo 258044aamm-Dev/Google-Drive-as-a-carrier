@@ -215,6 +215,19 @@ steps below still work and are unchanged.
 - If sync says your sign-in was lost, sign in again on the page and paste the new
   code in Settings > YAOS > Manual setup (advanced) > "Sign-in code (easy sign-in)", then
   reload. Self-hosters can set `driveHostedUrl` in the plugin's `data.json`.
+- **The address that receives your sign-in code must be a full `https://` address.**
+  A custom `driveHostedUrl` that is plain `http`, a bare host name, or a relative
+  path is refused before anything is sent: the wizard shows the reason under the
+  code box and will not continue, and the running carrier stops with the same
+  message (traced as `drive-carrier: sign-in address refused`). Nothing falls back
+  to the default service.
+- A custom address is always named where you can see it: the wizard's token screen
+  and the settings row both show the exact host the code is sent to. When the
+  configured address differs from the one that last issued a token for this
+  device, the carrier traces the change (`sign-in address changed from ... to ...`)
+  and re-checks your saved sign-in against the new address before using it; an
+  address is recorded only after the service has actually issued a token, so a
+  failure never counts as "used".
 - Signing out of an easy sign-in returns the manual page to the normal rows.
 
 ### The Drive settings screen
@@ -242,7 +255,12 @@ Cloudflare screens and names are unchanged.
 - **Not "synced" while incomplete.** If a file is missing or an update cannot be applied, the carrier stays connected, keeps uploading your edits and does not claim to be synced. Check `unreadableFiles` in diagnostics for damaged files.
 - **Time limit.** One sync cycle may take five minutes; a stuck request then counts as a failure and is retried with back-off.
 - **Deletes (all carriers).** A remote delete is applied when the disk file still matches the last synced content, even if an edit arrived in the same poll. A file you really edited is kept (and the note is revived with your text). A delete removes every active id for the path. A note you deleted while YAOS was off is recorded as deleted at the next full reconcile when its remembered content hash equals the shared text (otherwise it is written back as before).
-- **Not covered:** no automatic garbage collection of attachment files on Drive (the dry-run command above lists candidates and never deletes); memory use grows with vault size (every applied update payload and two snapshots are kept in memory); a plaintext and an encrypted vault started at the same moment in one folder end up split; a stray empty duplicate vault folder is not removed.
+- **Not covered:** no automatic garbage collection of attachment files on Drive (the dry-run command above lists candidates and never deletes); a plaintext and an encrypted vault started at the same moment in one folder end up split; a stray empty duplicate vault folder is not removed; no real-device or real-account run yet (see the F8 bullet above).
+- **The completeness check does not pin Yjs internals (F9).** `pendingStructs`/`pendingDs` are read through one guarded module; if a Yjs upgrade stops exposing them, the carrier falls back to comparing the state vectors of the payloads it applied against the document's own, so a waiting document is never reported as synced. `drive-carrier-hardening` asserts both paths agree.
+- **File names carry a per-run tag (F9).** `seg-<13-digit ms>-<device>-<counter>-<tag>.ydu`; two runs starting inside the same millisecond can no longer mint the same name. The 13-digit stamp still leads, so name order is unchanged and an untagged name is what 2.1.22 wrote.
+- **Timers come from the host (F9).** `DriveTransportOptions.scheduler` (default `window`) is where every timeout is set and cleared, so a fake clock can drive a whole cycle and the carrier is not bound to a browser global.
+- **The formats say what they do and do not protect (F9).** A change file's kind and flags sit outside its checksum by design, and each consequence fails closed (kind flip: the same bytes apply; flag flip: the vault's key refuses the file; another vault: the associated data refuses it). An attachment is named by its hash and verified on download, so a second checksum there would protect the same bytes twice.
+- **Not verified against a real account yet (F8).** Every Drive suite runs against `FakeDrive`; the opt-in gate `tests/live/drive-real.ts` (registered under `skip`) measures listing latency, duplicate names, the multipart ceiling, error bodies, a 6 MB resumable round trip and the `drive.file` invisibility rule. Its results belong in `docs/drive-carrier-device-results.md`, which is still empty: the run was deferred, so treat the Drive data path as fake-verified only.
 - **Simulation suite.** `drive-carrier-fuzz` (about 6 s, fixed seeds) must stay green; rerun one configuration with `FUZZ_ONLY=<part of the name> FUZZ_SEEDS=<n>`.
 
 ## Setup (once per Google account)

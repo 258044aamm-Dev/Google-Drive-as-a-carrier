@@ -1,7 +1,7 @@
 import type { DriveApi } from "../driveApi";
 import { GoogleAuthError, GoogleTokenManager, type DeviceCodeInfo, type DeviceSignInResult, type GoogleClient } from "../googleAuth";
 import { GoogleDriveRest, type DriveHttp } from "../googleDriveRest";
-import { resolveHostedTokenUrl, HostedTokenManager } from "../hostedAuth";
+import { describeHostedEndpoint, resolveHostedTokenUrl, HostedTokenManager, type HostedEndpointInfo } from "../hostedAuth";
 import { isDriveCarrier, isDriveSignedIn, isHostedSignIn, type DriveCarrierSettings } from "../carrierSettings";
 import { signInWithGoogle, type SignInUi } from "../signIn";
 import { checkVaultForJoin, createVault, type CheckStep, type JoinCheck } from "./driveSetup";
@@ -53,6 +53,8 @@ export interface WizardSettingsPatch {
 	driveEncryptionPassphrase: string;
 	/** "hosted" for the easy sign-in; absent for the other two (and it must then be cleared). */
 	driveAuthMode?: "hosted";
+	/** F4: the custom sign-in address that actually served this sign-in (default service: absent). */
+	driveHostedUrlUsed?: string;
 }
 
 export type FinishResult = "started" | "reload";
@@ -173,6 +175,11 @@ export class WizardController {
 		return resolveHostedTokenUrl(this.deps.hostedUrl ?? this.deps.getSettings().driveHostedUrl);
 	}
 
+	/** F4: where the sign-in code would be sent, plus why it cannot be sent there (if it cannot). */
+	get hostedEndpoint(): HostedEndpointInfo {
+		return describeHostedEndpoint(this.deps.hostedUrl ?? this.deps.getSettings().driveHostedUrl);
+	}
+
 	get bundledAvailable(): boolean {
 		return this.deps.bundledClient !== null;
 	}
@@ -208,7 +215,9 @@ export class WizardController {
 	blocker(): string | null {
 		const { draft, step } = this.state;
 		switch (step) {
-			case "hosted-token": return checkHostedToken(draft.hostedToken);
+			// F4: a refused address blocks the token step (and with it every later step), so
+			// nothing is ever sent to it. The wording is the reason from resolveHostedTokenUrl.
+			case "hosted-token": return this.hostedEndpoint.problem ?? checkHostedToken(draft.hostedToken);
 			case "paste": return checkClientId(draft.clientId) ?? checkClientSecret(draft.clientSecret);
 			case "join-code": return this.joinInputProblem();
 			case "existing": return draft.existingAccepted ? null : "Tick the box to continue.";
@@ -386,6 +395,13 @@ export class WizardController {
 		this.state.busy = "Checking your sign-in code...";
 		this.changed();
 		const pasted = normalizeHostedToken(draft.hostedToken);
+		const refused = this.hostedEndpoint.problem;
+		if (refused) {
+			this.state.busy = null;
+			this.state.error = refused;
+			this.changed();
+			return;
+		}
 		try {
 			const manager = new HostedTokenManager(this.deps.http, this.hostedTokenUrl, pasted);
 			await manager.provider(true);
@@ -469,6 +485,9 @@ export class WizardController {
 			driveRefreshToken: draft.refreshToken,
 			driveEncryptionPassphrase: draft.encrypt ? draft.passphrase : "",
 			...(draft.clientMode === "hosted" ? { driveAuthMode: "hosted" as const } : {}),
+			// F4: remember the custom address that served this sign-in, so the carrier can
+			// spot a later change and say so instead of quietly posting the token elsewhere.
+			...(draft.clientMode === "hosted" && this.hostedEndpoint.custom ? { driveHostedUrlUsed: this.hostedEndpoint.url } : {}),
 		};
 	}
 

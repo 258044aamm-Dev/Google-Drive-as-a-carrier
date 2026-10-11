@@ -26,6 +26,12 @@ export interface DriveCarrierSettings {
 	/** Overrides the token service address when `driveAuthMode` is "hosted". Rarely used. */
 	driveHostedUrl?: string;
 	/**
+	 * F4: the custom token service address that last issued an access token for
+	 * this device. Compared with `driveHostedUrl` at startup so a changed address
+	 * is reported instead of silently receiving the refresh token. Absent = unknown.
+	 */
+	driveHostedUrlUsed?: string;
+	/**
 	 * Encrypts everything stored on Drive when the vault is first created there.
 	 * Kept in the plugin's data like the Google sign-in; it is the same on every device.
 	 */

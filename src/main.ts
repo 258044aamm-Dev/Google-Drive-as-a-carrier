@@ -2473,7 +2473,12 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			else delete settings.driveAuthMode;
 			// F5: a remembered Drive folder belongs to the vault it was found for.
 			// Setting up another vault must not keep pointing at the old folder.
-			if (settings.vaultId !== patch.vaultId) delete settings.driveFolderId;
+			if (settings.vaultId !== patch.vaultId) {
+				delete settings.driveFolderId;
+				delete settings.driveHostedUrlUsed;
+			}
+			// F4: which custom address served this sign-in (default service: not recorded).
+			if (patch.driveHostedUrlUsed) settings.driveHostedUrlUsed = patch.driveHostedUrlUsed;
 		}, "settings:drive-wizard");
 	}
 
@@ -2686,6 +2691,15 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				remember: (id) => {
 					if (!id || this.settings.driveFolderId === id) return;
 					void this.updateSettings((settings) => { settings.driveFolderId = id; }, "settings:drive-folder-id");
+				},
+			},
+			// F4: remember the custom sign-in address that actually issued a token, so a
+			// later change to driveHostedUrl is reported rather than silently used.
+			hostedEndpointIdentity: {
+				used: () => this.settings.driveHostedUrlUsed,
+				remember: (url) => {
+					if (!url || this.settings.driveHostedUrlUsed === url) return;
+					void this.updateSettings((settings) => { settings.driveHostedUrlUsed = url; }, "settings:drive-hosted-url-used");
 				},
 			},
 			// F2: Drive has no server to refuse a newer-schema vault, so the

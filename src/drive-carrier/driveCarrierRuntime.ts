@@ -10,7 +10,7 @@ import { MeteredDriveApi, type RequestStats } from "./requestMeter";
 import { browserActivity, type ActivitySource } from "./activity";
 import { GoogleDriveRest, type DriveHttp } from "./googleDriveRest";
 import { GoogleTokenManager } from "./googleAuth";
-import { resolveHostedTokenUrl, HostedTokenManager } from "./hostedAuth";
+import { describeHostedEndpoint, resolveHostedTokenUrl, HostedTokenManager } from "./hostedAuth";
 import { isHostedSignIn, type DriveCarrierSettings } from "./carrierSettings";
 import { NORMAL_DRIVE_PACE, resolveDrivePace, type SyncPaceSettings } from "../settings/syncPace";
 
@@ -30,6 +30,15 @@ export interface DriveCarrierRuntimeDeps {
 	folderIdentity?: {
 		saved(): string | undefined;
 		remember(id: string): void;
+	};
+	/**
+	 * F4: the custom sign-in address that last served this device, and where to
+	 * record one that does. Optional: without it the carrier still refuses a bad
+	 * address, it just cannot report a change between sessions.
+	 */
+	hostedEndpointIdentity?: {
+		used(): string | undefined;
+		remember(url: string): void;
 	};
 	/**
 	 * F2: CRDT schema admission. Returns the reason this device must not read or
@@ -78,7 +87,7 @@ export function createDriveCarrier(deps: DriveCarrierRuntimeDeps): DriveCarrier 
 		if (api) return api;
 		const settings = deps.getSettings();
 		const tokens = isHostedSignIn(settings)
-			? new HostedTokenManager(deps.http, resolveHostedTokenUrl(settings.driveHostedUrl), settings.driveRefreshToken ?? "", undefined, deps.onSignInLost)
+			? hostedTokenManager(settings.driveHostedUrl, settings.driveRefreshToken ?? "", settings.driveHostedUrlUsed)
 			: new GoogleTokenManager(
 				deps.http,
 				{ clientId: settings.driveClientId ?? "", clientSecret: settings.driveClientSecret ?? "" },
@@ -88,6 +97,35 @@ export function createDriveCarrier(deps: DriveCarrierRuntimeDeps): DriveCarrier 
 			);
 		api = new MeteredDriveApi(new GoogleDriveRest(deps.http, tokens.provider));
 		return api;
+	};
+	/**
+	 * F4: the refresh token may only ever travel to a full https address (refused
+	 * here, with the reason reaching the user), and a custom address that differs
+	 * from the one that last served this device is reported before the first token
+	 * request of the session is made. The address is then remembered only after the
+	 * service has actually issued a token, so "used" never means "configured".
+	 */
+	const hostedTokenManager = (configured: string | undefined, refreshToken: string, lastUsed: string | undefined): HostedTokenManager => {
+		let endpoint: string;
+		try {
+			endpoint = resolveHostedTokenUrl(configured);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			deps.log(`drive-carrier: sign-in address refused (${message})`);
+			deps.onFatal?.(message);
+			throw err;
+		}
+		const info = describeHostedEndpoint(configured);
+		const previous = lastUsed?.trim() ?? "";
+		if (info.custom && previous !== "" && previous !== info.url) {
+			let was = previous;
+			try { was = describeHostedEndpoint(previous).origin; } catch { /* keep the raw text */ }
+			deps.log(`drive-carrier: sign-in address changed from ${was} to ${info.origin}; the saved sign-in is checked against the new address before it is used`);
+		}
+		return new HostedTokenManager(deps.http, endpoint, refreshToken, undefined, deps.onSignInLost, (used) => {
+			if (!info.custom || used === previous) return;
+			deps.hostedEndpointIdentity?.remember(used);
+		});
 	};
 	const keyrings = new Map<string, DriveKeyring>();
 	const keyringFor = (vaultId: string): DriveKeyring => {
