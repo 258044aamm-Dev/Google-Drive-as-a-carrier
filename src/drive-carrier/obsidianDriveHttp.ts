@@ -22,5 +22,7 @@ export const obsidianDriveHttp: DriveHttp = async (request) => {
 		body,
 		throw: false,
 	});
-	return { status: response.status, body: new Uint8Array(response.arrayBuffer) };
+	// Headers travel with the response: the resumable upload session URL arrives
+	// in the Location header of the first request.
+	return { status: response.status, body: new Uint8Array(response.arrayBuffer), headers: response.headers };
 };

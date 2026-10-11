@@ -4,7 +4,7 @@ import { DriveError, type DriveApi, type DriveFileInfo, type DriveFolderInfo } f
 /** One HTTP request. The carrier never sees how it is sent (Obsidian's requestUrl, fetch, a test double). */
 export interface DriveHttpRequest {
 	url: string;
-	method: "GET" | "POST" | "DELETE";
+	method: "GET" | "POST" | "PUT" | "DELETE";
 	headers: Record<string, string>;
 	body?: Uint8Array | string;
 }
@@ -12,6 +12,8 @@ export interface DriveHttpRequest {
 export interface DriveHttpResponse {
 	status: number;
 	body: Uint8Array;
+	/** Response headers, when the host can provide them (needed for resumable sessions). */
+	headers?: Record<string, string>;
 }
 
 export type DriveHttp = (request: DriveHttpRequest) => Promise<DriveHttpResponse>;
@@ -23,6 +25,16 @@ const API = "https://www.googleapis.com/drive/v3";
 const UPLOAD = "https://www.googleapis.com/upload/drive/v3";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
 const FILE_FIELDS = "id,name,size,createdTime";
+
+/**
+ * Google documents simple and multipart uploads for files up to 5 MB and asks
+ * for resumable uploads above that. The carrier's payloads are routinely larger
+ * (a compaction snapshot is the whole document, a new device uploads the whole
+ * difference, attachments reach the configured cap), so anything above this
+ * threshold goes through the resumable path instead. Kept below 5 MB so a large
+ * file never meets the multipart ceiling even if a proxy adds bytes.
+ */
+export const RESUMABLE_UPLOAD_THRESHOLD_BYTES = 4 * 1024 * 1024;
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -45,6 +57,38 @@ function toFileInfo(raw: RawFile): DriveFileInfo {
 	const size = typeof raw.size === "string" ? Number(raw.size) : typeof raw.size === "number" ? raw.size : 0;
 	const created = typeof raw.createdTime === "string" ? Date.parse(raw.createdTime) : NaN;
 	return { id: raw.id, name: raw.name, size, createdTime: Number.isFinite(created) ? created : 0 };
+}
+
+/** A response header, matched case-insensitively (HTTP header names are not case-sensitive). */
+function headerOf(response: DriveHttpResponse, name: string): string | null {
+	const headers = response.headers;
+	if (!headers) return null;
+	const wanted = name.toLowerCase();
+	for (const [key, value] of Object.entries(headers)) {
+		if (key.toLowerCase() === wanted) return value;
+	}
+	return null;
+}
+
+/**
+ * The resumable session URL comes from Google's reply and then carries both the
+ * file and the access token, so it must stay on a Google host over TLS. A reply
+ * this code cannot vouch for is refused instead of followed.
+ */
+function assertGoogleUploadSession(location: string, name: string): void {
+	let url: URL;
+	try {
+		url = new URL(location);
+	} catch {
+		throw new DriveError(502, `Resumable upload of ${name}: the session URL is not a URL`);
+	}
+	const host = url.hostname.toLowerCase();
+	const googleHost =
+		host === "googleapis.com" || host.endsWith(".googleapis.com") ||
+		host === "googleusercontent.com" || host.endsWith(".googleusercontent.com");
+	if (url.protocol !== "https:" || !googleHost) {
+		throw new DriveError(502, `Resumable upload of ${name}: the session URL is not on a Google host`);
+	}
 }
 
 /** Google Drive v3 REST implementation of DriveApi (scope `drive.file` is enough). */
@@ -137,6 +181,11 @@ export class GoogleDriveRest implements DriveApi {
 	}
 
 	async createFile(folderId: string, name: string, data: Uint8Array): Promise<DriveFileInfo> {
+		// Above the multipart ceiling Google asks for a resumable upload; a
+		// snapshot of a large document or a big attachment must not fail here.
+		if (data.length > RESUMABLE_UPLOAD_THRESHOLD_BYTES) {
+			return await this.createFileResumable(folderId, name, data);
+		}
 		const boundary = `ogd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 		const meta = JSON.stringify({ name, parents: [folderId] });
 		const head = encoder.encode(
@@ -156,6 +205,42 @@ export class GoogleDriveRest implements DriveApi {
 			body,
 		}));
 		return toFileInfo(this.json(res) as RawFile);
+	}
+
+	/**
+	 * Two steps, as Google specifies: POST the metadata to open a session, then
+	 * PUT the bytes to the session URL it answers with. The single PUT is enough
+	 * for these payloads (no chunking, no query for a lost reply: an upload that
+	 * never answered is retried as a whole, which creates a new file — the same
+	 * duplicate a retried multipart upload leaves, and harmless because Yjs
+	 * updates are idempotent and the carrier's own size check drops mismatches).
+	 */
+	private async createFileResumable(folderId: string, name: string, data: Uint8Array): Promise<DriveFileInfo> {
+		const meta = JSON.stringify({ name, parents: [folderId] });
+		const url = `${UPLOAD}/files?uploadType=resumable&fields=${encodeURIComponent(FILE_FIELDS)}`;
+		const opened = await this.send((token) => ({
+			url,
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${token}`,
+				"Content-Type": "application/json; charset=UTF-8",
+				"X-Upload-Content-Type": "application/octet-stream",
+				"X-Upload-Content-Length": String(data.length),
+			},
+			body: meta,
+		}));
+		const location = headerOf(opened, "location");
+		if (!location) {
+			throw new DriveError(502, `Resumable upload of ${name} (${data.length} bytes) did not return a session URL`);
+		}
+		assertGoogleUploadSession(location, name);
+		const stored = await this.send((token) => ({
+			url: location,
+			method: "PUT",
+			headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream" },
+			body: data,
+		}));
+		return toFileInfo(this.json(stored) as RawFile);
 	}
 
 	async readFile(fileId: string): Promise<Uint8Array> {
