@@ -315,6 +315,17 @@ s.section("Test 8: the setup wizard hooks");
 	const hidden = flatten(noHost.tab.getSettingDefinitions()).find((d) => d.name === "Set up Google Drive");
 	const hiddenVisible = hidden && "visible" in hidden ? hidden.visible : undefined;
 	s.check(typeof hiddenVisible === "function" && hiddenVisible() === false, "without a wizard host the row stays hidden");
+	// COD-9: once setup is done there is nothing left to set up, so the guide goes away.
+	const signedInRow = flatten(makeFixture({ carrier: "drive", driveClientId: "i", driveClientSecret: "x", driveRefreshToken: "r" }, true, calls).tab.getSettingDefinitions()).find((d) => d.name === "Set up Google Drive");
+	const signedInVisible = signedInRow && "visible" in signedInRow ? signedInRow.visible : undefined;
+	s.check(typeof signedInVisible === "function" && signedInVisible() === false, "the guide is hidden once the device is signed in");
+	const easyRow = flatten(makeFixture({ carrier: "drive", driveAuthMode: "hosted", driveRefreshToken: "1//0gHosted-0123456789" }, true, calls).tab.getSettingDefinitions()).find((d) => d.name === "Set up Google Drive");
+	const easyVisible = easyRow && "visible" in easyRow ? easyRow.visible : undefined;
+	s.check(typeof easyVisible === "function" && easyVisible() === false, "and hidden after the easy sign-in too");
+	// It follows setup state, so it is not a one-way switch: signing out brings it back.
+	const backRow = flatten(makeFixture({ carrier: "drive", driveAuthMode: "hosted", driveRefreshToken: "" }, true, calls).tab.getSettingDefinitions()).find((d) => d.name === "Set up Google Drive");
+	const backVisible = backRow && "visible" in backRow ? backRow.visible : undefined;
+	s.check(typeof backVisible === "function" && backVisible() === true, "signing out brings the guide back");
 	for (const settings of [{}, { host: "https://sync.example", token: "tok" }] as Partial<VaultSyncSettings>[]) {
 		const cf = makeFixture(settings, true, calls);
 		const rows = flatten(cf.tab.getSettingDefinitions()).filter((d) => d.name === "Set up Google Drive");
@@ -354,13 +365,15 @@ s.section("Test 9: the easy sign-in on the settings screen");
 		s.check(classic.includes(row), `normal sign-in: "${row}" is still shown`);
 	}
 	s.check(!classic.includes("Sign-in code (easy sign-in)"), "normal sign-in: no easy sign-in row");
+	s.check(!classic.includes("Set up Google Drive"), "normal sign-in: the setup guide is gone once signed in");
 	const classicOut = names(makeFixture({ carrier: "drive" }));
 	s.check(classicOut.includes("Sign in with Google") && classicOut.includes("Google client ID"), "signed out, normal: the old rows are all there");
 
 	const easy = names(makeFixture({ carrier: "drive", driveAuthMode: "hosted", driveRefreshToken: TOKEN }, true, []));
 	s.check(!easy.includes("Google client ID") && !easy.includes("Google client secret"), "easy sign-in: no client rows");
 	s.check(!easy.includes("Sign in with Google") && !easy.includes("Signed in to Google"), "easy sign-in: no Google code sign-in button");
-	s.check(easy.includes("Sign-in code (easy sign-in)") && easy.includes("Sign out") && easy.includes("Encryption passphrase") && easy.includes("Set up Google Drive"), "easy sign-in: its own code row, Sign out, passphrase and the wizard stay");
+	s.check(easy.includes("Sign-in code (easy sign-in)") && easy.includes("Sign out") && easy.includes("Encryption passphrase"), "easy sign-in: its own code row, Sign out and the passphrase stay");
+	s.check(!easy.includes("Set up Google Drive"), "easy sign-in: the setup guide is gone once signed in");
 	const stat = flatten(makeFixture({ carrier: "drive", driveAuthMode: "hosted", driveRefreshToken: TOKEN }, true, []).tab.getSettingDefinitions()).find((d) => d.name === "Status");
 	s.check(/Signed in with the easy sign-in/.test(String(stat?.desc ?? "")), "the status says which sign-in is used");
 
