@@ -17,6 +17,7 @@ Carriers:
 - [Drive carrier: device results](drive-carrier-device-results.md) — the record of those runs, with an explicit "not run" entry for anything unproven (the 2.1.23 real-account run is accepted unrun).
 - [Local network carrier](lan-carrier.md) — desktop-only pairing over the LAN.
 - [Drive carrier: review and fix plan](drive-carrier-fix-plan.md) — the review that produced the 2.1.23 work, kept as the record of what was planned and what was actually done.
+- [COD-8: carrier switch warnings](COD-8-carrier-switch-warnings.md) — what the user is (and is not) told when switching carriers, the root cause, and the recommended fix. Investigation only; no code changed.
 
 Configuration-sync preview (staging, off by default): [preview](config-sync-preview.md), [plan](config-sync-plan.md), [coverage](config-sync-coverage.md) and the [scenario register](config-sync-scenario-register.md).
 
