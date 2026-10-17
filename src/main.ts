@@ -5,6 +5,7 @@ import {
 	DEFAULT_SETTINGS,
 	VaultSyncSettingTab,
 	generateVaultId,
+	type CarrierSwitchRequest,
 	type VaultSyncSettings,
 } from "./settings";
 import { SettingsStore } from "./settings/settingsStore";
@@ -2390,6 +2391,28 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				}
 			},
 		}).open();
+	}
+
+	/**
+	 * Carrier switching: ask before the change is saved, with what the switch
+	 * actually does spelled out.
+	 *
+	 * Every other setting saves as soon as it is changed. The carrier is the
+	 * one choice that moves where a vault is exchanged, and it is per device,
+	 * so it is the one that asks first.
+	 */
+	async confirmSwitch(request: CarrierSwitchRequest): Promise<boolean> {
+		return await new Promise<boolean>((resolve) => {
+			new ConfirmModal(
+				this.app,
+				request.title,
+				request.message,
+				() => resolve(true),
+				request.confirmLabel,
+				"Keep the current carrier",
+				() => resolve(false),
+			).open();
+		});
 	}
 
 	/**

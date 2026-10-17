@@ -94,6 +94,22 @@ interface SettingsUpdateState {
 	pluginCompatibilityWarning: string | null;
 }
 
+/**
+ * What a carrier switch would do, handed to the host so it can ask before the
+ * change is saved.
+ *
+ * The settings tab deliberately does not open a dialog itself: the host owns
+ * the user interface, and a host that does not implement `confirmSwitch` keeps
+ * the previous behaviour of switching without asking.
+ */
+export interface CarrierSwitchRequest {
+	from: CarrierKind;
+	to: CarrierKind;
+	title: string;
+	message: string;
+	confirmLabel: string;
+}
+
 export interface VaultSyncSettingsHost {
 	settings: VaultSyncSettings;
 	getConfigSyncStatus?(): string;
@@ -120,6 +136,12 @@ export interface VaultSyncSettingsHost {
 	applyStatusDisplay?(): void;
 	/** Local network carrier (desktop only). Absent on hosts that do not offer it. */
 	lan?: LanSettingsHost;
+	/**
+	 * Asks before a carrier switch is saved. Absent = switch without asking,
+	 * which is what every other setting does and what hosts that do not
+	 * implement it get.
+	 */
+	confirmSwitch?(request: CarrierSwitchRequest): Promise<boolean>;
 }
 
 const CLOUDFLARE_DEPLOY_URL = "https://deploy.workers.cloudflare.com/?url=https://github.com/kavinsood/yaos/tree/main/server";
@@ -129,6 +151,55 @@ const CARRIER_OPTIONS: Record<CarrierKind, string> = {
 	drive: "Google Drive (experimental)",
 	lan: "Local network (experimental, desktop only)",
 };
+
+/** Plain carrier names for sentences about switching. */
+const CARRIER_SWITCH_NAMES: Record<CarrierKind, string> = {
+	cloudflare: "the Cloudflare Worker",
+	drive: "Google Drive",
+	lan: "the local network carrier",
+};
+
+/**
+ * What switching carriers actually does, in plain language, so the choice is
+ * made with its consequences in view.
+ *
+ * It covers the five things the old post-switch notice never said: that
+ * nothing is copied between carriers, that the choice is per device, that
+ * in-flight work should be allowed to settle, what the destination needs, and
+ * that a reload is what makes the switch take effect.
+ */
+export function carrierSwitchMessage(
+	from: CarrierKind,
+	to: CarrierKind,
+	state: { driveSignedIn: boolean; lanAvailable: boolean },
+): string {
+	const sentences: string[] = [];
+	sentences.push(
+		`Notes are not copied between carriers: ${CARRIER_SWITCH_NAMES[to]} keeps its own copy of the vault, and this device fills it after the reload.`,
+	);
+	sentences.push(
+		`The choice is for this device only — your other devices keep using ${CARRIER_SWITCH_NAMES[from]} until you switch them too.`,
+	);
+	sentences.push("Let any syncing finish before you reload, so nothing is left half-sent on the carrier you are leaving.");
+	if (to === "drive") {
+		sentences.push(state.driveSignedIn
+			? "Google Drive needs the same vault ID and the same encryption passphrase on every device."
+			: "You will be asked to sign in to Google Drive, and to use the same vault ID and encryption passphrase as your other devices.");
+	}
+	if (to === "lan") {
+		sentences.push(state.lanAvailable
+			? "Local network syncing needs the desktop app, with both devices on the same network and open at the same time."
+			: "Local network syncing needs the desktop app, which this device cannot run, so syncing stays off until another carrier is chosen.");
+	}
+	sentences.push("The switch takes effect after you reload the plugin (or restart Obsidian).");
+	return sentences.join(" ");
+}
+
+/** One short clause for a failed carrier switch, from whatever was thrown. */
+function describeSwitchError(error: unknown): string {
+	return error instanceof Error && error.message ? error.message : String(error);
+}
+
 const SYNC_PACE_OPTIONS: Record<SyncPaceProfile, string> = {
 	normal: "Normal (default)",
 	gentle: "Gentle (fewer requests)",
@@ -1026,9 +1097,44 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 			case "carrier": {
 				const nextValue = expectStringValue(key, value);
 				if (!isCarrierKind(nextValue)) throw new RangeError(`Unsupported sync carrier: ${nextValue}`);
-				await this.host.updateSettings((settings) => { settings.carrier = nextValue; }, "settings:carrier");
+				const from = currentCarrier(this.host.settings);
+				// Re-picking the carrier that is already selected is not a switch, so it changes nothing and says nothing.
+				if (nextValue === from) return;
+				// Ask before anything is saved, so declining leaves the settings exactly as they were.
+				if (this.host.confirmSwitch) {
+					const accepted = await this.host.confirmSwitch({
+						from,
+						to: nextValue,
+						title: "Switch the sync carrier?",
+						message: carrierSwitchMessage(from, nextValue, {
+							driveSignedIn: isDriveSignedIn(this.host.settings),
+							lanAvailable: this.host.lan?.available === true,
+						}),
+						confirmLabel: "Switch carrier",
+					});
+					if (!accepted) {
+						this.update();
+						return;
+					}
+				}
+				try {
+					await this.host.updateSettings((settings) => { settings.carrier = nextValue; }, "settings:carrier");
+				} catch (error) {
+					// Nothing was saved. Say so, and keep the rejection so the caller still sees the failure.
+					new Notice(`The sync carrier was not switched: the settings could not be saved (${describeSwitchError(error)}).`, 12000);
+					throw error;
+				}
 				// Choosing Local network: make this device's key and certificate now, so the setup code can be copied before the reload.
-				if (nextValue === "lan") await this.host.lan?.prepare();
+				if (nextValue === "lan") {
+					try {
+						await this.host.lan?.prepare();
+					} catch (error) {
+						// The carrier is already switched, so say what happened instead of leaving the user with nothing.
+						this.update();
+						new Notice(`The sync carrier was switched, but this device's key and certificate could not be created (${describeSwitchError(error)}). Reload the plugin to try again, or choose another carrier.`, 12000);
+						throw error;
+					}
+				}
 				new Notice("Reload the plugin (or restart Obsidian) to switch the sync carrier.", 8000);
 				this.update();
 				// Choosing Drive for the first time: walk the user through the rest.
