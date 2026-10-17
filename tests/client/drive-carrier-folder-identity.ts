@@ -21,6 +21,7 @@ import * as Y from "yjs";
 import { DriveTransport, type DriveTransportOptions } from "../../src/drive-carrier/driveTransport";
 import { META_NAME } from "../../src/drive-carrier/fileFormat";
 import { fingerprintForInstallId, inspectFolderFingerprint } from "../../src/drive-carrier/folderFingerprint";
+import { selectVerifiedFolder } from "../../src/drive-carrier/folderSelection";
 import { FakeDrive } from "../mocks/fakeDrive";
 import { suite } from "../harness.ts";
 
@@ -96,6 +97,30 @@ s.section("Fingerprint inspection is stable and does not write to Drive");
 	s.check(second.kind === "identified" && second.fingerprint === expected && expected.length === 64, "fingerprint is stable and SHA-256 sized");
 	s.check(await fingerprintForInstallId("other-install") !== expected, "different folders have distinct fingerprints");
 	s.check(drive.calls.createFile === 1, "inspection never writes metadata");
+}
+
+// ---------------------------------------------------------------------------
+s.section("Verified folder selection never guesses from a duplicate name");
+{
+	const drive = new FakeDrive();
+	const api = drive.client();
+	const wrong = await api.createFolder(FOLDER);
+	await api.createFile(wrong.id, META_NAME, new TextEncoder().encode(JSON.stringify({ schema: 1, vaultId: "another", installId: "other" })));
+	const right = await api.createFolder(FOLDER);
+	await api.createFile(right.id, META_NAME, new TextEncoder().encode(JSON.stringify({ schema: 1, vaultId: VAULT, installId: "ours" })));
+	const selected = await selectVerifiedFolder(api, FOLDER, VAULT);
+	s.check(selected.kind === "selected" && selected.folder.id === right.id, "newer verified folder wins over oldest wrong vault");
+	const hash = await fingerprintForInstallId("ours");
+	const pinned = await selectVerifiedFolder(api, FOLDER, VAULT, right.id, hash);
+	s.check(pinned.kind === "selected", "saved folder and fingerprint are both checked");
+	const refused = await selectVerifiedFolder(api, FOLDER, VAULT, wrong.id, hash);
+	s.check(refused.kind === "needs-choice", "wrong pinned vault is never silently replaced");
+	const another = await api.createFolder(FOLDER);
+	await api.createFile(another.id, META_NAME, new TextEncoder().encode(JSON.stringify({ schema: 1, vaultId: VAULT, installId: "another-install" })));
+	const duplicate = await selectVerifiedFolder(api, FOLDER, VAULT);
+	s.check(duplicate.kind === "needs-choice" && duplicate.folderIds.length === 2, "two matching vaults require explicit choice");
+	const fingerprintMatch = await selectVerifiedFolder(api, FOLDER, VAULT, undefined, hash);
+	s.check(fingerprintMatch.kind === "needs-choice", "an unpinned device with other matching folders cannot silently choose one even with a hash");
 }
 
 // ---------------------------------------------------------------------------
