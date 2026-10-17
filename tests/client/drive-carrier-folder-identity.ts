@@ -250,6 +250,28 @@ s.section("Test 3: two folders with one name are reported, and the choice is det
 }
 
 // ---------------------------------------------------------------------------
+s.section("COD-10: an older wrong-vault folder does not displace the verified folder");
+{
+	const drive = new FakeDrive();
+	const api = drive.client();
+	const wrong = await api.createFolder(FOLDER);
+	await api.createFile(wrong.id, META_NAME, new TextEncoder().encode(JSON.stringify({ app: "yaos-drive", schema: 1, vaultId: "someone-else", installId: "wrong-folder" })));
+	const correct = await api.createFolder(FOLDER);
+	await api.createFile(correct.id, META_NAME, new TextEncoder().encode(JSON.stringify({ app: "yaos-drive", schema: 1, vaultId: VAULT, installId: "right-folder" })));
+	const rig = makeRig(drive);
+	rig.text.insert(0, "keep separate");
+	const { transport, notices } = start(rig, "COD10");
+	await transport.connect();
+	s.check(transport.fatalError === null, "verified vault connects despite older wrong-vault folder");
+	s.check(rig.saved.value === correct.id, "only the matching folder is remembered");
+	s.check((await api.listFiles(correct.id)).some((f) => f.name.startsWith("seg-")), "sync writes to the selected vault");
+	s.check(notices.some((m) => /verified for this vault/.test(m)), "warning does not falsely claim the oldest folder was selected");
+	const wrongFiles = await api.listFiles(wrong.id);
+	s.check(wrongFiles.length === 1 && wrongFiles[0]?.name === META_NAME, "no sync writes reach the wrong vault");
+	transport.destroy();
+}
+
+// ---------------------------------------------------------------------------
 s.section("Test 4: a folder that holds a different vault is refused, not merged");
 {
 	const drive = new FakeDrive();

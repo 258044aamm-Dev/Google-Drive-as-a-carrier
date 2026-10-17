@@ -1,5 +1,7 @@
 import { DriveError, FOLDER_MIME, type DriveApi, type DriveFileInfo, type DriveFolderInfo } from "./driveApi";
 import { META_NAME } from "./fileFormat";
+import { inspectFolderFingerprint } from "./folderFingerprint";
+import { selectVerifiedFolder } from "./folderSelection";
 
 /**
  * Find the folder with this name, or create it. When two devices create it at
@@ -71,6 +73,7 @@ async function describeOthers(
 	others: DriveFolderInfo[],
 	name: string,
 	vaultId: string,
+	chosenOldest = true,
 ): Promise<string | null> {
 	if (others.length === 0) return null;
 	const head = others.length === 1
@@ -108,7 +111,7 @@ async function describeOthers(
 	if (unknown > 0) {
 		details.push(`${String(unknown)} of them have no readable meta.json (an empty folder left behind by an earlier start).`);
 	}
-	return `${head} This device uses the oldest one and never deletes the others.${details.length > 0 ? ` ${details.join(" ")}` : ""}`;
+	return `${head} This device uses ${chosenOldest ? "the oldest one" : "the folder verified for this vault"} and never deletes the others.${details.length > 0 ? ` ${details.join(" ")}` : ""}`;
 }
 
 export interface VaultFolderResolution {
@@ -173,9 +176,29 @@ export async function resolveVaultFolder(api: DriveApi, opts: ResolveVaultFolder
 			warning: rememberedGone ? goneAndCreatedSentence : null,
 		};
 	}
-	const chosen = candidates[0];
+	let chosen = candidates[0];
 	if (!chosen) throw new DriveError(500, `Could not create the Drive folder "${opts.name}"`);
-	const duplicate = await describeOthers(api, chosen.id, candidates.filter((f) => f.id !== chosen.id), opts.name, opts.vaultId);
+	// Narrow recovery for COD-10: when exactly one candidate is verified for
+	// this vault and *every* other candidate is verified as a different vault,
+	// avoid selecting an older wrong-vault folder. Do not alter the legacy,
+	// empty, concurrent-creation, or multi-history paths before the recovery UI
+	// can let the user choose; the keyring still validates before any write.
+	if (!savedId && candidates.length > 1) {
+		const decision = await selectVerifiedFolder(api, opts.name, opts.vaultId);
+		if (decision.kind === "selected" && decision.folder.id !== chosen.id) {
+			const otherIds = candidates.filter((f) => f.id !== decision.folder.id);
+			let allOtherVaults = true;
+			for (const other of otherIds) {
+				const identity = await inspectFolderFingerprint(api, other.id);
+				if (identity.kind !== "identified" || !identity.vaultId || identity.vaultId === opts.vaultId) {
+					allOtherVaults = false;
+					break;
+				}
+			}
+			if (allOtherVaults) chosen = decision.folder;
+		}
+	}
+	const duplicate = await describeOthers(api, chosen.id, candidates.filter((f) => f.id !== chosen.id), opts.name, opts.vaultId, chosen.id === candidates[0]?.id);
 	const parts = [rememberedGone ? goneSentence : null, duplicate].filter((part): part is string => part !== null);
 	return {
 		id: chosen.id,
