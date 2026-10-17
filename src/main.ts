@@ -173,6 +173,8 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 	private snapshotService: SnapshotService | null = null;
 	private reconciliationController!: ReconciliationController;
 	private setupLinkController: SetupLinkController | null = null;
+	/** The settings tab, so rows can be refreshed when setup state changes outside it. */
+	private settingsTab: VaultSyncSettingTab | null = null;
 	private traceRuntime: TraceRuntimeController | null = null;
 	/** Debug runtime handle — null unless debug mode installed it at startup. */
 	private lab: TelemetryRuntimeHandle | null = null;
@@ -624,7 +626,8 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			this.log(`Generated vault ID: ${this.settings.vaultId}`);
 		}
 
-		this.addSettingTab(new VaultSyncSettingTab(this.app, this, this));
+		this.settingsTab = new VaultSyncSettingTab(this.app, this, this);
+		this.addSettingTab(this.settingsTab);
 		// Google Drive setup wizard command: listed only while the Drive carrier is chosen.
 		this.addCommand({
 			id: "drive-setup-wizard",
@@ -2503,6 +2506,21 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			// F4: which custom address served this sign-in (default service: not recorded).
 			if (patch.driveHostedUrlUsed) settings.driveHostedUrlUsed = patch.driveHostedUrlUsed;
 		}, "settings:drive-wizard");
+		// The wizard is a dialog of its own: the settings screen behind it has to be
+		// told that setup moved on, or it keeps showing a guide that is already done.
+		this.refreshSettings();
+	}
+
+	/**
+	 * Redraw the settings screen from the current state.
+	 *
+	 * A plugin keeps no handle on its own settings tab, so a change made outside
+	 * the tab (the Drive wizard finishing, signing out) would otherwise leave the
+	 * screen showing rows that no longer apply. Obsidian's update() is safe to
+	 * call while the settings window is closed.
+	 */
+	refreshSettings(): void {
+		this.settingsTab?.update();
 	}
 
 	/**
@@ -2533,6 +2551,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 			if (settings.driveAuthMode === "hosted") delete settings.driveAuthMode;
 		}, "settings:drive-sign-out");
 		new Notice("Signed out of Google on this device. Reload the plugin to stop syncing.", 8000);
+		this.refreshSettings();
 	}
 
 	private configScope(): string {

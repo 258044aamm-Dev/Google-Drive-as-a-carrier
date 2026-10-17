@@ -721,7 +721,11 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 					{
 						name: "Set up Google Drive",
 						desc: "A short step-by-step guide: connect to Google, choose encryption, then create your vault or join one you already have.",
-						visible: () => typeof this.host.openDriveWizard === "function",
+						// Only while there is something left to set up. Visibility follows setup
+						// state, not what the host can do, so the row goes away once this device is
+						// signed in. The wizard itself stays reachable from the command palette.
+						visible: () => typeof this.host.openDriveWizard === "function"
+							&& !isDriveSignedIn(this.host.settings),
 						action: () => { this.host.openDriveWizard?.(); },
 					},
 					{
