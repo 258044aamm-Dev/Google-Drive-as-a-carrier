@@ -9,8 +9,10 @@
  *   `<base> (YAOS conflict[- crdt|disk|editor] from <device> <stamp>)[ N].md`
  * Stamp is ISO-8601 with `:` replaced by `-`.
  */
+// The extension is matched in any letter case (`.MD`), because the vault treats
+// `Note.MD` as a note too and a copy renamed that way is still a conflict copy.
 const MARKDOWN_CONFLICT_ARTIFACT_RE =
-	/ \(YAOS conflict(?: - (?:crdt|disk|editor))? from .+ \d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z\)(?: \d+)?\.md$/u;
+	/ \(YAOS conflict(?: - (?:crdt|disk|editor))? from .+ \d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z\)(?: \d+)?\.[mM][dD]$/u;
 
 export function isMarkdownConflictArtifactPath(path: string): boolean {
 	const normalized = path.replace(/\\/g, "/");

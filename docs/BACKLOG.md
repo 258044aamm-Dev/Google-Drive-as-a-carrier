@@ -11,39 +11,37 @@ Each item names current evidence, required work, and closure evidence. Historica
 - **P2:** bounded engineering debt; carry only if its owning code survives feature integration.
 - **External:** closure depends on a reporter or real device/deployment unavailable to CI.
 
+## Resolved since this list was written
+
+Kept here so the claims above and in `sync-contract.md` can be checked against the code that closed them. `tests/contracts/docs-claim-drift.ts` fails if the wording of an unresolved item reappears in the documents named there while these suites exist.
+
+### SYNC-01 — offline local delete is resurrected on re-enable — **resolved**
+
+**Fix.** `src/runtime/reconcile/offlineDeletePolicy.ts` tells the two cases apart by content: a note that is active in the CRDT and absent on disk is a **proven local delete** when the persisted disk index still holds a baseline hash and that hash equals the hash of the CRDT text — nothing changed since the file was there, so the delete was the user's. Every other case (no index entry, no baseline hash, unreadable text, any hash difference) keeps the old behaviour and writes the CRDT text back, so a stale device cannot delete a file that genuinely changed elsewhere. The rule sits behind the same brake as the rest of reconcile: more than **20** candidates **and** more than **25 %** of the vault's tracked files missing-on-disk at once stops the pass (`evaluateOfflineDeleteBatch`), and a vault with no files on disk at all never mass-deletes.
+
+**Commits.** `30d333d` (engine wiring) · `086c8a5` (the QA scenario hard-fails; the "known-issue" log is gone).
+
+**Suites / evidence.** `tests/client/engine-offline-delete.ts` — the classifier table, the batch brake, a note we had in sync being tombstoned while an untouched one stays, the edited-remotely/never-materialised/ignored/incomplete-vault cases written back, the other device seeing the delete, conservative mode, and the 25-of-30 block with its trace. `tests/client/engine-tombstone-age.ts` — a tombstone is not resurrected later. QA: `qa/controllers/two-device.ts`, scenario `issue-22-disable-reenable-local-delete-remote-unchanged`, now pushes to `errors` (it throws on a resurrected file) instead of logging.
+
+### SYNC-02 — bound-file re-enable can discard one changed side — **resolved in code**
+
+**Fix.** `src/runtime/reconcile/boundDivergencePolicy.ts` decides it from the persisted baseline: when the disk text and the CRDT text **both** differ from the baseline **and** from each other, taking one side would silently discard the other, so the side about to be overwritten is preserved as a conflict note first (fingerprint dedupe, the per-path cap of two and the per-session cap of twenty are unchanged). Without a baseline nothing is claimed and the previous behaviour applies.
+
+**Commits.** `a667248` (engine) · `086c8a5` (QA scenario hard-fails).
+
+**Suites / evidence.** `tests/client/engine-bound-both-changed.ts` — the policy table, the local-only branch, the idle branch, the ordinary cases that mint nothing, and a repeated event not piling up copies.
+
+**Still open (real-device part).** The recorded iPad ordering that started this item is still not reproduced on hardware: tracked as **QA-03** (iPad missing-baseline/cold-relaunch proof) in this file.
+
 ## P0 correctness and user incidents
 
 ### SYNC-01 — offline local delete is resurrected on re-enable
 
-**State:** Known failing behavior hidden as an expected failure.
-
-**Evidence:** `qa/controllers/two-device.ts`, scenario `issue-22-disable-reenable-local-delete-remote-unchanged`, explicitly logs a known issue and does not fail. When the file is absent on disk but still present in CRDT, `VaultSync.reconcileVault()` places it in `createdOnDisk`; `ReconciliationController` writes it back. The implementation cannot distinguish a file missing because this device has never materialized it from a file that this device previously indexed and deleted while YAOS was disabled.
-
-**Required work:**
-
-1. Convert the existing scenario into a hard failing regression; no warning-only acceptance.
-2. Define startup classification using the persisted disk index: known indexed path now absent versus path never materialized locally.
-3. Ensure unreadable/skipped paths cannot be mistaken for confirmed deletion.
-4. Propagate a proven offline delete without allowing a stale device to delete a genuinely new remote file.
-5. Preserve conflicting remote edits according to the delete/conflict contract.
-
-**Closure:** Focused regression fails before the fix and passes after it; re-enable keeps the file absent on the deleting device; the remote device observes the intended delete or an explicitly preserved conflict; unreadable-path and new-device materialization cases remain safe.
+**State:** resolved — the rule is implemented and the QA scenario fails hard again. Details, commits and evidence: *Resolved since this list was written*, below.
 
 ### SYNC-02 — bound-file re-enable can discard one changed side
 
-**State:** Open correctness gap with real iPad trace history.
-
-**Evidence:** `ReconciliationController.handleBoundFileSyncGap` has `localOnly`, `crdtOnly`, and ambiguous branches. If disk and CRDT both changed from the persisted baseline but the editor equals one side, the equality shortcut can select that side without invoking the full closed-file three-way classifier. A recorded ordering produced remote CRDT at the original path and discarded the local iPad edit without an artifact.
-
-**Required work:**
-
-1. Compute baseline, disk, and CRDT hashes before the local-only/CRDT-only shortcut.
-2. When both sides differ from baseline and from each other, run the same preserve-conflict classification used for closed files.
-3. Preserve the losing version before applying the winner.
-4. Keep current `crdt-current-no-op` and recovery-lock skips.
-5. Cover provider-sync-versus-reconcile ordering, not only the pure classifier.
-
-**Closure:** Deterministic regression proves preservation and convergence; a real iPad re-enable run reproduces the relevant ordering and retains both versions.
+**State:** resolved in code — real-device closure still tracked as **QA-03**. Details and evidence: *Resolved since this list was written*, below.
 
 ### ISSUE-19 — `.base` rollback and bulk-clipping misses
 

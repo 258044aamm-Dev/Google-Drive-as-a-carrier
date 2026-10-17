@@ -1,0 +1,217 @@
+import type * as Y from "yjs";
+import type { BlobStoreClient } from "../sync/blobSync";
+import type { SnapshotBackend } from "../snapshots/snapshotBackend";
+import type { SyncTransportFactory } from "../sync/transport";
+import { DriveBlobStore, type AttachmentAudit } from "./driveBlobStore";
+import { DriveSnapshotBackend } from "./driveSnapshotBackend";
+import { DriveKeyring } from "./driveKeyring";
+import { DEFAULT_COMPACTION_MODE, DriveTransport } from "./driveTransport";
+import { MeteredDriveApi, type RequestStats } from "./requestMeter";
+import { browserActivity, type ActivitySource } from "./activity";
+import { GoogleDriveRest, type DriveHttp } from "./googleDriveRest";
+import { GoogleTokenManager } from "./googleAuth";
+import { describeHostedEndpoint, resolveHostedTokenUrl, HostedTokenManager } from "./hostedAuth";
+import { isHostedSignIn, type DriveCarrierSettings } from "./carrierSettings";
+import { NORMAL_DRIVE_PACE, resolveDrivePace, type SyncPaceSettings } from "../settings/syncPace";
+
+export interface DriveCarrierRuntimeDeps {
+	getSettings: () => DriveCarrierSettings & SyncPaceSettings;
+	http: DriveHttp;
+	log: (message: string) => void;
+	/** Called once when Google says the sign-in no longer works. */
+	onSignInLost: () => void;
+	/** How often to look for changes made on other devices while the window is in use. Default 3 seconds. */
+	pollIntervalMs?: number;
+	/** Called once when the carrier stops for a reason retrying cannot fix (wrong passphrase, another layout). */
+	onFatal?: (message: string) => void;
+	/** Something worth telling the user that is not an error (a duplicate or empty vault folder, F5). */
+	onNotice?: (message: string) => void;
+	/** F5: the folder id this device used last time, and where a resolved one is saved. */
+	folderIdentity?: {
+		saved(): string | undefined;
+		remember(id: string): void;
+	};
+	/**
+	 * F4: the custom sign-in address that last served this device, and where to
+	 * record one that does. Optional: without it the carrier still refuses a bad
+	 * address, it just cannot report a change between sessions.
+	 */
+	hostedEndpointIdentity?: {
+		used(): string | undefined;
+		remember(url: string): void;
+	};
+	/**
+	 * F2: CRDT schema admission. Returns the reason this device must not read or
+	 * write this vault (null when it may). See DriveTransportOptions.guardSchema.
+	 */
+	guardSchema?: () => string | null;
+	/** Phones suspend apps, so polling stops while the window is hidden there. */
+	isMobile?: () => boolean;
+	/** Window visibility and network events. Default: the browser's. */
+	activity?: ActivitySource;
+	/** Overrides for the request budget. */
+	idleAfterMs?: number;
+	idlePollIntervalMs?: number;
+	backgroundPollIntervalMs?: number;
+}
+
+/** After a minute of nothing happening, look every 30 seconds instead of every 3. */
+export const DEFAULT_IDLE_AFTER_MS = NORMAL_DRIVE_PACE.idleAfterMs;
+export const DEFAULT_IDLE_POLL_MS = NORMAL_DRIVE_PACE.idlePollIntervalMs;
+/** Desktop windows that are hidden (minimised, covered) still check every two minutes. */
+export const DEFAULT_BACKGROUND_POLL_MS = NORMAL_DRIVE_PACE.backgroundPollIntervalMsDesktop;
+
+/** Everything the Drive carrier provides to the rest of the plugin, sharing one sign-in. */
+export interface DriveCarrier {
+	/** The sync transport (what the Worker connection is for Cloudflare). */
+	transportFactory: SyncTransportFactory;
+	/** Attachment storage on Drive. One instance per vault. */
+	blobStore(vaultId: string): BlobStoreClient;
+	/** Restore points on Drive. One instance per vault. */
+	snapshotBackend(vaultId: string, getDoc: () => Y.Doc | null): SnapshotBackend;
+	/** How many requests the carrier has sent to Drive (null before the first one). */
+	requestStats(): RequestStats | null;
+	/** Re-read the "sync speed" setting and apply it to the running transports. */
+	applyPace(): void;
+	/** F6: list the attachments on Drive and say which nothing references. Never deletes. */
+	auditAttachments(vaultId: string, referencedHashes: string[]): Promise<AttachmentAudit>;
+}
+
+/**
+ * Builds the pieces the plugin uses instead of the Cloudflare ones. Nothing
+ * here runs unless the user chose the Drive carrier and signed in.
+ */
+export function createDriveCarrier(deps: DriveCarrierRuntimeDeps): DriveCarrier {
+	let api: MeteredDriveApi | null = null;
+	const getApi = (): MeteredDriveApi => {
+		if (api) return api;
+		const settings = deps.getSettings();
+		const tokens = isHostedSignIn(settings)
+			? hostedTokenManager(settings.driveHostedUrl, settings.driveRefreshToken ?? "", settings.driveHostedUrlUsed)
+			: new GoogleTokenManager(
+				deps.http,
+				{ clientId: settings.driveClientId ?? "", clientSecret: settings.driveClientSecret ?? "" },
+				settings.driveRefreshToken ?? "",
+				undefined,
+				deps.onSignInLost,
+			);
+		api = new MeteredDriveApi(new GoogleDriveRest(deps.http, tokens.provider));
+		return api;
+	};
+	/**
+	 * F4: the refresh token may only ever travel to a full https address (refused
+	 * here, with the reason reaching the user), and a custom address that differs
+	 * from the one that last served this device is reported before the first token
+	 * request of the session is made. The address is then remembered only after the
+	 * service has actually issued a token, so "used" never means "configured".
+	 */
+	const hostedTokenManager = (configured: string | undefined, refreshToken: string, lastUsed: string | undefined): HostedTokenManager => {
+		let endpoint: string;
+		try {
+			endpoint = resolveHostedTokenUrl(configured);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			deps.log(`drive-carrier: sign-in address refused (${message})`);
+			deps.onFatal?.(message);
+			throw err;
+		}
+		const info = describeHostedEndpoint(configured);
+		const previous = lastUsed?.trim() ?? "";
+		if (info.custom && previous !== "" && previous !== info.url) {
+			let was = previous;
+			try { was = describeHostedEndpoint(previous).origin; } catch { /* keep the raw text */ }
+			deps.log(`drive-carrier: sign-in address changed from ${was} to ${info.origin}; the saved sign-in is checked against the new address before it is used`);
+		}
+		return new HostedTokenManager(deps.http, endpoint, refreshToken, undefined, deps.onSignInLost, (used) => {
+			if (!info.custom || used === previous) return;
+			deps.hostedEndpointIdentity?.remember(used);
+		});
+	};
+	const keyrings = new Map<string, DriveKeyring>();
+	const keyringFor = (vaultId: string): DriveKeyring => {
+		let keyring = keyrings.get(vaultId);
+		if (!keyring) {
+			keyring = new DriveKeyring(getApi(), {
+				vaultId,
+				passphrase: deps.getSettings().driveEncryptionPassphrase ?? "",
+			});
+			keyrings.set(vaultId, keyring);
+		}
+		return keyring;
+	};
+	let activity: ActivitySource | null = null;
+	// One live transport per vault (a reload replaces the old one), so a settings change reaches the running one.
+	const transports = new Map<string, DriveTransport>();
+	const currentPace = () => resolveDrivePace(deps.getSettings(), deps.isMobile?.() ?? false);
+	const blobStores = new Map<string, DriveBlobStore>();
+	const snapshotBackends = new Map<string, SnapshotBackend>();
+
+	const blobStoreFor = (vaultId: string): DriveBlobStore => {
+		let store = blobStores.get(vaultId);
+		if (!store) {
+			store = new DriveBlobStore(getApi(), { vaultId, keyring: keyringFor(vaultId) });
+			blobStores.set(vaultId, store);
+		}
+		return store;
+	};
+	return {
+		transportFactory: ({ doc, vaultId, isLocalStoreOrigin }) => {
+			activity ??= deps.activity ?? browserActivity();
+			const pace = currentPace();
+			const transport = new DriveTransport(doc, getApi(), {
+				vaultId,
+				deviceId: deps.getSettings().driveDeviceId ?? "device",
+				pollIntervalMs: deps.pollIntervalMs ?? pace.pollIntervalMs,
+				idleAfterMs: deps.idleAfterMs ?? pace.idleAfterMs,
+				idlePollIntervalMs: deps.idlePollIntervalMs ?? pace.idlePollIntervalMs,
+				backgroundPollIntervalMs: deps.backgroundPollIntervalMs ?? pace.backgroundPollIntervalMs,
+				batchMs: pace.batchMs,
+				reconcileIntervalMs: pace.reconcileIntervalMs,
+				activity,
+				keyring: keyringFor(vaultId),
+				keepSnapshots: deps.getSettings().driveKeepSnapshots,
+				verifyBeforePrune: deps.getSettings().driveVerifyBeforePrune !== false,
+				compaction: deps.getSettings().driveCompaction === "legacy" ? "legacy" : DEFAULT_COMPACTION_MODE,
+				onFatal: deps.onFatal,
+				onNotice: deps.onNotice,
+				folderIdentity: deps.folderIdentity,
+				guardSchema: deps.guardSchema,
+				ignoreOrigin: isLocalStoreOrigin,
+				log: deps.log,
+			});
+			transports.set(vaultId, transport);
+			return transport;
+		},
+		blobStore: (vaultId) => blobStoreFor(vaultId),
+		snapshotBackend(vaultId, getDoc) {
+			let backend = snapshotBackends.get(vaultId);
+			if (!backend) {
+				backend = new DriveSnapshotBackend(getApi(), { vaultId, getDoc, keyring: keyringFor(vaultId) });
+				snapshotBackends.set(vaultId, backend);
+			}
+			return backend;
+		},
+		async auditAttachments(vaultId: string, referencedHashes: string[]): Promise<AttachmentAudit> {
+			return await blobStoreFor(vaultId).audit(referencedHashes);
+		},
+		requestStats: () => api?.stats() ?? null,
+		applyPace() {
+			const pace = currentPace();
+			for (const transport of transports.values()) {
+				transport.applyPace({
+					pollIntervalMs: deps.pollIntervalMs ?? pace.pollIntervalMs,
+					idleAfterMs: deps.idleAfterMs ?? pace.idleAfterMs,
+					idlePollIntervalMs: deps.idlePollIntervalMs ?? pace.idlePollIntervalMs,
+					backgroundPollIntervalMs: deps.backgroundPollIntervalMs ?? pace.backgroundPollIntervalMs,
+					batchMs: pace.batchMs,
+					reconcileIntervalMs: pace.reconcileIntervalMs,
+				});
+			}
+		},
+	};
+}
+
+/** The transport part alone (kept for callers and tests that only need it). */
+export function createDriveTransportFactory(deps: DriveCarrierRuntimeDeps): SyncTransportFactory {
+	return createDriveCarrier(deps).transportFactory;
+}

@@ -12,6 +12,7 @@ import {
 } from "./frontmatterGuard";
 import { isLocalOrigin } from "./origins";
 import { contentBaselineHash } from "./diskIndex";
+import { isMarkdownConflictArtifactPath } from "./markdownConflictArtifact";
 import { PreservedUnresolvedRegistry, type PreservedUnresolvedEntry, type PreservedUnresolvedReason } from "./preservedUnresolved";
 export { isLocalOrigin };
 
@@ -140,6 +141,13 @@ export class DiskMirror {
 	private _onDiskWriteCallback: ((path: string, contentHash: string) => void) | null = null;
 
 	/**
+	 * Optional: the content hash this device last knew to be on disk and in sync
+	 * for a path. When set, a remote
+	 * delete treats a disk file that still matches it as untouched.
+	 */
+	private remoteDeleteBaselineHash: ((path: string) => string | null) | null = null;
+
+	/**
 	 * Per-path timestamp of the most recent successful `flushWrite`. Updated
 	 * on every `vault.modify` and `vault.create` we issue. Read by the main
 	 * vault.on("modify") handler so `disk.modify.observed` events can carry
@@ -187,6 +195,18 @@ export class DiskMirror {
 	 */
 	setDiskWriteCallback(callback: (path: string, contentHash: string) => void): void {
 		this._onDiskWriteCallback = callback;
+	}
+
+	/**
+	 * A remote delete used to compare the disk with the CRDT
+	 * text at the moment the delete was seen. A batching carrier (Google Drive) hands over an edit and
+	 * the delete that follows it in one poll, so the disk was still the text from
+	 * before that edit, looked "locally modified", and the delete was undone with
+	 * the OLD text. The last known synced hash tells an untouched file from an
+	 * edited one.
+	 */
+	setRemoteDeleteBaselineProvider(provider: ((path: string) => string | null) | null): void {
+		this.remoteDeleteBaselineHash = provider;
 	}
 
 	// -------------------------------------------------------------------
@@ -506,6 +526,14 @@ export class DiskMirror {
 	}
 
 	private async flushWriteUnlocked(path: string, force: boolean): Promise<void> {
+		// Conflict notes are local-only by contract. A vault can still hold one as
+		// an active shared entry (it synced in 2.1.0); keeping the entry is fine,
+		// but it must never be written to disk, even when forced or when a remote
+		// update arrives, or a deleted note comes back (upstream issue #78).
+		if (isMarkdownConflictArtifactPath(path)) {
+			this.log(`flushWrite: "${path}" is a conflict note (local-only), not writing it`);
+			return;
+		}
 		const ytext = this.vaultSync.getTextForPath(path);
 		if (!ytext) {
 			this.log(`flushWrite: no Y.Text for "${path}", skipping`);
@@ -674,7 +702,18 @@ export class DiskMirror {
 					if (lastKnownContent !== null) {
 						try {
 							const diskContent = await this.app.vault.read(file);
-							if (diskContent !== lastKnownContent) {
+							const matchesSyncedBaseline = diskContent !== lastKnownContent
+								&& this.remoteDeleteBaselineHash !== null
+								&& await this.diskMatchesSyncedBaseline(normalized, diskContent);
+							if (matchesSyncedBaseline) {
+								this.trace?.("disk", "remote-delete-clean-by-baseline", {
+									path,
+									normalizedPath: normalized,
+									diskLength: diskContent.length,
+									crdtLength: lastKnownContent.length,
+								});
+							}
+							if (diskContent !== lastKnownContent && !matchesSyncedBaseline) {
 								// Known baseline exists, local file differs → known dirty.
 								// Preserve and revive: local dirty work wins over remote delete.
 								decision = { kind: "preserve-revive", diskContent };
@@ -930,6 +969,12 @@ export class DiskMirror {
 		} else {
 			this.scheduleWrite(newNormalized);
 		}
+	}
+
+	private async diskMatchesSyncedBaseline(path: string, diskContent: string): Promise<boolean> {
+		const baseline = this.remoteDeleteBaselineHash?.(path) ?? null;
+		if (!baseline) return false;
+		return (await contentBaselineHash(diskContent)) === baseline;
 	}
 
 	private async deleteLocalReplica(file: TFile): Promise<"trash"> {

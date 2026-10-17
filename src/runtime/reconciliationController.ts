@@ -1,4 +1,4 @@
-import { App, MarkdownView, Notice, TFile } from "obsidian";
+import { App, MarkdownView, Notice, TFile, normalizePath } from "obsidian";
 import type { BlobSyncManager } from "../sync/blobSync";
 import type { DiskMirror } from "../sync/diskMirror";
 import {
@@ -40,6 +40,9 @@ import {
 import { planClosedFileReconcile } from "./reconcile/closedFilePlanner";
 import { planBaselineAdvancement, type BaselineActionKind } from "./reconcile/baselineAdvancementPolicy";
 import { evaluateSafetyBrake } from "./reconcile/safetyBrakePolicy";
+import { classifyMissingOnDisk, evaluateOfflineDeleteBatch } from "./reconcile/offlineDeletePolicy";
+import { withoutConflictNotes } from "./reconcile/conflictNotePolicy";
+import { bothSidesChangedFromBaseline } from "./reconcile/boundDivergencePolicy";
 import {
 	computeRecoveryFingerprint,
 	evaluateFingerprintQuarantine,
@@ -687,7 +690,9 @@ export class ReconciliationController {
 				// This preserves the action kind so planBaselineAdvancement gets the
 				// correct input, not a flattened "defer-to-crdt-flush" for everything.
 				const updatesToFlush: Array<{ path: string; baselineActionKind: BaselineActionKind }> = [];
-				for (const path of result.createdOnDisk) {
+				// Conflict notes are local-only: never write one from the shared document.
+				const createdToWrite = await this.applyOfflineDeletes(withoutConflictNotes(result.createdOnDisk), mode, diskPresentPaths.size);
+				for (const path of createdToWrite) {
 					this.deps.recordFlightPathEvent?.({
 						priority: "important",
 						kind: PRODUCT_EVENT_KIND.reconcileFileDecision,
@@ -1749,6 +1754,7 @@ export class ReconciliationController {
 					return true;
 				}
 				// recovery.apply.start: before the actual diff application
+				await this.preserveCrdtIfBothSidesChanged(file.path, crdtContent ?? "", content, "bound-file-local-only-divergence");
 				this.deps.recordFlightPathEvent?.({
 					priority: "important",
 					kind: PRODUCT_EVENT_KIND.recoveryApplyStart,
@@ -1990,6 +1996,7 @@ export class ReconciliationController {
 				)) {
 					return true;
 				}
+				await this.preserveCrdtIfBothSidesChanged(file.path, crdtContent ?? "", content, "bound-file-open-idle-disk-recovery");
 				this.deps.recordFlightPathEvent?.({
 					priority: "important",
 					kind: PRODUCT_EVENT_KIND.recoveryApplyStart,
@@ -2556,6 +2563,130 @@ export class ReconciliationController {
 			? cappedBase.slice(0, maxBase)
 			: cappedBase;
 		return `${dir}${finalBase}${suffix}${ext}`;
+	}
+
+	/**
+	 * SYNC-01: of the notes the CRDT holds but the disk lacks, find those this
+	 * device had in sync and then lost (see offlineDeletePolicy), record them as
+	 * deleted, and return the rest, which are written to disk as before.
+	 * Authoritative mode only: in conservative mode the CRDT may be incomplete.
+	 */
+	private async applyOfflineDeletes(
+		createdOnDisk: string[],
+		mode: ReconcileMode,
+		diskPresentCount: number,
+	): Promise<string[]> {
+		if (mode !== "authoritative" || createdOnDisk.length === 0) return createdOnDisk;
+		const vaultSync = this.deps.getVaultSync();
+		if (!vaultSync) return createdOnDisk;
+		const index = this.deps.getDiskIndex();
+		const candidates: string[] = [];
+		for (const path of createdOnDisk) {
+			const baselineHash = index[path]?.contentHash;
+			if (!baselineHash) continue;
+			// A path excluded by the ignore list is not on disk by design.
+			if (!this.deps.isMarkdownPathSyncable(path)) continue;
+			// Ask the file system itself, not only the vault's file list.
+			if (await this.existsOnDisk(path)) continue;
+			const ytext = vaultSync.getTextForPath(path);
+			const crdtHash = ytext ? await contentBaselineHash(yTextToString(ytext) ?? "") : null;
+			if (classifyMissingOnDisk({ baselineHash, crdtHash }) === "treat-as-local-delete") {
+				candidates.push(path);
+			}
+		}
+		if (candidates.length === 0) return createdOnDisk;
+		const trackedCount = vaultSync
+			.getActiveMarkdownPaths()
+			.filter((p) => index[p]?.contentHash !== undefined).length;
+		const batch = evaluateOfflineDeleteBatch({ candidateCount: candidates.length, trackedCount, diskPresentCount });
+		if (!batch.allowed) {
+			this.deps.log(`Reconcile: not treating ${candidates.length} missing notes as deleted: ${batch.reason}.`);
+			this.deps.trace("reconcile", "reconcile-offline-delete-blocked", {
+				candidateCount: candidates.length,
+				trackedCount,
+				diskPresentCount,
+				reason: batch.reason,
+				...tracePathList("candidates", candidates),
+			});
+			return createdOnDisk;
+		}
+		const deleted = new Set<string>();
+		for (const path of candidates) {
+			const opId = `op-reconcile-offline-delete-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+			this.deps.recordFlightPathEvent?.({
+				priority: "important",
+				kind: PRODUCT_EVENT_KIND.reconcileFileDecision,
+				severity: "info",
+				scope: "file",
+				source: "reconciliationController",
+				layer: "reconcile",
+				path,
+				opId,
+				data: {
+					decision: "treat-as-local-delete",
+					reason: "indexed-baseline-equals-crdt-and-file-missing",
+					conflictRisk: "none",
+				},
+			});
+			vaultSync.handleDelete(path, this.deps.getSettings().deviceName, opId);
+			deleted.add(path);
+		}
+		return createdOnDisk.filter((p) => !deleted.has(p));
+	}
+
+	/**
+	 * SYNC-02: the caller is about to overwrite the CRDT text of an editor-bound
+	 * note with the disk text. If both sides changed from the last synced text,
+	 * keep the CRDT version as a conflict note first, so the edit is not lost
+	 * silently. Same artifact path, cap and dedupe as the ambiguous-divergence
+	 * branch; no baseline means no claim and nothing is preserved.
+	 */
+	private async preserveCrdtIfBothSidesChanged(
+		path: string,
+		crdtContent: string,
+		diskContent: string,
+		branch: string,
+	): Promise<void> {
+		const baselineHash = this.deps.getDiskIndex()[path]?.contentHash;
+		if (!baselineHash) return;
+		const [diskHash, crdtHash] = await Promise.all([
+			contentBaselineHash(diskContent),
+			contentBaselineHash(crdtContent),
+		]);
+		if (!bothSidesChangedFromBaseline({ baselineHash, diskHash, crdtHash })) return;
+		const fingerprint = `${crdtHash}\x00${diskHash}\x00both-changed`;
+		if (this.lastConflictFingerprints.get(path) === fingerprint) return;
+		try {
+			const conflictPath = await this.createMarkdownConflictArtifact(path, crdtContent, branch, "crdt");
+			this.lastConflictFingerprints.set(path, fingerprint);
+			this.deps.trace("conflict", "bound-file-both-sides-changed-preserved", {
+				path,
+				branch,
+				conflictPath,
+				crdtLength: crdtContent.length,
+				diskLength: diskContent.length,
+			});
+			if (conflictPath !== null) {
+				this.showConflictNotice(
+					`Conflict detected for "${path.split("/").pop()}" — the other version was preserved as a local-only conflict note.`,
+				);
+			}
+		} catch (err) {
+			this.deps.trace("conflict", "bound-file-both-sides-changed-preserve-failed", {
+				path,
+				branch,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
+	/** True when the file system has the path; any doubt counts as "exists". */
+	private async existsOnDisk(path: string): Promise<boolean> {
+		try {
+			return (await this.deps.app.vault.adapter.stat(normalizePath(path))) !== null;
+		} catch {
+			return true;
+		}
 	}
 
 	private async updateDiskIndexForPath(path: string, settledContent?: string): Promise<void> {

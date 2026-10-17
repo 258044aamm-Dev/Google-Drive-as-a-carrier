@@ -17,6 +17,7 @@
 import * as Y from "yjs";
 import {
 	reapTombstonedBodies,
+	reapTombstonedBodiesUntilDone,
 	TOMBSTONE_REAP_ORIGIN,
 	TOMBSTONE_REAP_GRACE_MS,
 } from "../../server/src/tombstoneReaper";
@@ -547,5 +548,61 @@ s.section("Test 16: already-reaped tombstones are reported, not silently ignored
 	s.check(second.withBody === 0, "no bodies remain in the candidate pool");
 	s.check(second.reaped === 0, "idempotent");
 	doc.destroy();
+}
+s.section("Test 17: the result says how close the oldest tombstone is to eligibility");
+{
+	// The shape of upstream issue #78: many tombstones, reaped 0, all inside the grace window.
+	const doc = buildVault([
+		{ id: "a", path: "a.md", chars: 10, deletedAt: NOW - 5 * DAY },
+		{ id: "b", path: "b.md", chars: 10, deletedAt: NOW - 20 * DAY },
+		{ id: "c", path: "c.md", chars: 10, deletedAt: NOW - 1 * DAY },
+		{ id: "u", path: "u.md", chars: 10, legacyDeleted: true },
+		{ id: "live", path: "live.md", chars: 10, legacyPathMap: true },
+	]);
+	const r = reapTombstonedBodies(doc, { now: NOW });
+	s.check(r.reaped === 0 && r.withinGrace === 3 && r.unknownAge === 1, "setup: nothing reaped, three inside the grace window, one of unknown age");
+	s.check(r.oldestTombstoneAgeMs === 20 * DAY, `oldest known tombstone is 20 days old (got ${String(r.oldestTombstoneAgeMs)})`);
+	s.check(r.nextEligibleAt === NOW - 20 * DAY + TOMBSTONE_REAP_GRACE_MS, `the oldest becomes eligible in 10 days (got ${String(r.nextEligibleAt)})`);
+	doc.destroy();
+	const clean = buildVault([{ id: "live", path: "live.md", chars: 10, legacyPathMap: true }]);
+	const none = reapTombstonedBodies(clean, { now: NOW });
+	s.check(none.oldestTombstoneAgeMs === null && none.nextEligibleAt === null, "no tombstones: both are null");
+	clean.destroy();
+	const old = buildVault([{ id: "o", path: "o.md", chars: 10, deletedAt: NOW - 90 * DAY }]);
+	const reaped = reapTombstonedBodies(old, { now: NOW });
+	s.check(reaped.reaped === 1 && reaped.nextEligibleAt === null && reaped.oldestTombstoneAgeMs === 90 * DAY, "an eligible tombstone is reaped and nothing is left waiting");
+	old.destroy();
+}
+s.section("Test 18: more than one pass' worth of eligible tombstones is cleared in one load, within a budget");
+{
+	const specs = Array.from({ length: 1154 }, (_, i) => ({ id: `t${i}`, path: `t${i}.md`, chars: 20, deletedAt: NOW - 60 * DAY }));
+	const doc = buildVault(specs);
+	const one = reapTombstonedBodies(doc, { now: NOW });
+	s.check(one.reaped === 500 && one.remaining === 654, `the single pass still stops at 500 (got ${one.reaped}/${one.remaining})`);
+	const all = reapTombstonedBodiesUntilDone(doc, { now: NOW });
+	s.check(all.reaped === 654 && all.remaining === 0, `the loop finishes the other 654 (got ${all.reaped}/${all.remaining})`);
+	s.check(all.tombstones === 1154 && bodyOf(doc, "t0") === null && bodyOf(doc, "t1153") === null, "every tombstone is kept and every body is gone");
+	doc.destroy();
+
+	const fresh = buildVault(specs);
+	const total = reapTombstonedBodiesUntilDone(fresh, { now: NOW });
+	s.check(total.reaped === 1154 && total.remaining === 0, `from scratch the totals add up (got ${total.reaped})`);
+	fresh.destroy();
+
+	// A budget of zero means the extra passes never start.
+	const capped = buildVault(specs);
+	const stopped = reapTombstonedBodiesUntilDone(capped, { now: NOW, extraBudgetMs: 0 });
+	s.check(stopped.reaped === 500 && stopped.remaining === 654, "with no extra budget it is exactly the old single pass");
+	// A clock that runs out after one extra pass.
+	let tick = 0;
+	const timed = reapTombstonedBodiesUntilDone(capped, { now: NOW, extraBudgetMs: 10, clock: () => (tick += 6) });
+	s.check(timed.remaining > 0 || timed.reaped >= 1, "an expiring clock ends the loop");
+	capped.destroy();
+
+	// Nothing to do: one pass, same numbers as before.
+	const quiet = buildVault([{ id: "live", path: "l.md", chars: 5, legacyPathMap: true }]);
+	const q = reapTombstonedBodiesUntilDone(quiet, { now: NOW });
+	s.check(q.reaped === 0 && q.remaining === 0 && q.tombstones === 0, "a clean document behaves as before");
+	quiet.destroy();
 }
 await s.done();

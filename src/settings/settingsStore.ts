@@ -1,4 +1,9 @@
+import type { ConfigPreviewCheckpoint } from "../config-sync/preview";
 import { randomId } from "../utils/randomId";
+import type { DriveCarrierSettings } from "../drive-carrier/carrierSettings";
+import type { LanCarrierSettings } from "../lan-carrier/lanSettings";
+import type { SyncPaceSettings } from "./syncPace";
+import type { StatusDisplaySettings } from "../status/simpleStatus";
 
 /** Controls how external disk edits (git, other editors) are imported into CRDT. */
 export type ExternalEditPolicy = "always" | "closed-only" | "never";
@@ -15,7 +20,11 @@ export function attachmentSizeCapKB(serverMaxBlobUploadBytes?: number | null): n
 	return Math.max(1, Math.min(MAX_ATTACHMENT_SIZE_KB, Math.floor(serverMaxBlobUploadBytes / 1024)));
 }
 
-export interface VaultSyncSettings {
+export interface VaultSyncSettings extends DriveCarrierSettings, LanCarrierSettings, SyncPaceSettings, StatusDisplaySettings {
+	/** Default-off, projection staging only. Never activates live configuration. */
+	configSyncPreview?: boolean;
+	/** Local source hashes only; never placed in shared config metadata. */
+	configSyncPreviewCheckpoint?: ConfigPreviewCheckpoint;
 	/** Cloudflare Worker host, e.g. "https://sync.yourdomain.com" */
 	host: string;
 	/** Shared secret token for auth. */

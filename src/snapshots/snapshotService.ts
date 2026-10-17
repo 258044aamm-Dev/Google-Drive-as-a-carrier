@@ -3,11 +3,6 @@ import { BlobSyncManager } from "../sync/blobSync";
 import { DiskMirror } from "../sync/diskMirror";
 import {
 	diffSnapshot,
-	downloadSnapshot,
-	listSnapshots as fetchSnapshotList,
-	requestDailySnapshot,
-	requestSnapshotNow,
-	requestPrune,
 	restoreFromSnapshot,
 	normalizeSnapshotUnchanged,
 	type SnapshotIndex,
@@ -16,6 +11,7 @@ import { VaultSync } from "../sync/vaultSync";
 import type { VaultSyncSettings } from "../settings";
 import type { TraceHttpContext } from "../observability/traceContext";
 import { formatUnknown } from "../utils/format";
+import { createServerSnapshotBackend, type SnapshotBackend } from "./snapshotBackend";
 import { SnapshotDiffModal, SnapshotListModal } from "./snapshotModals";
 
 interface SnapshotServiceDeps {
@@ -26,12 +22,26 @@ interface SnapshotServiceDeps {
 	getDiskMirror(): DiskMirror | null;
 	getBlobSync(): BlobSyncManager | null;
 	getServerSupportsSnapshots(): boolean;
+	/** A carrier-provided snapshot store (Google Drive). Absent or null means the Worker is used. */
+	getSnapshotBackend?(): SnapshotBackend | null;
 	log(message: string): void;
 	onEditorsNeedReconcile(reason: string): void;
 }
 
 export class SnapshotService {
+	private serverBackend: SnapshotBackend | null = null;
+
 	constructor(private readonly deps: SnapshotServiceDeps) {}
+
+	private get backend(): SnapshotBackend {
+		const custom = this.deps.getSnapshotBackend?.();
+		if (custom) return custom;
+		this.serverBackend ??= createServerSnapshotBackend(
+			() => this.deps.getSettings(),
+			() => this.deps.getTraceHttpContext(),
+		);
+		return this.serverBackend;
+	}
 
 	/**
 	 * Request the daily snapshot from the server.
@@ -44,11 +54,7 @@ export class SnapshotService {
 
 		const settings = this.deps.getSettings();
 		try {
-			const result = await requestDailySnapshot(
-				settings,
-				settings.deviceName,
-				this.deps.getTraceHttpContext(),
-			);
+			const result = await this.backend.daily(settings.deviceName);
 			if (result.status === "created") {
 				this.deps.log(`Daily snapshot created: ${result.snapshotId}`);
 			} else if (result.status === "noop") {
@@ -80,11 +86,7 @@ export class SnapshotService {
 		const settings = this.deps.getSettings();
 		new Notice("Creating snapshot...");
 		try {
-			const result = await requestSnapshotNow(
-				settings,
-				settings.deviceName,
-				this.deps.getTraceHttpContext(),
-			);
+			const result = await this.backend.now(settings.deviceName);
 			if (result.status === "created" && result.index) {
 				// Handle both new and old server response field names
 				const identical = normalizeSnapshotUnchanged(result);
@@ -128,10 +130,7 @@ export class SnapshotService {
 		new Notice("Loading snapshots...");
 
 		try {
-			const snapshots = await fetchSnapshotList(
-				this.deps.getSettings(),
-				this.deps.getTraceHttpContext(),
-			);
+			const snapshots = await this.backend.list();
 
 			if (snapshots.length === 0) {
 				new Notice("No snapshots found. Take a snapshot first.");
@@ -163,10 +162,7 @@ export class SnapshotService {
 
 		new Notice("Running snapshot cleanup...");
 		try {
-			const result = await requestPrune(
-				this.deps.getSettings(),
-				this.deps.getTraceHttpContext(),
-			);
+			const result = await this.backend.prune();
 			if (result.pruned === 0) {
 				new Notice("No snapshots to prune — retention policy already satisfied.");
 			} else {
@@ -192,11 +188,7 @@ export class SnapshotService {
 		new Notice("Downloading snapshot...");
 
 		try {
-			const snapshotDoc = await downloadSnapshot(
-				this.deps.getSettings(),
-				snapshot,
-				this.deps.getTraceHttpContext(),
-			);
+			const snapshotDoc = await this.backend.download(snapshot);
 			const diff = diffSnapshot(snapshotDoc, vaultSync.ydoc);
 
 			let destroyed = false;

@@ -4,6 +4,7 @@
 		"tests/live/run-live.ts": "Integration driver, not a suite. Boots `wrangler dev` and spawns the live-worker suites against it. Owned by `npm run test:integration:worker`."
 	},
 	"skip": {
+		"tests/live/config-sync-preview.ts": "Executed by tests/live/run-live.ts in test:ci, not skipped from CI. Requires the real local Worker and SYNC_TOKEN; verifies configuration projections and ordinary notes across three clients.",
 		"tests/contracts/server-update-local.ts": "Owned by `npm run test:server-update-local`, which runs `build:server-release` first. Needs dist/release-assets/yaos-server.zip on disk and shells out to git in a temp clone.",
 		"tests/live/schema-guard.ts": "Live-worker suite. Spawned by tests/live/run-live.ts; needs a running server on 127.0.0.1:8787 and SYNC_TOKEN.",
 		"tests/live/provider-manual-connect.ts": "Live-worker suite. Spawned by tests/live/run-live.ts; exits non-zero without SYNC_TOKEN.",
@@ -14,7 +15,8 @@
 		"tests/live/ws-admission-protocol.ts": "Live-worker suite. Spawned by tests/live/run-live.ts; needs a running server and SYNC_TOKEN.",
 		"tests/live/live-seed-check.ts": "Manual probe against a deployed server. Throws unless YAOS_TEST_HOST, SYNC_TOKEN, and YAOS_TEST_VAULT_ID are all set.",
 		"tests/live/persistence-handoff-proof.ts": "Issue #24 RCA experiment against a live server. Throws without SYNC_TOKEN; two-device handoff over real WebSockets.",
-		"tests/live/persistence-eviction-proof.ts": "Issue #24 RCA experiment. Defaults YAOS_TEST_HOST to a real deployment URL and sleeps 160s waiting for Durable Object eviction — far too slow and too external for the regression gate."
+		"tests/live/persistence-eviction-proof.ts": "Issue #24 RCA experiment. Defaults YAOS_TEST_HOST to a real deployment URL and sleeps 160s waiting for Durable Object eviction \u2014 far too slow and too external for the regression gate.",
+		"tests/live/drive-real.ts": "F8 live Google Drive gate. Opt-in only: needs YAOS_DRIVE_LIVE=1 plus a real refresh token (and client id/secret or a hosted token URL). It creates and deletes files in its own `YAOS <vaultId> live-probe` folder on a real account, so it must never run in CI. Run it with `node --import jiti/register tests/live/drive-real.ts`; the evidence goes to docs/drive-carrier-device-results.md."
 	},
 	"serialReason": "These suites write into the repo tree, so they must never run concurrently with each other or with a build. The runner is sequential today, which satisfies this for free; the list exists so that adding parallelism cannot silently break it.",
 	"serial": [

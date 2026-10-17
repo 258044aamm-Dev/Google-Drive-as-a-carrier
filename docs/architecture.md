@@ -33,6 +33,14 @@ Tombstoned Markdown bodies are reaped after their grace period while tombstone m
 
 `VaultSync` owns the local Yjs document, IndexedDB provider, remote provider, file identity, and reconciliation inputs. `ReconciliationController` coordinates authority decisions. `DiskMirror` materializes CRDT state and observes ordinary local files. `EditorBindingManager` connects open Markdown editors to their `Y.Text`. `BlobSyncManager` handles non-Markdown files through R2.
 
+### Sync carrier
+
+`VaultSync` reaches its carrier only through the `SyncTransport` interface in `src/sync/transport.ts`: connect, disconnect, destroy, status and sync events, awareness, and remote updates applied with the transport object as the Yjs origin. The Cloudflare Worker provider (`y-partyserver`) is the default and is unchanged. A different carrier can be supplied with the `transportFactory` option; on that path no Worker connection, ticket or token is used. Cloudflare-only details (ticketed URL, socket termination) stay inside `VaultSync`'s Cloudflare branch.
+
+### Google Drive carrier (experimental, off by default)
+
+An alternative `SyncTransport` lives in `src/drive-carrier/` and is used only when the user picks it in the settings (the "Sync carrier" row). It exchanges Yjs updates as immutable files in a Drive folder, so there is no server, no authoritative copy and no push channel: devices poll. Attachments and snapshots go to their own Drive folders through two small optional interfaces (`BlobStoreClient` in `blobSync.ts`, `SnapshotBackend` in `src/snapshots/`); without the carrier those default to the Worker code paths unchanged. Everything stored can optionally be encrypted with a vault passphrase. See [drive-carrier.md](drive-carrier.md) for layout, limits and the request budget.
+
 ### Disk to CRDT
 
 Obsidian file events are noisy, duplicated, and non-causal. YAOS coalesces dirty paths and drains them at the pace of disk I/O instead of treating each watcher event as an independent operation.

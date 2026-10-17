@@ -111,7 +111,19 @@ interface ExistsResult {
 	present: string[];
 }
 
-class BlobHttpClient {
+/**
+ * Where attachment bytes are stored, addressed by their SHA-256. The
+ * Cloudflare Worker's R2 bucket (BlobHttpClient below) is the default; another
+ * carrier can supply its own store.
+ */
+export interface BlobStoreClient {
+	upload(hash: string, contentType: string, data: ArrayBuffer, timeoutMs: number): Promise<void>;
+	download(hash: string, timeoutMs: number): Promise<ArrayBuffer>;
+	/** The subset of `hashes` that is already stored. */
+	exists(hashes: string[]): Promise<string[]>;
+}
+
+class BlobHttpClient implements BlobStoreClient {
 	constructor(
 		private host: string,
 		private token: string,
@@ -328,7 +340,7 @@ export interface BlobQueueSnapshot {
 // -------------------------------------------------------------------
 
 export class BlobSyncManager {
-	private blobClient: BlobHttpClient;
+	private blobClient: BlobStoreClient;
 
 	/** Pending uploads keyed by path (deduped). */
 	private uploadQueue = new Map<string, UploadItem>();
@@ -406,13 +418,15 @@ export class BlobSyncManager {
 			attachmentConcurrency: number;
 			debug: boolean;
 			trace?: TraceHttpContext;
+			/** Store attachments here instead of on the Worker. */
+			blobStore?: BlobStoreClient;
 		},
 		hashCache: BlobHashCache,
 		private trace?: TraceRecord,
 		initialPreservedUnresolved: PreservedUnresolvedEntry[] = [],
 		private onPreservedUnresolvedChanged?: () => void,
 	) {
-		this.blobClient = new BlobHttpClient(
+		this.blobClient = settings.blobStore ?? new BlobHttpClient(
 			settings.host,
 			settings.token,
 			settings.vaultId,
@@ -1126,6 +1140,33 @@ export class BlobSyncManager {
 		}
 	}
 
+	/** Paths already announced with a Notice this session, so a retry does not repeat it. */
+	private readonly oversizedLocalNotified = new Set<string>();
+	private _oversizedLocalSkips = 0;
+
+	/** How many downloads were skipped because the local file is over the size limit. */
+	get oversizedLocalSkips(): number {
+		return this._oversizedLocalSkips;
+	}
+
+	private noteOversizedLocalSkipped(path: string, sizeBytes: number): void {
+		this._oversizedLocalSkips++;
+		this.log(
+			`download: "${path}" skipped, the local file (${sizeBytes} bytes) is over the ` +
+				`attachment limit (${this.maxSize} bytes), so it is kept as is`,
+		);
+		if (this.oversizedLocalNotified.has(path)) return;
+		this.oversizedLocalNotified.add(path);
+		try {
+			new Notice(
+				`YAOS: "${path.split("/").pop()}" is over this device's attachment limit, so the synced version did not replace it. Raise the limit in settings to sync it again.`,
+				10000,
+			);
+		} catch {
+			// Notice may fail in testing or headless environments.
+		}
+	}
+
 	private async processDownload(item: DownloadItem): Promise<void> {
 		const start = Date.now();
 		this.log(
@@ -1137,6 +1178,21 @@ export class BlobSyncManager {
 			// Check if file already exists with matching hash
 			const existing = this.app.vault.getAbstractFileByPath(normalized);
 			let diskHashBefore: string | null = null;
+			if (existing instanceof TFile && this.maxSize > 0 && existing.stat.size > this.maxSize) {
+				// The local file grew past this device's attachment limit. It is left
+				// out of upload and reconcile, so overwriting it from the synced copy
+				// would silently throw the local version away (upstream issue #75).
+				this.downloadQueue.delete(item.path);
+				this.noteOversizedLocalSkipped(item.path, existing.stat.size);
+				this.trace?.("blob", "download-overwrite-decision", {
+					path: item.path,
+					hashPrefix: hashPrefix(item.hash),
+					diskHashBeforePrefix: null,
+					action: "skip-local-over-limit",
+					sizeBytes: existing.stat.size,
+				});
+				return;
+			}
 			if (existing instanceof TFile) {
 				// Try hash cache first
 				const fileStat = {

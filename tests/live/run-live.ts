@@ -191,6 +191,10 @@ async function main() {
 		], token);
 		await runCommand("node", [
 			...NODE_TS,
+			"tests/live/config-sync-preview.ts",
+		], token);
+		await runCommand("node", [
+			...NODE_TS,
 			"tests/live/sync-client.ts",
 			"smoke.md",
 			"\n\nhello from worker integration pass 1",

@@ -8,6 +8,8 @@ Generated bundles, reports, and device artifacts belong under ignored `qa-runs/`
 
 `npm run test:regressions` discovers suites under `tests/client`, `tests/server`, `tests/contracts`, and eligible `tests/live` files. `tests/suites.json` records helpers and suites requiring another driver. Discovery guards reject unaccounted inert suites and stale exemptions.
 
+A fresh clone needs **both** dependency sets before any of this is meaningful: `npm ci` and `npm ci --prefix server`. The server suites run on `miniflare` from the second one; without it exactly one suite fails with `MODULE_NOT_FOUND: miniflare` while everything else is green, which reads like a real failure. The Worker integration gate additionally needs a local Wrangler login.
+
 `npm run test:ci` also starts a real local Wrangler Worker and runs:
 
 - schema admission;
@@ -43,6 +45,24 @@ Still missing:
 - real iPad proof for the missing-baseline and bound-file cases;
 - real Node-filesystem watcher proof;
 - original-reporter confirmation.
+
+For the Google Drive carrier specifically (F8):
+
+- **a real-account run of the Drive data path.** Every Drive suite runs against
+  `FakeDrive`; the opt-in gate `tests/live/drive-real.ts` (registered under
+  `skip`) measures the things the fake cannot: listing latency after a write,
+  duplicate names, the multipart ceiling, error-body shapes, a 6 MB resumable
+  round trip and, with a second token, the `drive.file` invisibility rule.
+  Results are recorded in `docs/drive-carrier-device-results.md`. **Not yet run**:
+  deferred on 2026-10-11 and, at the 2.1.23 release gate, deliberately accepted
+  unrun (see "Run 1 — accepted for 2.1.23" there), so 2.1.23 ships with the Drive
+  data path verified by fake only. The fake models listing lag behind
+  `FakeDrive.listingLagTicks`, which stays off until the gate prints a number.
+- **a real-device checklist run for the Drive carrier** — the 18 sections listed
+  in `docs/drive-carrier-device-results.md`, none of which has been executed on
+  hardware yet.
+- a provoked **403 rate-limit** response: deliberately not done against a real
+  account, so the backoff path's body classification stays unverified.
 
 ## Prepare a fixture vault
 
@@ -130,7 +150,7 @@ The existing desktop result does not close this real-device requirement.
 ## Evidence rules
 
 - Preserve raw failing evidence; do not weaken a scenario to obtain green output.
-- A manually ignored expected failure is not a passing regression. `SYNC-01` must become a hard failing test before its fix.
+- A manually ignored expected failure is not a passing regression. `SYNC-01`'s scenario is a hard failure: `qa/controllers/two-device.ts` (scenario `issue-22-disable-reenable-local-delete-remote-unchanged`) pushes to `errors` when a locally deleted file comes back, and `tests/client/engine-offline-delete.ts` holds the model-level regression.
 - Adapter writes do not prove OS watcher behavior.
 - Passive quorum does not prove edit propagation.
 - Unit/model tests do not prove real mobile lifecycle ordering.

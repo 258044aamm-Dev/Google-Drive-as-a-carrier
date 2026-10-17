@@ -62,7 +62,7 @@ If artifact creation fails, convergence must not discard either version. Repeate
 
 Markdown conflict artifact paths are not CRDT-syncable. They stay on the creating device.
 
-A known gap remains when both disk and CRDT changed from baseline but the editor matches one side: the current bound-file branches can choose a winner without running the complete three-way classifier. This is BACKLOG `SYNC-02`.
+When the disk text and the CRDT text both changed from the baseline and also differ from each other, taking one side would silently discard the other's edit; the bound-file branches ask `src/runtime/reconcile/boundDivergencePolicy.ts` (`bothSidesChangedFromBaseline`) and preserve the side about to be overwritten as a conflict note first. Without a persisted baseline nothing is claimed and the previous behaviour applies. (This closed BACKLOG `SYNC-02`; the real-device ordering that started it is still tracked as `QA-03`.)
 
 ## Attachment conflict
 
@@ -89,7 +89,7 @@ Read/stat failure is uncertainty, not proof that a local file is clean.
 
 `preservedUnresolvedPaths` prevents later scan/import/queue passes from reviving a path that was preserved without a trustworthy baseline. Explicit local create, modify, or delete establishes new user intent and clears the session guard.
 
-A separate known violation exists for a file deleted locally while YAOS is disabled: startup reconciliation can classify the absent known file as materialization missing from disk and recreate it from CRDT. This is BACKLOG `SYNC-01`.
+A file deleted locally while YAOS is disabled is a deliberate local delete when the persisted disk index still holds a baseline hash for the path and that hash equals the hash of the CRDT text — `src/runtime/reconcile/offlineDeletePolicy.ts` (`classifyMissingOnDisk`) then records a tombstone instead of writing the file back, and the batch brake (`evaluateOfflineDeleteBatch`: more than 20 candidates **and** more than 25 % of tracked files, or an empty disk) blocks a pass that would look like a mass delete. Any doubt — no index entry, no baseline hash, unreadable text, a hash difference — keeps the old behaviour and writes the CRDT text back, so a stale device cannot delete a file that changed elsewhere. (This closed BACKLOG `SYNC-01`.)
 
 ## Tombstones and revival
 
@@ -132,6 +132,10 @@ Forbidden claims:
 - a precise pending-update count;
 - `lastLocalUpdateWhileConnectedAt` means sent;
 - a historical receipt confirms current state.
+
+## Receipt on the Drive carrier
+
+With the experimental Drive carrier the same receipt message is produced locally, and "saved" means: the file holding the latest local state was stored on Drive and Drive reported the size we sent. It says nothing about other devices; they pick the file up on their next poll (3 s in use, up to 30 s idle, 2 minutes hidden on desktop, paused hidden on phones). The forbidden claims above apply unchanged.
 
 ## Failure posture
 

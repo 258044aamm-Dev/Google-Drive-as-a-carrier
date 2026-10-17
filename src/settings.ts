@@ -6,5 +6,6 @@ export {
 } from "./settings/settingsStore";
 export {
 	VaultSyncSettingTab,
+	type CarrierSwitchRequest,
 	type VaultSyncSettingsHost,
 } from "./settings/settingsTab";

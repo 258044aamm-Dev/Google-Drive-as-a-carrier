@@ -2,6 +2,7 @@ import * as Y from "yjs";
 import { gzipSync } from "fflate";
 import { mapWithConcurrency } from "./shared/concurrency";
 import { sha256Hex } from "./hex";
+import { countActiveMarkdownFiles } from "./activeFiles";
 
 // -------------------------------------------------------------------
 // Types
@@ -349,7 +350,6 @@ export async function createSnapshot(
 	const rawUpdate = opts.precomputedRawUpdate ?? Y.encodeStateAsUpdate(ydoc);
 	const compressed = gzipSync(rawUpdate);
 
-	const pathToId = ydoc.getMap<string>("pathToId");
 	const pathToBlob = ydoc.getMap<unknown>("pathToBlob");
 	const sys = ydoc.getMap<unknown>("sys");
 
@@ -375,7 +375,7 @@ export async function createSnapshot(
 		createdAt: new Date().toISOString(),
 		day,
 		schemaVersion: sys.get("schemaVersion") as number | undefined,
-		markdownFileCount: pathToId.size,
+		markdownFileCount: countActiveMarkdownFiles(ydoc),
 		blobFileCount: pathToBlob.size,
 		crdtSizeBytes: compressed.byteLength,
 		crdtRawSizeBytes: rawUpdate.byteLength,

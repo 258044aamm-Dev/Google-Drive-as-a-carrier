@@ -1,5 +1,5 @@
 import { type App, Notice } from "obsidian";
-import { BlobSyncManager, type BlobQueueSnapshot } from "../sync/blobSync";
+import { BlobSyncManager, type BlobQueueSnapshot, type BlobStoreClient } from "../sync/blobSync";
 import type { BlobHashCache } from "../sync/blobHashCache";
 import type { VaultSync } from "../sync/vaultSync";
 import type { RuntimeConfig } from "./runtimeConfig";
@@ -12,6 +12,8 @@ interface AttachmentOrchestratorDeps {
 	getVaultSync(): VaultSync | null;
 	getRuntimeConfig(): RuntimeConfig;
 	getServerSupportsAttachments(): boolean;
+	/** A carrier-provided attachment store (Google Drive). Absent or null means the Worker is used. */
+	getBlobStore?(): BlobStoreClient | null;
 	getTraceHttpContext(): TraceHttpContext | undefined;
 	getBlobHashCache(): BlobHashCache;
 	getExcludePatterns(): string[];
@@ -66,7 +68,9 @@ export class AttachmentOrchestrator {
 
 		const vaultSync = this.deps.getVaultSync();
 		if (!vaultSync) return;
-		if (!runtimeConfig.host || !runtimeConfig.token) return;
+		// A carrier with its own attachment store (Google Drive) needs no Worker host or token.
+		const blobStore = this.deps.getBlobStore?.() ?? undefined;
+		if (!blobStore && (!runtimeConfig.host || !runtimeConfig.token)) return;
 
 		const blobSync = new BlobSyncManager(
 			this.deps.app,
@@ -79,6 +83,7 @@ export class AttachmentOrchestrator {
 				attachmentConcurrency: runtimeConfig.attachmentConcurrency,
 				debug: runtimeConfig.debug,
 				trace: this.deps.getTraceHttpContext(),
+				blobStore,
 			},
 			this.deps.getBlobHashCache(),
 			this.deps.trace,

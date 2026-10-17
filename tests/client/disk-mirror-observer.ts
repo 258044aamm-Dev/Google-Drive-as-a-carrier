@@ -68,8 +68,8 @@ function makeHarness() {
 	const meta = doc.getMap<{ path: string; deleted?: boolean }>("meta");
 	const ytext = doc.getText("content");
 	// Only ever compared by identity (isLocalOrigin) and used as a transaction
-	// origin, so `roomname` carries the marker purely to name it in a debugger.
-	const fakeProvider = partialOf<VaultSync["provider"]>({ roomname: "fake-provider" });
+	// origin, so the `wsconnected` field only gives the empty object a member.
+	const fakeProvider = partialOf<VaultSync["provider"]>({ wsconnected: false });
 
 	// Seed meta so afterTxnHandler can resolve fileId → path
 	doc.transact(() => {
