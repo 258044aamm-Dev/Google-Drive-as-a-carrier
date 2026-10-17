@@ -42,6 +42,20 @@ s.section("Test 1: findFolders builds an escaped query and parses results");
 	s.check(!url.toString().includes("drive.appdata"), "no extra scope is involved");
 }
 
+s.section("Test 1b: findFolders follows every page before deciding which folders exist");
+{
+	const { api, requests } = makeApi((req) => {
+		const page = new URL(req.url).searchParams.get("pageToken");
+		return page === "second"
+			? json(200, { files: [{ id: "matching", name: "vault", createdTime: "2026-01-02T00:00:00Z" }] })
+			: json(200, { nextPageToken: "second", files: [{ id: "older", name: "vault", createdTime: "2026-01-01T00:00:00Z" }] });
+	});
+	const folders = await api.findFolders("vault");
+	s.check(folders.map((f) => f.id).join() === "older,matching", "both pages returned in order");
+	s.check(requests.length === 2 && new URL(requests[1]?.url ?? "").searchParams.get("pageToken") === "second", "next page token followed");
+	s.check((new URL(requests[0]?.url ?? "").searchParams.get("fields") ?? "").includes("nextPageToken"), "pagination token requested");
+}
+
 s.section("Test 2: listFiles follows pages");
 {
 	const { api, requests } = makeApi((req) => {

@@ -145,14 +145,22 @@ export class GoogleDriveRest implements DriveApi {
 
 	async findFolders(name: string): Promise<DriveFolderInfo[]> {
 		const q = `name='${escapeQueryValue(name)}' and mimeType='${FOLDER_MIME}' and trashed=false`;
-		const url = `${API}/files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent("files(id,name,createdTime)")}&pageSize=100&spaces=drive`;
-		const res = await this.send((token) => ({ url, method: "GET", headers: { Authorization: `Bearer ${token}` } }));
-		const body = this.json(res);
-		const files = typeof body === "object" && body !== null && "files" in body && Array.isArray(body.files) ? body.files : [];
-		return files.map((f: RawFile) => {
-			const info = toFileInfo(f);
-			return { id: info.id, createdTime: info.createdTime };
-		});
+		const folders: DriveFolderInfo[] = [];
+		let pageToken: string | undefined;
+		do {
+			let url = `${API}/files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent("nextPageToken,files(id,name,createdTime)")}&pageSize=100&spaces=drive`;
+			if (pageToken) url += `&pageToken=${encodeURIComponent(pageToken)}`;
+			const res = await this.send((token) => ({ url, method: "GET", headers: { Authorization: `Bearer ${token}` } }));
+			const body = this.json(res);
+			if (typeof body !== "object" || body === null) throw new DriveError(502, "Unexpected folder list response");
+			const files = "files" in body && Array.isArray(body.files) ? body.files : [];
+			for (const f of files) {
+				const info = toFileInfo(f as RawFile);
+				folders.push({ id: info.id, createdTime: info.createdTime });
+			}
+			pageToken = "nextPageToken" in body && typeof body.nextPageToken === "string" ? body.nextPageToken : undefined;
+		} while (pageToken);
+		return folders;
 	}
 
 	async createFolder(name: string): Promise<DriveFolderInfo> {
