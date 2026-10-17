@@ -124,6 +124,26 @@ s.section("Verified folder selection never guesses from a duplicate name");
 }
 
 // ---------------------------------------------------------------------------
+s.section("Legacy, empty and unavailable folders remain separate recovery cases");
+{
+	const drive = new FakeDrive();
+	const api = drive.client();
+	const folder = await api.createFolder(FOLDER);
+	const empty = await selectVerifiedFolder(api, FOLDER, VAULT);
+	s.check(empty.kind === "empty" && empty.folder.id === folder.id, "sole empty folder can join the existing first-setup path");
+	await api.createFile(folder.id, META_NAME, new TextEncoder().encode(JSON.stringify({ schema: 1, app: "yaos-drive" })));
+	const legacy = await selectVerifiedFolder(api, FOLDER, VAULT);
+	s.check(legacy.kind === "legacy" && legacy.folder.id === folder.id, "older metadata is classified, not silently treated as verified");
+	const pinned = await selectVerifiedFolder(api, FOLDER, VAULT, folder.id);
+	s.check(pinned.kind === "legacy", "remembered legacy folder is preserved for migration");
+	const gone = await selectVerifiedFolder(api, FOLDER, VAULT, "does-not-exist");
+	s.check(gone.kind === "needs-choice", "missing remembered folder does not silently switch histories");
+	const other = await api.createFolder(FOLDER);
+	const ambiguous = await selectVerifiedFolder(api, FOLDER, VAULT);
+	s.check(ambiguous.kind === "needs-choice" && ambiguous.folderIds.includes(other.id), "legacy and empty duplicates need an explicit recovery choice");
+}
+
+// ---------------------------------------------------------------------------
 s.section("Test 1: the resolved folder id is remembered and survives a rename");
 {
 	const drive = new FakeDrive();

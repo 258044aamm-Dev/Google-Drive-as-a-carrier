@@ -1,16 +1,20 @@
-import type { DriveApi, DriveFolderInfo } from "./driveApi";
+import { DriveError, FOLDER_MIME, type DriveApi, type DriveFolderInfo } from "./driveApi";
 import { inspectFolderFingerprint, type FolderFingerprintInspection } from "./folderFingerprint";
 
-/** Read-only candidate decision. No fallback to an oldest wrong-vault folder. */
+type Identified = Extract<FolderFingerprintInspection, { kind: "identified" }>;
+
+/** Read-only candidate decision. Callers must not turn ambiguity into a new folder. */
 export type FolderDecision =
-	| { kind: "selected"; folder: DriveFolderInfo; inspection: Extract<FolderFingerprintInspection, { kind: "identified" }> }
+	| { kind: "selected"; folder: DriveFolderInfo; inspection: Identified }
+	| { kind: "legacy"; folder: DriveFolderInfo; inspection: Identified }
+	| { kind: "empty"; folder: DriveFolderInfo }
 	| { kind: "none" }
 	| { kind: "needs-choice"; reason: string; folderIds: string[] };
 
 /**
- * Returns only an unambiguous verified vault folder. A saved folder ID is
- * authoritative for a renamed folder, but must still match the vault ID and
- * expected fingerprint. Discovery never mutates Drive or creates a folder.
+ * Inspect every visible folder before deciding. `legacy` (one metadata record
+ * without a vaultId) is NOT a verified match: the caller must migrate/confirm
+ * it before treating it as a fingerprinted vault. This helper never writes.
  */
 export async function selectVerifiedFolder(
 	api: DriveApi,
@@ -23,35 +27,52 @@ export async function selectVerifiedFolder(
 	const sorted = [...candidates].sort((a, b) => a.createdTime - b.createdTime || a.id.localeCompare(b.id));
 	const pinned = savedId?.trim();
 	if (pinned) {
-		// getFile errors propagate: a 404/permission refusal does not prove that
-		// another folder is the same history. A renamed folder is still valid.
-		const info = await api.getFile(pinned);
-		if (info.trashed || (info.mimeType && info.mimeType !== "application/vnd.google-apps.folder")) {
+		let info;
+		try {
+			info = await api.getFile(pinned);
+		} catch (err) {
+			if (err instanceof DriveError && err.notFound) {
+				return { kind: "needs-choice", reason: "The remembered Drive folder is unavailable; it may be hidden by this Google sign-in.", folderIds: [pinned] };
+			}
+			throw err; // network failures must not be mistaken for missing history
+		}
+		if (info.trashed || (info.mimeType && info.mimeType !== FOLDER_MIME)) {
 			return { kind: "needs-choice", reason: "The remembered Drive folder is no longer usable.", folderIds: [pinned] };
 		}
+		const folder = { id: pinned, createdTime: info.createdTime };
 		const inspected = await inspectFolderFingerprint(api, pinned);
-		if (inspected.kind !== "identified" || inspected.vaultId !== vaultId || (expectedFingerprint && inspected.fingerprint !== expectedFingerprint)) {
-			return { kind: "needs-choice", reason: "The remembered Drive folder does not match this vault and its expected fingerprint.", folderIds: [pinned] };
+		if (inspected.kind === "identified" && inspected.vaultId === vaultId && (!expectedFingerprint || inspected.fingerprint === expectedFingerprint)) {
+			return { kind: "selected", folder, inspection: inspected };
 		}
-		return { kind: "selected", folder: { id: pinned, createdTime: info.createdTime }, inspection: inspected };
+		if (inspected.kind === "identified" && inspected.vaultId === null && inspected.schema === 1 && !expectedFingerprint) {
+			return { kind: "legacy", folder, inspection: inspected };
+		}
+		if (inspected.kind === "empty" && !expectedFingerprint) return { kind: "empty", folder };
+		return { kind: "needs-choice", reason: "The remembered Drive folder does not match this vault and its expected fingerprint.", folderIds: [pinned] };
 	}
-	const matches: { folder: DriveFolderInfo; inspection: Extract<FolderFingerprintInspection, { kind: "identified" }> }[] = [];
-	const uncertain: string[] = [];
+	const matches: { folder: DriveFolderInfo; inspection: Identified }[] = [];
+	const unknown: string[] = [];
+	let sole: { folder: DriveFolderInfo; inspection: FolderFingerprintInspection } | null = null;
 	for (const folder of sorted) {
-		const inspected = await inspectFolderFingerprint(api, folder.id);
-		if (inspected.kind === "identified" && inspected.vaultId === vaultId) {
-			if (!expectedFingerprint || inspected.fingerprint === expectedFingerprint) matches.push({ folder, inspection: inspected });
-			else uncertain.push(folder.id);
-		} else if (inspected.kind !== "identified" || inspected.vaultId === null) uncertain.push(folder.id);
+		const inspection = await inspectFolderFingerprint(api, folder.id);
+		if (sorted.length === 1) sole = { folder, inspection };
+		if (inspection.kind === "identified" && inspection.vaultId === vaultId) matches.push({ folder, inspection });
+		else if (inspection.kind !== "identified" || inspection.vaultId === null) unknown.push(folder.id);
 	}
+	// A hash never licenses ignoring a different initialized history for this vault.
 	if (matches.length > 1) return { kind: "needs-choice", reason: "Several folders hold this vault. Select the intended history explicitly.", folderIds: matches.map((m) => m.folder.id) };
-	if (matches.length === 1 && uncertain.length === 0) return { kind: "selected", ...matches[0]! };
-	if (matches.length === 1 && !expectedFingerprint && uncertain.length > 0) {
-		// A verified match beats unknown candidates; never create metadata in an
-		// unknown folder or treat one as an additional copy of this vault.
-		return { kind: "selected", ...matches[0]! };
+	const match = matches[0];
+	if (match) {
+		if (expectedFingerprint && match.inspection.fingerprint !== expectedFingerprint) {
+			return { kind: "needs-choice", reason: "The visible folder's fingerprint differs from the one this device remembers.", folderIds: [match.folder.id] };
+		}
+		return { kind: "selected", ...match };
 	}
-	if (uncertain.length > 0) return { kind: "needs-choice", reason: "Drive folders with missing or mismatched identity need verification.", folderIds: uncertain };
+	if (sole?.inspection.kind === "identified" && sole.inspection.vaultId === null && sole.inspection.schema === 1 && !expectedFingerprint) {
+		return { kind: "legacy", folder: sole.folder, inspection: sole.inspection };
+	}
+	if (sole?.inspection.kind === "empty" && !expectedFingerprint) return { kind: "empty", folder: sole.folder };
+	if (unknown.length > 0) return { kind: "needs-choice", reason: "Drive folders with missing or unreadable identity need verification.", folderIds: unknown };
 	if (sorted.length > 0) return { kind: "needs-choice", reason: "The visible folders belong to a different vault.", folderIds: sorted.map((f) => f.id) };
 	return { kind: "none" };
 }
