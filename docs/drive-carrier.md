@@ -300,6 +300,12 @@ The refresh token is stored in the plugin's `data.json` next to the other
 settings, exactly like the Cloudflare sync token. It never leaves the device
 except to talk to Google.
 
+Once a device is signed in, the **Set up Google Drive** row disappears from the
+settings screen: there is nothing left to set up on it. Signing out brings the
+row back. The guided setup itself stays available from the command palette
+(*Set up Google Drive*) and from **Manual setup (advanced)**, so a device can
+always be pointed at another vault.
+
 ## Switching back
 
 Choosing *Cloudflare Worker* again restores the previous behaviour; the
