@@ -4,8 +4,13 @@ Investigation record for Linear issue **COD-8** ("no warning when switching from
 carrier to another"). Written against `google-drive-carrier` @ `18b714b`
 (release 2.1.23).
 
-This document is **investigation only**. No product code was changed; the only
-repository edit is this file and one line in `docs/README.md`.
+**Status: the recommended fix is implemented and shipped on this branch** (see
+[§9](#9-what-was-implemented)). Sections 1–8 are the investigation record, kept
+as written when the fix was still only a proposal, so the evidence and the
+reasoning behind each decision stay readable.
+
+The investigation itself changed no product code; the fix that followed it is
+described in §9 and is confined to the carrier branch of the settings tab.
 
 ---
 
@@ -146,7 +151,7 @@ Warning content should cover (per the maintainer's scope choice):
 4. that the choice is **per device** — other devices keep the old carrier until they are switched too;
 5. that unsynced / in-flight work should be allowed to finish first.
 
-## 7. Recommended fix (design — not implemented in this pass)
+## 7. Recommended fix (implemented — see §9)
 
 Constraints taken from the issue: follow the existing architecture, touch
 nothing unrelated, and keep the current switching behavior otherwise.
@@ -219,7 +224,44 @@ proven:
   yet; until it does, that part of the warning cannot be truthful and should be
   omitted rather than guessed.
 
-## 9. Reproducing this investigation
+## 9. What was implemented
+
+Carried out as recommended in §7, in three commits on `google-drive-carrier`:
+`af9a946` (investigation record), `fa9777a` (the fix) and `17a5d4f` (tests).
+
+| Change | Where |
+| --- | --- |
+| Optional `confirmSwitch?(request)` hook added to the settings host | `src/settings/settingsTab.ts` |
+| `carrierSwitchMessage(from, to, state)` — the plain-language description, a pure function | `src/settings/settingsTab.ts` |
+| The confirmation itself, using the existing `ConfirmModal` | `src/main.ts` (`confirmSwitch`) |
+| Type re-export for the plugin | `src/settings.ts` |
+| New suite `carrier-switch-warning` (52 checks) | `tests/client/carrier-switch-warning.ts` |
+
+Behaviour now, per transition:
+
+1. **Ask first.** The host is handed the switch and what it does. Declining saves nothing, says nothing and is not an error. The carrier is the only setting that asks; every other setting still saves immediately.
+2. **Say what it does.** The message covers all five points from §6: nothing is copied between carriers, the choice is per device, syncing should be allowed to finish, what the destination needs, and that a reload makes it take effect.
+3. **Never fail in silence.** A failed save says the carrier was *not* switched; a failed local network key/certificate says the carrier *was* switched but preparation failed. Both still reject, exactly as before, so nothing downstream sees a different contract.
+4. **No-op on re-selection.** Re-picking the carrier already selected no longer fires the reload toast.
+
+What was deliberately **not** changed:
+
+- **`src/sync/` is untouched.** There is still no public pending-write API, so the unsynced-work point is an unconditional sentence rather than a live count. Making it live remains a separate, larger change.
+- **No new dependency of the settings tab on a modal.** The tab still never imports `ConfirmModal`; the host owns the dialog. `ConfirmModal` already accepted a cancel callback, so the shared component needed no change either.
+- **No schema, encryption or settings-format change.** `carrier` remains the same optional field; no migration is required and no new setting is introduced.
+
+Verification: `build`, `typecheck:tests`, `typecheck:qa`, the six `guard:*`
+scripts and `lint` (0 errors / 24 warnings, identical to before) all pass, and
+`test:regressions` reports **142 passed / 0 failed** — the 141 suites that
+existed before plus the new one.
+
+Still to do by hand: the real-device check belongs next to
+*“Switching to Drive and back to Cloudflare restores the old behaviour”* in
+`docs/drive-carrier-device-checklist.md` (line 75), and the entry belongs in
+`CHANGELOG.md` when this is released (the file has no "Unreleased" section, so
+it was not edited speculatively).
+
+## 10. Reproducing this investigation
 
 From the repository root, with dependencies installed
 (`npm ci` and `npm ci --prefix server`):
