@@ -8,6 +8,34 @@ Up to `2.1.1-drive.10` the version number (like `2.1.1-drive.3`) existed only in
 
 This file is specific to this fork. It is not part of upstream YAOS.
 
+## 2.1.24 - 2026-10-17 - TEST RELEASE: a warning before switching carriers, and a setup guide that knows when it is done
+
+This release changes two things on the YAOS settings screen. The Cloudflare carrier and the server are unchanged, the Google Drive carrier is still **experimental and off by default**, and no vault, CRDT or encryption format changed. No settings migration is required and no new setting is introduced.
+
+### Switching carriers asks first (COD-8)
+
+- **A warning before the switch, not only after it.** Choosing a different sync carrier now says what the switch does and waits for confirmation: notes are **not** copied between carriers, the choice is **per device** (your other devices keep the old carrier until you switch them too), in-flight syncing should be allowed to finish, what the destination needs (Google Drive: sign-in plus the same vault ID and encryption passphrase; Local network: the desktop app, on the same network, with both devices open), and that a reload is what makes it take effect. Declining leaves the settings exactly as they were.
+- **Nothing fails in silence any more.** A switch whose settings could not be saved now says the carrier was *not* switched; a switch to Local network whose key and certificate could not be created says the carrier *was* switched and what failed. Both previously showed nothing at all.
+- **Re-picking the carrier that is already selected is a no-op** instead of raising the reload notice.
+- The reload notice is kept for a successful switch. Only the *carrier* row asks; every other setting still saves as soon as it is changed.
+
+### The Google Drive setup guide disappears when it is done (COD-9)
+
+- **"Set up Google Drive" is shown only while there is something left to set up.** Its visibility follows the sign-in state instead of whether the wizard can be opened at all, so it no longer stays on screen after setup is complete.
+- **Signing out brings it back**, and the settings screen is now refreshed when the wizard finishes or you sign out, so the rows reflect the current state without reopening settings.
+- The guided setup loses nothing: it stays available from the command palette (**Set up Google Drive**) and from **Manual setup (advanced)**.
+
+### Under the hood
+
+- `VaultSyncSettingsHost` gained an optional `confirmSwitch` hook, implemented by the plugin with the `ConfirmModal` already used for resetting the local cache and for the nuclear reset. The settings tab still never creates the dialog itself, which keeps it testable: `tests/client/carrier-switch-warning.ts` (52 checks) drives all six transitions headlessly.
+- The plugin now keeps a handle on its settings tab so it can be redrawn from outside.
+- `docs/COD-8-carrier-switch-warnings.md` records the investigation behind the carrier-switch warning, including what was deliberately left out and why.
+- Gates: `build`, `typecheck:tests`, `typecheck:qa`, the six `guard:*`, `lint` (0 errors / 24 warnings) and `test:regressions` 142/142.
+
+### Not verified on real devices
+
+- Both changes were exercised headlessly and against the existing fakes. A real Google Drive account, a real local network, and how real Obsidian renders the confirmation dialog (and surfaces a rejected settings write) have not been re-checked for this release. See `docs/drive-carrier-device-checklist.md`.
+
 ## 2.1.23 - 2026-10-11 - TEST RELEASE: Google Drive carrier hardening (bytes, memory, trust), a real-Drive evidence gate, and documentation truth
 
 This release is the Google Drive carrier plus documentation. The Cloudflare carrier and server are unchanged, the Drive carrier is still experimental and off by default, and no vault, CRDT or encryption format changed.
