@@ -20,6 +20,7 @@
 import * as Y from "yjs";
 import { DriveTransport, type DriveTransportOptions } from "../../src/drive-carrier/driveTransport";
 import { META_NAME } from "../../src/drive-carrier/fileFormat";
+import { fingerprintForInstallId, inspectFolderFingerprint } from "../../src/drive-carrier/folderFingerprint";
 import { FakeDrive } from "../mocks/fakeDrive";
 import { suite } from "../harness.ts";
 
@@ -77,6 +78,24 @@ function start(rig: Rig, name: string, extra: Partial<DriveTransportOptions> = {
 		...extra,
 	});
 	return { transport, notices, logs };
+}
+
+// ---------------------------------------------------------------------------
+s.section("Fingerprint inspection is stable and does not write to Drive");
+{
+	const drive = new FakeDrive();
+	const api = drive.client();
+	const folder = await api.createFolder(FOLDER);
+	const empty = await inspectFolderFingerprint(api, folder.id);
+	s.check(empty.kind === "empty", "an empty folder is distinct from a broken metadata file");
+	await api.createFile(folder.id, META_NAME, new TextEncoder().encode(JSON.stringify({ schema: 1, vaultId: VAULT, installId: "unique-install" })));
+	const first = await inspectFolderFingerprint(api, folder.id);
+	const second = await inspectFolderFingerprint(api, folder.id);
+	const expected = await fingerprintForInstallId("unique-install");
+	s.check(first.kind === "identified" && first.vaultId === VAULT && first.fingerprint === expected, "identity comes from the folder's metadata");
+	s.check(second.kind === "identified" && second.fingerprint === expected && expected.length === 64, "fingerprint is stable and SHA-256 sized");
+	s.check(await fingerprintForInstallId("other-install") !== expected, "different folders have distinct fingerprints");
+	s.check(drive.calls.createFile === 1, "inspection never writes metadata");
 }
 
 // ---------------------------------------------------------------------------
